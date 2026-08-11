@@ -43,6 +43,12 @@ namespace MinecraftCodexCompanion.SingleExeInstaller
         [STAThread]
         private static int Main(string[] args)
         {
+            // WinForms requires this process-wide setting before any Form or
+            // MessageBox (including parse-error handling) creates an
+            // IWin32Window instance.
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
             Options options;
             try
             {
@@ -111,8 +117,6 @@ namespace MinecraftCodexCompanion.SingleExeInstaller
                     worker.Start();
                 };
 
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(window);
             }
 
@@ -1033,7 +1037,6 @@ namespace MinecraftCodexCompanion.SingleExeInstaller
             {
                 return;
             }
-            Application.EnableVisualStyles();
             MessageBox.Show(
                 "Minecraft Codex Companion 安装失败 / Installation failed:\r\n\r\n" + error.Message,
                 "Minecraft Codex Companion",

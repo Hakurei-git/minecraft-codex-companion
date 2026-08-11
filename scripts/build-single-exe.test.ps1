@@ -88,6 +88,15 @@ function Wait-ForFile([string]$Path, [int]$Seconds = 10) {
     throw "Timed out waiting for fixture launcher: $Path"
 }
 
+$installerSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $projectRoot 'apps\single-exe-installer\Program.cs')
+$mainIndex = $installerSource.IndexOf('private static int Main(string[] args)', [System.StringComparison]::Ordinal)
+$textRenderingIndex = $installerSource.IndexOf('Application.SetCompatibleTextRenderingDefault(false);', $mainIndex, [System.StringComparison]::Ordinal)
+$optionsIndex = $installerSource.IndexOf('Options options;', $mainIndex, [System.StringComparison]::Ordinal)
+$textRenderingCalls = [regex]::Matches($installerSource, [regex]::Escape('Application.SetCompatibleTextRenderingDefault(false);')).Count
+Assert-True ($mainIndex -ge 0 -and $textRenderingIndex -gt $mainIndex -and $textRenderingIndex -lt $optionsIndex) `
+    'WinForms text rendering must be configured at the start of Main before any error window or progress form can be created'
+Assert-True ($textRenderingCalls -eq 1) 'WinForms text rendering must be configured exactly once per installer process'
+
 $savedSentinel = $env:MC_SINGLE_EXE_TEST_LAUNCH_SENTINEL
 try {
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
@@ -187,7 +196,7 @@ public static class FixtureLauncher
     $temporaryPointers = @(Get-ChildItem -LiteralPath $applicationRoot -File -Filter '.current-*.tmp' -ErrorAction SilentlyContinue)
     Assert-True ($temporaryPointers.Count -eq 0) 'atomic pointer update left temporary files'
 
-    Write-Host 'Single-EXE offline tests passed: deterministic build, verified extraction, launch, idempotence, atomic update, and no unknown-file deletion.'
+    Write-Host 'Single-EXE offline tests passed: WinForms initialization order, deterministic build, verified extraction, launch, idempotence, atomic update, and no unknown-file deletion.'
 } finally {
     $env:MC_SINGLE_EXE_TEST_LAUNCH_SENTINEL = $savedSentinel
     if (Test-Path -LiteralPath $testRoot -PathType Container) {
