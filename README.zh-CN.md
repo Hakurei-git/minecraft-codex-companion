@@ -1,19 +1,55 @@
 # Minecraft Codex Companion
 
-[English](README.md)
+<p align="center">
+  <strong>面向 Codex、Claude 兼容 API 与反重力 MCP 的本地优先 Minecraft Forge 1.20.1 AI NPC 陪玩系统。</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/Hakurei-git/minecraft-codex-companion?display_name=tag&amp;sort=semver"></a>
+  <a href="https://github.com/Hakurei-git/minecraft-codex-companion/releases"><img alt="GitHub 下载量" src="https://img.shields.io/github/downloads/Hakurei-git/minecraft-codex-companion/total"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/Hakurei-git/minecraft-codex-companion"></a>
+  <img alt="Minecraft Forge 1.20.1" src="https://img.shields.io/badge/Minecraft%20Forge-1.20.1-4f7f35">
+  <img alt="本地 Model Context Protocol 服务" src="https://img.shields.io/badge/MCP-local--first-6f42c1">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest"><strong>下载</strong></a>
+  · <a href="#两分钟安装流程">两分钟安装</a>
+  · <a href="#能力范围">功能</a>
+  · <a href="#自由聊天与人格">T 聊天</a>
+  · <a href="README.md">English</a>
+</p>
 
 这是一个本地 Minecraft AI 同伴控制系统。Forge 1.20.1 模组会在你的单人世界中生成一个独立、可见的 Codex NPC；NeoForge 客户端或 1 到 3 个 Mineflayer 角色也可以连接同一控制服务。Codex、Claude 兼容 API 与反重力通过 MCP 共用这个游戏内化身，负责观察世界、聊天和执行任务。
 
 它不是屏幕按键脚本。移动、采集、制作、烧炼、整理容器、战斗、照顾龙和建筑等动作由游戏侧执行器完成，AI 负责对话、规划、选择任务和处理失败恢复。
 
+## 为什么使用它？
+
+| 目标 | NPC 的实际行为 |
+| --- | --- |
+| 自然聊天 | 通过 Minecraft `T` 聊天回复，支持自由聊天和可配置人格 |
+| 真正执行动作 | 移动、采集、制作、建造、战斗、种植、整理仓库，并把结果实体交付给玩家 |
+| 完成多步骤任务 | 自动补齐工具、工作台、原料、食物、背包空间和安全返回路线 |
+| 中断后继续 | 保护玩家或战斗时暂停任务，之后恢复；受支持的任务可跨重启继续 |
+| 自行选择 AI 成本 | 已识别动作链可完全在本地运行；复杂自然语言可启用会额外消耗 Token 的智能 AI |
+| 复用已有 AI | 通过本地 MCP 接入 Codex、Claude 兼容服务或已绑定的反重力对话 |
+
 ## 下载与兼容性
 
 GitHub Releases 提供两种下载：
 
-- `MinecraftCodexCompanion-Setup.exe`：普通用户使用的完整单 EXE，不需要安装 Node.js 或手工构建模组。
-- `MinecraftCodexCompanion-AgentKit-v0.1.0.zip`：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
+- **[Windows 安装程序 EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**：普通用户使用的完整版本，不需要安装 Node.js 或手工构建模组。
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.0)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
 
 安装器不会内置或迁移账号、API Key、反重力会话、Minecraft 存档和本机路径。
+
+## 两分钟安装流程
+
+1. 从最新 Release 下载 Windows 安装程序 EXE，并核对页面公布的 SHA-256。
+2. 选择自动发现的 HMCL 与 Forge 1.20.1 源实例，再设置玩家名、NPC 名字、人格和可选的 128×64 皮肤。
+3. 创建隔离陪玩实例，在 HMCL 中启动这个新实例，并先进入新建的临时单人世界检查。
+4. 打开本地 Dashboard，选择 Codex、Claude 兼容服务或反重力 MCP，按需开启自由聊天与智能 AI；回到游戏按 `T` 即可聊天或下达任务。
 
 首次运行会在本机有限的用户级候选目录中自动发现：
 
@@ -294,3 +330,10 @@ npm run smoke:capabilities
 - 连接后立刻掉线：检查游戏版本、服务器认证方式、角色账号是否重复，以及模组整合包是否要求客户端专用握手。
 
 本机持久状态默认在 `%LOCALAPPDATA%\MinecraftCodexCompanion`。其中包含桥令牌、加密 AI 配置、自由聊天与人格设置、Codex 对话线程引用、技能、建筑计划，以及不含 API Key 的 `task-journal.json`。回复中的替换字符或高度可疑的全问号内容会在进入游戏前被拦截为明确的编码错误。排错时不要把整个状态目录连同密钥直接上传。
+
+## 社区与参与贡献
+
+- 安装和使用问题请优先前往 [GitHub Discussions](https://github.com/Hakurei-git/minecraft-codex-companion/discussions)。
+- 可复现 Bug 请使用结构化的 [Issue 表单](https://github.com/Hakurei-git/minecraft-codex-companion/issues/new/choose)。
+- 提交代码、文档、翻译、建筑蓝图或模组兼容修复前，请阅读 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)。
+- 安全漏洞请按 [SECURITY.md](SECURITY.md) 私下报告，不要创建公开 Issue。

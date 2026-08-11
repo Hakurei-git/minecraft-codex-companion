@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible installer, MCP, Dashboard, NPC, task-chain, or mod-integration problem.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Minecraft Codex Companion. Remove API keys, private endpoints, account data, local paths, conversations, full logs, screenshots, and worlds unless a minimal redacted excerpt is essential.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+        - label: I tested the latest release in an isolated instance or can explain why that is not possible.
+          required: true
+        - label: I removed credentials and unrelated local data.
+          required: true
+  - type: dropdown
+    id: edition
+    attributes:
+      label: Edition
+      options:
+        - Windows Setup EXE
+        - AgentKit / MCP integration
+        - Source build
+        - Forge bridge
+        - NeoForge bridge
+        - Mineflayer worker
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows version, Minecraft version, loader and version, launcher, and relevant optional mods. Do not include local paths.
+      placeholder: Windows 11; Minecraft 1.20.1; Forge 47.4.21; HMCL; Book of Dragons 1.31
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Start the isolated companion instance.
+        2. Enter a disposable world.
+        3. Send ... through T chat.
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include only the smallest redacted error text or task status needed to understand the failure.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mention Smart AI/free-chat settings, whether cheats were enabled, and whether the task survived a restart when relevant.

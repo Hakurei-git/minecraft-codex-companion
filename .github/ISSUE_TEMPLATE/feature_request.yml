@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a focused Minecraft NPC capability, action chain, integration, UI, or documentation improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues and discussions for the same request.
+          required: true
+        - label: This request does not require uploading credentials, accounts, conversations, logs, screenshots, or worlds.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - NPC behavior or survival
+        - Gathering, crafting, or delivery
+        - Building or storage
+        - Combat or dragon integration
+        - T-chat, Smart AI, or persona
+        - MCP, Skill, Codex, Claude, or Antigravity
+        - Installer, Dashboard, or launcher support
+        - Documentation or translation
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Player problem
+      description: Describe the problem or workflow gap before describing an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Desired observable behavior
+      description: Explain the complete action chain, success condition, interruption behavior, and delivery target when applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or compatibility notes
+      description: Include Minecraft/loader/mod versions and whether the behavior should work without Smart AI.
