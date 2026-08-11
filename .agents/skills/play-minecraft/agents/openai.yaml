@@ -1,0 +1,11 @@
+interface:
+  display_name: "Minecraft Companion"
+  short_description: "Control and coordinate Minecraft companion players"
+  default_prompt: "Use $play-minecraft to observe the world and coordinate a safe Minecraft companion task."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "minecraft-codex-companion"
+      description: "Observe and control local Minecraft companion players"
+      transport: "streamable_http"
+      url: "http://127.0.0.1:8765/mcp"

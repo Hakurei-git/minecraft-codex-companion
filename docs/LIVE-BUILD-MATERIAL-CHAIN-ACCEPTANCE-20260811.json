@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "acceptedOn": "2026-08-11",
+  "suite": "live-build-material-chain",
+  "forgeJarSha256": "658ADE110F04D9C7E866991DA99D44BE7C358A8A3E82F714A77D8E18AB8984B1",
+  "result": {
+    "ok": true,
+    "localOnly": true,
+    "reversible": true,
+    "externalApiUsed": false,
+    "screenshotUsed": false,
+    "physicalInputUsed": false,
+    "cleanupConfirmed": true
+  },
+  "companion": {
+    "id": "codex-forge",
+    "name": "TestCompanion",
+    "backend": "forge-1.20.1",
+    "embodiment": "in-world-npc"
+  },
+  "task": {
+    "id": "9500aefd-7a66-41fb-980a-3d7e24436e9d",
+    "planId": "d73f89ed-bc8f-49e1-8804-f376c3304b80",
+    "status": "succeeded",
+    "progress": 1,
+    "taskIdChanges": 0
+  },
+  "worldEvidence": {
+    "expectedBlocks": 5,
+    "matchingBlocks": 5,
+    "wrongBlocks": 0,
+    "gathered": {
+      "logs": 3,
+      "stone": 9,
+      "sand": 7,
+      "coal": 2
+    },
+    "workstationPlacements": {
+      "craftingTable": 1,
+      "furnace": 1
+    },
+    "observedActions": {
+      "woodenPickaxe": true,
+      "planks": true,
+      "cobblestone": true,
+      "sand": true,
+      "glass": true,
+      "coal": true,
+      "stick": true,
+      "torch": true,
+      "glassPane": true,
+      "litFurnace": true,
+      "sandInFurnace": true,
+      "furnaceFuel": true,
+      "activeBuild": true
+    },
+    "maximumDistanceMilli": 16915,
+    "finalDistanceMilli": 6610,
+    "maximumTouchMilli": 4479,
+    "unexpectedBreaks": 0,
+    "unknownWorldEdits": 0,
+    "remoteBreaks": 0,
+    "lineOfSightViolations": 0,
+    "synchronizationViolations": 0
+  }
+}

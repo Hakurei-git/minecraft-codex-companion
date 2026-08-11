@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Minecraft Codex Companion</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/assets/companion.png" alt="Codex 猫娘">
+      <div>
+        <h1>Minecraft Codex Companion</h1>
+        <p id="payload-status">正在检查便携包</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span class="service-state" id="service-state"><i></i><span>服务未启动</span></span>
+      <button type="button" class="button secondary" data-action="dashboard">打开控制台</button>
+      <button type="button" class="button secondary" data-action="close-app">关闭设置</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="config-band">
+      <div class="section-heading">
+        <div><span class="index">01</span><h2>本机配置</h2></div>
+        <span id="save-state">尚未保存</span>
+      </div>
+
+      <form id="config-form">
+        <div class="field-grid">
+          <label class="field span-2">
+            <span>启动器</span>
+            <span class="input-action"><input id="launcherPath" autocomplete="off" placeholder="选择 HMCL .exe 或 .jar" required><button type="button" data-browse="launcher">浏览</button></span>
+          </label>
+          <label class="field span-2">
+            <span>Minecraft 根目录</span>
+            <span class="input-action"><input id="minecraftRoot" autocomplete="off" required><button type="button" data-browse="minecraft">浏览</button></span>
+          </label>
+          <label class="field">
+            <span>源实例</span>
+            <select id="sourceVersion" required><option value="">请选择</option></select>
+          </label>
+          <label class="field">
+            <span>Codex 实例名</span>
+            <input id="targetVersion" maxlength="120" autocomplete="off" required>
+          </label>
+          <label class="field">
+            <span>游戏玩家名</span>
+            <input id="playerName" maxlength="64" pattern="[A-Za-z0-9_]+" autocomplete="off" required>
+          </label>
+          <label class="field">
+            <span>NPC 名称</span>
+            <input id="companionName" maxlength="64" autocomplete="off" required>
+          </label>
+          <label class="field compact">
+            <span>服务端口</span>
+            <input id="port" type="number" min="1024" max="65535" required>
+          </label>
+          <label class="field span-2">
+            <span>启动参数 <small>可选，<code>{instance}</code> 代表 Codex 实例名</small></span>
+            <input id="launcherArguments" autocomplete="off" placeholder="留空则只打开启动器">
+          </label>
+          <label class="field span-2">
+            <span>反重力 MCP 配置</span>
+            <input id="antigravityConfigPath" autocomplete="off" required>
+          </label>
+          <label class="field span-2">
+            <span>反重力会话标题 <small>按完整标题精确绑定</small></span>
+            <input id="antigravityConversationTitle" maxlength="240" autocomplete="off" required>
+          </label>
+        </div>
+
+        <div class="persona-settings">
+          <div class="settings-toolbar">
+            <div class="settings-title"><strong>人格设定</strong><span id="persona-status">沿用当前 Agent 人格</span></div>
+            <fieldset class="segmented persona-mode">
+              <legend>人格模式</legend>
+              <label><input type="radio" name="personaMode" value="inherit"><span>继承现有人格</span></label>
+              <label><input type="radio" name="personaMode" value="custom"><span>自定义人格</span></label>
+            </fieldset>
+          </div>
+          <div class="persona-fields" id="persona-fields" hidden>
+            <label><span>游戏内称呼</span><input id="personaDisplayName" maxlength="64" autocomplete="off" placeholder="例如：小白"></label>
+            <label><span>人格</span><textarea id="personaPersonality" maxlength="1200" placeholder="性格、偏好与行为特点"></textarea></label>
+            <label><span>说话风格</span><textarea id="personaSpeakingStyle" maxlength="600" placeholder="语气、用词与表达习惯"></textarea></label>
+            <label><span>长期备注</span><textarea id="personaMemoryNotes" maxlength="2000" placeholder="共同经历、约定与持续目标"></textarea></label>
+          </div>
+        </div>
+
+        <div class="appearance-settings">
+          <img id="skin-preview" src="/assets/companion.png" alt="NPC 皮肤贴图预览">
+          <div class="appearance-copy">
+            <strong>NPC 皮肤</strong>
+            <span id="skin-status">当前白发猫娘皮肤</span>
+            <small>128×64 PNG</small>
+          </div>
+          <div class="appearance-actions">
+            <button type="button" class="button secondary" data-action="choose-skin">选择 PNG</button>
+            <button type="button" class="button secondary" data-action="default-skin">恢复默认</button>
+          </div>
+        </div>
+
+        <div class="chat-settings">
+          <label class="switch-row">
+            <input id="freeChatEnabled" type="checkbox">
+            <span class="switch"><i></i></span>
+            <span>自由聊天</span>
+          </label>
+          <fieldset>
+            <legend>普通聊天响应端</legend>
+            <label><input type="radio" name="chatTarget" value="active-provider"><span>Codex / Claude</span></label>
+            <label><input type="radio" name="chatTarget" value="antigravity-mcp"><span>反重力 MCP</span></label>
+          </fieldset>
+          <label class="switch-row intelligence-toggle">
+            <input id="smartAiEnabled" type="checkbox">
+            <span class="switch"><i></i></span>
+            <span>启用智能 AI 任务理解</span>
+          </label>
+          <label class="compact-setting"><span>单次 AI 输出 token</span><input id="tokenBudget" type="number" min="128" max="4096" step="128" value="512"></label>
+          <small id="smart-ai-note" class="mode-note">关闭时动作只走本地规则；自由聊天由左侧开关独立控制。</small>
+          <button class="button primary save-button" type="submit">保存配置</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="action-band">
+      <div class="section-heading"><div><span class="index">02</span><h2>运行</h2></div><span id="operation-state">就绪</span></div>
+      <div class="command-row">
+        <button type="button" class="button primary strong" data-action="prepare">一键准备并启动</button>
+        <button type="button" class="button secondary" data-action="install">安装 / 更新实例</button>
+        <button type="button" class="button secondary" data-action="start-service">启动服务</button>
+        <button type="button" class="button secondary" data-action="launch">打开启动器</button>
+        <button type="button" class="button danger" data-action="stop-service">停止服务</button>
+      </div>
+      <div class="runtime-facts">
+        <span><b>状态目录</b><code id="state-directory"></code></span>
+        <span><b>连接</b><code id="dashboard-url"></code></span>
+      </div>
+    </section>
+
+    <section class="antigravity-band">
+      <div class="section-heading"><div><span class="index">03</span><h2>反重力</h2></div><span id="mcp-state">未测试</span></div>
+      <div class="antigravity-layout">
+        <div class="command-column">
+          <button type="button" class="button primary" data-action="install-antigravity">写入 MCP 配置</button>
+          <button type="button" class="button secondary" data-action="test-mcp">测试 MCP 通道</button>
+          <button type="button" class="button secondary" data-action="bind-antigravity">按标题绑定会话</button>
+          <button type="button" class="button secondary" data-action="recover-antigravity">解除会话卡住</button>
+          <button type="button" class="button secondary" data-action="copy-prompt">复制陪玩提示词</button>
+        </div>
+        <pre id="companion-prompt"></pre>
+      </div>
+      <div class="reply-rule"><strong>游戏内回复规则</strong><span>人格闲聊、任务反馈和最终回答都必须经过 <code>mc_chat</code>；反重力窗口里的普通最终输出不会自动出现在 Minecraft。</span></div>
+    </section>
+
+    <section class="activity-band">
+      <div class="section-heading"><div><span class="index">04</span><h2>活动</h2></div><button type="button" class="text-button" id="refresh">刷新</button></div>
+      <ol id="events"><li class="empty">暂无操作记录</li></ol>
+    </section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

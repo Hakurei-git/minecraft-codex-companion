@@ -1,0 +1,5 @@
+Manifest-Version: 1.0
+Agent-Class: MinecraftStateProbeAgent
+Can-Redefine-Classes: false
+Can-Retransform-Classes: false
+

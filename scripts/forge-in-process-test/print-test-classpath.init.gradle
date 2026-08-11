@@ -1,0 +1,7 @@
+allprojects {
+    tasks.register('codexPrintTestRuntimeClasspath') {
+        doLast {
+            println('CODEX_TEST_CLASSPATH=' + sourceSets.test.runtimeClasspath.asPath)
+        }
+    }
+}

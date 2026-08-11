@@ -1,0 +1,53 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'net.neoforged.moddev' version '2.0.107'
+}
+
+version = mod_version
+group = mod_group_id
+
+base { archivesName = "${mod_id}-neoforge-${minecraft_version}" }
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+sourceSets.main.java {
+    srcDir '../forge-1.20.1/src/main/java'
+    exclude 'cn/codex/minecraftbridge/MinecraftCodexBridge.java'
+    exclude 'cn/codex/minecraftbridge/client/ClientBridgeEvents.java'
+    exclude 'cn/codex/minecraftbridge/forge/**'
+}
+
+neoForge {
+    version = neo_version
+    runs {
+        client {
+            client()
+            gameDirectory = project.file('run')
+        }
+    }
+    mods {
+        "${mod_id}" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    def replaceProperties = [
+        minecraft_version: minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version: neo_version,
+        neo_version_range: neo_version_range,
+        loader_version_range: loader_version_range,
+        mod_id: mod_id,
+        mod_name: mod_name,
+        mod_license: mod_license,
+        mod_version: mod_version,
+        mod_authors: mod_authors,
+        mod_description: mod_description,
+    ]
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/neoforge.mods.toml', 'pack.mcmeta']) { expand replaceProperties }
+}
+
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }

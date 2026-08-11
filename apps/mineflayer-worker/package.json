@@ -1,0 +1,22 @@
+{
+  "name": "@mc/mineflayer-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@mc/protocol": "0.1.0",
+    "mineflayer": "latest",
+    "mineflayer-collectblock": "latest",
+    "mineflayer-pathfinder": "latest",
+    "mineflayer-pvp": "latest",
+    "mineflayer-tool": "latest",
+    "minecraft-data": "latest",
+    "vec3": "latest",
+    "ws": "^8.18.3",
+    "zod": "^4.0.14"
+  }
+}

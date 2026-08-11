@@ -1,0 +1,553 @@
+﻿{
+  "ok": true,
+  "dryRun": false,
+  "localOnly": true,
+  "reversible": true,
+  "companionId": "codex-forge",
+  "results": [
+    {
+      "scenario": "family-62",
+      "family": {
+        "index": 62,
+        "category": "wood",
+        "baseId": "minecraft:oak_planks",
+        "sourceId": "minecraft:oak_log",
+        "blockIds": [
+          "minecraft:oak_planks",
+          "minecraft:oak_stairs",
+          "minecraft:oak_slab",
+          "minecraft:oak_fence",
+          "minecraft:oak_trapdoor",
+          "minecraft:oak_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "2022daf3-76bb-4ff2-8c1c-2e0e6d37d603",
+      "task": {
+        "id": "689cfe29-935e-4d42-9d48-a27ed08ba749",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-63",
+      "family": {
+        "index": 63,
+        "category": "wood",
+        "baseId": "minecraft:spruce_planks",
+        "sourceId": "minecraft:spruce_log",
+        "blockIds": [
+          "minecraft:spruce_planks",
+          "minecraft:spruce_stairs",
+          "minecraft:spruce_slab",
+          "minecraft:spruce_fence",
+          "minecraft:spruce_trapdoor",
+          "minecraft:spruce_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "478709ff-51d1-4351-a0d8-941723a97bc6",
+      "task": {
+        "id": "6ed2aa3c-126e-42be-9d62-34e6de0175e7",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-56",
+      "family": {
+        "index": 56,
+        "category": "wood",
+        "baseId": "minecraft:birch_planks",
+        "sourceId": "minecraft:birch_log",
+        "blockIds": [
+          "minecraft:birch_planks",
+          "minecraft:birch_stairs",
+          "minecraft:birch_slab",
+          "minecraft:birch_fence",
+          "minecraft:birch_trapdoor",
+          "minecraft:birch_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "ea25cb38-71eb-452c-90b6-6880e218292d",
+      "task": {
+        "id": "91e81fbd-e44a-48d9-a29a-1077528339f6",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-60",
+      "family": {
+        "index": 60,
+        "category": "wood",
+        "baseId": "minecraft:jungle_planks",
+        "sourceId": "minecraft:jungle_log",
+        "blockIds": [
+          "minecraft:jungle_planks",
+          "minecraft:jungle_stairs",
+          "minecraft:jungle_slab",
+          "minecraft:jungle_fence",
+          "minecraft:jungle_trapdoor",
+          "minecraft:jungle_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "ddad1129-6b56-4f08-bddc-c985fb0a7481",
+      "task": {
+        "id": "6e522c98-6054-4dbf-9876-fd579db38a00",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-54",
+      "family": {
+        "index": 54,
+        "category": "wood",
+        "baseId": "minecraft:acacia_planks",
+        "sourceId": "minecraft:acacia_log",
+        "blockIds": [
+          "minecraft:acacia_planks",
+          "minecraft:acacia_stairs",
+          "minecraft:acacia_slab",
+          "minecraft:acacia_fence",
+          "minecraft:acacia_trapdoor",
+          "minecraft:acacia_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "bbfd4870-2b39-431b-a6e2-d94ce5f147ff",
+      "task": {
+        "id": "7e6239c1-1641-4980-9c50-cab90bb207b6",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-59",
+      "family": {
+        "index": 59,
+        "category": "wood",
+        "baseId": "minecraft:dark_oak_planks",
+        "sourceId": "minecraft:dark_oak_log",
+        "blockIds": [
+          "minecraft:dark_oak_planks",
+          "minecraft:dark_oak_stairs",
+          "minecraft:dark_oak_slab",
+          "minecraft:dark_oak_fence",
+          "minecraft:dark_oak_trapdoor",
+          "minecraft:dark_oak_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "f01d5a32-6c16-4be0-946e-0fe60eecdb3a",
+      "task": {
+        "id": "76f6f876-d099-4b9c-8f2c-30c61ecd3ffd",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-61",
+      "family": {
+        "index": 61,
+        "category": "wood",
+        "baseId": "minecraft:mangrove_planks",
+        "sourceId": "minecraft:mangrove_log",
+        "blockIds": [
+          "minecraft:mangrove_planks",
+          "minecraft:mangrove_stairs",
+          "minecraft:mangrove_slab",
+          "minecraft:mangrove_fence",
+          "minecraft:mangrove_trapdoor",
+          "minecraft:mangrove_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "f64ba82f-4ed9-4410-93dd-6f99d0cffe6c",
+      "task": {
+        "id": "81ab9574-fe0c-4422-9ad3-e41cca4ac438",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-57",
+      "family": {
+        "index": 57,
+        "category": "wood",
+        "baseId": "minecraft:cherry_planks",
+        "sourceId": "minecraft:cherry_log",
+        "blockIds": [
+          "minecraft:cherry_planks",
+          "minecraft:cherry_stairs",
+          "minecraft:cherry_slab",
+          "minecraft:cherry_fence",
+          "minecraft:cherry_trapdoor",
+          "minecraft:cherry_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "b06d9db1-3e92-464e-b7cf-f436cd26c163",
+      "task": {
+        "id": "6b59d090-a2f3-455f-a372-3b74fbde0645",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-55",
+      "family": {
+        "index": 55,
+        "category": "wood",
+        "baseId": "minecraft:bamboo_planks",
+        "sourceId": "minecraft:bamboo_block",
+        "blockIds": [
+          "minecraft:bamboo_planks",
+          "minecraft:bamboo_stairs",
+          "minecraft:bamboo_slab",
+          "minecraft:bamboo_fence",
+          "minecraft:bamboo_trapdoor",
+          "minecraft:bamboo_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "3443fc00-e391-46b5-a01b-050cbf407778",
+      "task": {
+        "id": "4a03d5f8-c902-42b6-88a0-790d9fa0904f",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-58",
+      "family": {
+        "index": 58,
+        "category": "wood",
+        "baseId": "minecraft:crimson_planks",
+        "sourceId": "minecraft:crimson_stem",
+        "blockIds": [
+          "minecraft:crimson_planks",
+          "minecraft:crimson_stairs",
+          "minecraft:crimson_slab",
+          "minecraft:crimson_fence",
+          "minecraft:crimson_trapdoor",
+          "minecraft:crimson_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "7d8e6baf-0e9b-40ee-803c-834d066236df",
+      "task": {
+        "id": "413ca13c-e53d-4ace-87e6-9ebc51e45374",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-64",
+      "family": {
+        "index": 64,
+        "category": "wood",
+        "baseId": "minecraft:warped_planks",
+        "sourceId": "minecraft:warped_stem",
+        "blockIds": [
+          "minecraft:warped_planks",
+          "minecraft:warped_stairs",
+          "minecraft:warped_slab",
+          "minecraft:warped_fence",
+          "minecraft:warped_trapdoor",
+          "minecraft:warped_pressure_plate"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "a4660322-81b3-4eab-b7d9-2e53b1617f76",
+      "task": {
+        "id": "94fbf489-2eb4-4fcb-a3ff-80ce900280e8",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 6 个方块"
+      },
+      "inspection": {
+        "expected": 6,
+        "matching": 6,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-46",
+      "family": {
+        "index": 46,
+        "category": "masonry",
+        "baseId": "minecraft:stone",
+        "sourceId": "minecraft:stone",
+        "blockIds": [
+          "minecraft:stone",
+          "minecraft:stone_stairs",
+          "minecraft:stone_slab"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "7669a4dc-5f74-4745-8f2c-5eb6aaabee10",
+      "task": {
+        "id": "9340a284-db49-4681-b25e-234737ea5d19",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 3 个方块"
+      },
+      "inspection": {
+        "expected": 3,
+        "matching": 3,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-8",
+      "family": {
+        "index": 8,
+        "category": "masonry",
+        "baseId": "minecraft:cobblestone",
+        "sourceId": "minecraft:cobblestone",
+        "blockIds": [
+          "minecraft:cobblestone",
+          "minecraft:cobblestone_stairs",
+          "minecraft:cobblestone_slab"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "a2f19bc0-3227-43f1-b9fc-a1e3da842a3b",
+      "task": {
+        "id": "84fea060-d6f4-4c45-9646-898a547124e8",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 3 个方块"
+      },
+      "inspection": {
+        "expected": 3,
+        "matching": 3,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-47",
+      "family": {
+        "index": 47,
+        "category": "masonry",
+        "baseId": "minecraft:stone_bricks",
+        "sourceId": "minecraft:stone_bricks",
+        "blockIds": [
+          "minecraft:stone_bricks",
+          "minecraft:stone_brick_stairs",
+          "minecraft:stone_brick_slab"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "ceeadb11-4ab9-4f49-b1ec-401749ee9a61",
+      "task": {
+        "id": "7b49751a-db53-4d40-929f-84a99677803b",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 3 个方块"
+      },
+      "inspection": {
+        "expected": 3,
+        "matching": 3,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-7",
+      "family": {
+        "index": 7,
+        "category": "masonry",
+        "baseId": "minecraft:cobbled_deepslate",
+        "sourceId": "minecraft:cobbled_deepslate",
+        "blockIds": [
+          "minecraft:cobbled_deepslate",
+          "minecraft:cobbled_deepslate_stairs",
+          "minecraft:cobbled_deepslate_slab"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "34802f5c-e89f-4e56-8f0b-491ee24051d1",
+      "task": {
+        "id": "acd50eed-aebc-4d90-92a9-1cda92a9ce97",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 3 个方块"
+      },
+      "inspection": {
+        "expected": 3,
+        "matching": 3,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-14",
+      "family": {
+        "index": 14,
+        "category": "masonry",
+        "baseId": "minecraft:deepslate_bricks",
+        "sourceId": "minecraft:deepslate_bricks",
+        "blockIds": [
+          "minecraft:deepslate_bricks",
+          "minecraft:deepslate_brick_stairs",
+          "minecraft:deepslate_brick_slab"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "9601daa6-dc71-43de-b695-8f208c1bdc48",
+      "task": {
+        "id": "38c9389d-d111-465b-9098-efd171ecffe5",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 3 个方块"
+      },
+      "inspection": {
+        "expected": 3,
+        "matching": 3,
+        "wrong": 0
+      }
+    },
+    {
+      "scenario": "family-3",
+      "family": {
+        "index": 3,
+        "category": "masonry",
+        "baseId": "minecraft:bricks",
+        "sourceId": "minecraft:bricks",
+        "blockIds": [
+          "minecraft:bricks",
+          "minecraft:brick_stairs",
+          "minecraft:brick_slab"
+        ]
+      },
+      "origin": {
+        "x": 199,
+        "y": 82,
+        "z": -16
+      },
+      "planId": "d20443e5-a21d-4823-bc79-57d509b45b4c",
+      "task": {
+        "id": "d0a5ef94-f865-4436-85de-27f60e6d3aae",
+        "status": "succeeded",
+        "message": "建筑已完成，共处理 3 个方块"
+      },
+      "inspection": {
+        "expected": 3,
+        "matching": 3,
+        "wrong": 0
+      }
+    }
+  ],
+  "skippedFamilies": []
+}

@@ -1,0 +1,70 @@
+{
+  "format": 1,
+  "ok": true,
+  "acceptedAt": "2026-08-11",
+  "localOnly": true,
+  "controlServiceLoopbackOnly": true,
+  "baseUrlInjected": false,
+  "usedMinecraftTChat": true,
+  "provider": {
+    "id": "codex-cli",
+    "kind": "codex-cli",
+    "state": "ready"
+  },
+  "actionMode": "smart",
+  "physicalMouseOrKeyboardInputUsed": false,
+  "clipboardUsed": false,
+  "screenshotsTaken": false,
+  "companionName": "TestCompanion",
+  "newTaskCount": 1,
+  "task": {
+    "kind": "craft",
+    "itemId": "minecraft:diamond_pickaxe",
+    "count": 1,
+    "deliverToRequester": true,
+    "status": "succeeded"
+  },
+  "routing": {
+    "codexSmartDecisionEvents": 1,
+    "antigravityEvents": 0,
+    "startReplyObserved": true,
+    "terminalReplyObserved": true
+  },
+  "deepMining": {
+    "laddersPrepared": 33,
+    "torchesPrepared": 32,
+    "ironPickaxesPrepared": 2,
+    "downwardMiningObserved": true,
+    "branchMiningObserved": true,
+    "staircaseStep": 4,
+    "branchProgress": 9,
+    "placedTorches": 1,
+    "brokenBlocks": 33,
+    "diamondsMined": 3,
+    "discardedStoneStacks": 9,
+    "discardedStoneItems": 576,
+    "observationErrors": 0
+  },
+  "delivery": {
+    "playerDiamondPickaxes": 1,
+    "deliveryObserved": true
+  },
+  "settingsRestored": true,
+  "cleanup": {
+    "suite": "deep-mining",
+    "restored": true,
+    "fixtureRestored": [true, true, true, true]
+  },
+  "forge": {
+    "jarSha256": "7FE8AA4F1696EBD687C96E9C3CEE7E4FD707FFA46F7606E879A15CC9BF5E5414"
+  },
+  "privacy": {
+    "apiKeysRead": false,
+    "externalBaseUrlUsed": false,
+    "filesUploaded": false,
+    "hashesUploaded": false,
+    "conversationBodyRecorded": false,
+    "minecraftLogsRead": false,
+    "screenshotsTaken": false
+  }
+}

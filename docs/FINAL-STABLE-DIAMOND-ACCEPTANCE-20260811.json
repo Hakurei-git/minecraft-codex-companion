@@ -1,0 +1,57 @@
+{
+  "ok": true,
+  "controlServiceLoopbackOnly": true,
+  "baseUrlInjected": false,
+  "usedMinecraftTChat": true,
+  "localChatHistoryRequired": false,
+  "backgroundChatTransportConfirmed": true,
+  "actionMode": "stable",
+  "externalModelRequired": false,
+  "physicalMouseOrKeyboardInputUsed": false,
+  "clipboardUsed": false,
+  "screenshotUsed": false,
+  "companionName": "TestCompanion",
+  "newTaskCount": 1,
+  "task": {
+    "kind": "craft",
+    "itemId": "minecraft:diamond_pickaxe",
+    "count": 1,
+    "requestedBy": "PlayerOne",
+    "deliverTo": "PlayerOne",
+    "status": "succeeded"
+  },
+  "localDeterministicTaskEvents": 1,
+  "smartDecisionEvents": 0,
+  "antigravityEvents": 0,
+  "minecraftReplies": {
+    "start": true,
+    "terminal": true
+  },
+  "deepMining": {
+    "ok": 1,
+    "ladders": 33,
+    "torches": 32,
+    "usableIronPickaxes": 2,
+    "sawDescending": 1,
+    "sawBranching": 1,
+    "staircaseStep": 4,
+    "branchProgress": 9,
+    "placedTorches": 1,
+    "brokenBlocks": 33,
+    "diamonds": 3,
+    "playerDiamondPickaxes": 1,
+    "deliverySeen": 1,
+    "discardedStoneStacks": 9,
+    "discardedStoneItems": 576,
+    "stoneDropLedgerSeen": 1,
+    "observationErrors": 0
+  },
+  "settingsRestored": true,
+  "cleanup": {
+    "sequence": 375,
+    "suite": "deep-mining",
+    "mode": "cleanup",
+    "status": "deep-mining:cleanup|r=1,1,1,1",
+    "restored": true
+  }
+}
