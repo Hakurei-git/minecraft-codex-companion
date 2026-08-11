@@ -97,6 +97,12 @@ Assert-True ($mainIndex -ge 0 -and $textRenderingIndex -gt $mainIndex -and $text
     'WinForms text rendering must be configured at the start of Main before any error window or progress form can be created'
 Assert-True ($textRenderingCalls -eq 1) 'WinForms text rendering must be configured exactly once per installer process'
 
+$singleBuildSource = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $projectRoot 'scripts\build-single-exe.ps1')
+$iconPath = Join-Path $projectRoot 'assets\branding\app-icon.ico'
+Assert-True (Test-Path -LiteralPath $iconPath -PathType Leaf) 'multi-resolution application icon is missing'
+Assert-True ($singleBuildSource.Contains('/win32icon:$appIcon')) 'single-EXE compiler must embed the project icon'
+Assert-True ($singleBuildSource.Contains('$iconHash')) 'single-EXE deterministic seed must include the icon hash'
+
 $savedSentinel = $env:MC_SINGLE_EXE_TEST_LAUNCH_SENTINEL
 try {
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null

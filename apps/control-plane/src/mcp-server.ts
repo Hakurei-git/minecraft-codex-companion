@@ -89,7 +89,7 @@ async function waitForChatMessages(
 export function createMinecraftMcpServer(control: MinecraftControlApi): McpServer {
   const server = new McpServer({
     name: "minecraft-codex-companion",
-    version: "0.1.0",
+    version: "0.1.1",
   });
 
   server.registerTool("mc_list_companions", {

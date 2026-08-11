@@ -1050,6 +1050,7 @@ namespace MinecraftCodexCompanion.SingleExeInstaller
         public ProgressWindow()
         {
             Text = "Minecraft Codex Companion";
+            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             Width = 500;
             Height = 150;
             StartPosition = FormStartPosition.CenterScreen;

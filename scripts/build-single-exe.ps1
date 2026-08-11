@@ -444,8 +444,11 @@ try {
 
     $programSource = Join-Path $projectRoot 'apps\single-exe-installer\Program.cs'
     $assemblySource = Join-Path $projectRoot 'apps\single-exe-installer\AssemblyInfo.cs'
+    $appIcon = Join-Path $projectRoot 'assets\branding\app-icon.ico'
+    Assert-True (Test-Path -LiteralPath $appIcon -PathType Leaf) 'Application icon is missing: assets/branding/app-icon.ico'
     Invoke-Checked $csc @(
         '/nologo', '/target:winexe', '/optimize+', '/debug-',
+        "/win32icon:$appIcon",
         '/reference:System.dll',
         '/reference:System.Core.dll',
         '/reference:System.Drawing.dll',
@@ -462,9 +465,10 @@ try {
 
     $programHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $programSource).Hash.ToLowerInvariant()
     $assemblyHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $assemblySource).Hash.ToLowerInvariant()
+    $iconHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $appIcon).Hash.ToLowerInvariant()
     $indexHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $indexPath).Hash.ToLowerInvariant()
     $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
-    $seed = "mc-codex-single-exe-v1`0$packageId`0$programHash`0$assemblyHash`0$indexHash`0$archiveHash"
+    $seed = "mc-codex-single-exe-v2`0$packageId`0$programHash`0$assemblyHash`0$iconHash`0$indexHash`0$archiveHash"
     Normalize-ManagedExecutable $compiledPath $normalizedPath $seed
     Assert-NoEmbeddedBuildPaths $normalizedPath
 

@@ -68,6 +68,14 @@ test("single-EXE release gates accept only fixed names beneath versioned build r
   assert.match(singleScanScript, /Split-Path -Leaf \$ExecutablePath\) -ne "MinecraftCodexCompanion-Setup\.exe"/);
 });
 
+test("Windows launchers embed the versioned multi-resolution project icon", () => {
+  assert.match(buildScript, /assets\\branding\\app-icon\.ico/);
+  assert.match(buildScript, /\/win32icon:\$appIcon/);
+  assert.match(buildScript, /'assets\/branding\/app-icon\.ico'/);
+  assert.match(singleBuildScript, /\/win32icon:\$appIcon/);
+  assert.match(singleBuildScript, /\$iconHash/);
+});
+
 test("local startup inherits the configured Antigravity conversation title", () => {
   assert.match(startScript, /launcherConfig\.antigravityConversationTitle/);
   assert.match(startScript, /MC_ANTIGRAVITY_CONVERSATION_TITLE/);

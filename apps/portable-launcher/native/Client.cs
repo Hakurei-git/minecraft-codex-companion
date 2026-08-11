@@ -357,6 +357,7 @@ namespace MinecraftCodexCompanion
         {
             api = new LocalApiClient(endpoint, session);
             Text = "Minecraft Codex Companion";
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(980, 700);
             Size = new Size(1160, 820);

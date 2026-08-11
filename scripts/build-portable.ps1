@@ -283,11 +283,16 @@ $csc = $cscCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf 
 if (-not $csc) {
     throw "The .NET Framework C# compiler is required to build the native desktop client."
 }
+$appIcon = Join-Path $projectRoot "assets\branding\app-icon.ico"
+if (-not (Test-Path -LiteralPath $appIcon -PathType Leaf)) {
+    throw "The application icon is missing: assets/branding/app-icon.ico"
+}
 $clientExe = Join-Path $stage "runtime\MinecraftCodexClient.exe"
 Invoke-Checked $csc @(
     "/nologo",
     "/target:winexe",
     "/optimize+",
+    "/win32icon:$appIcon",
     "/reference:System.dll",
     "/reference:System.Core.dll",
     "/reference:System.Drawing.dll",
@@ -334,6 +339,7 @@ Invoke-Checked $csc @(
     "/nologo",
     "/target:winexe",
     "/optimize+",
+    "/win32icon:$appIcon",
     "/reference:System.dll",
     "/reference:System.Windows.Forms.dll",
     "/out:$pickerExe",
@@ -371,6 +377,7 @@ if ($secretSelfTest.ExitCode -ne 0) {
 $launcherExe = Join-Path $stage "MinecraftCodexCompanion.exe"
 Invoke-Checked $csc @(
     "/nologo", "/target:winexe", "/optimize+",
+    "/win32icon:$appIcon",
     "/reference:System.dll", "/reference:System.Core.dll", "/reference:System.Windows.Forms.dll", "/out:$launcherExe",
     (Join-Path $projectRoot "apps\portable-launcher\native\Bootstrap.cs"),
     (Join-Path $projectRoot "apps\portable-launcher\native\AssemblyInfo.cs")
@@ -378,7 +385,7 @@ Invoke-Checked $csc @(
 
 $productionPackage = [ordered]@{
     name = 'minecraft-codex-companion-portable-runtime'
-    version = '0.1.0'
+    version = '0.1.1'
     private = $true
     type = 'module'
     dependencies = [ordered]@{
@@ -431,7 +438,7 @@ Assert-TransparentRuntime $stage
 $manifest = [ordered]@{
     format = 2
     name = 'Minecraft Codex Companion Portable'
-    version = '0.1.0'
+    version = '0.1.1'
     platform = 'win32-x64'
     packaging = [ordered]@{
         model = 'transparent-multi-file'
@@ -467,6 +474,7 @@ $manifest = [ordered]@{
         'apps/portable-launcher/native/Picker.cs',
         'apps/portable-launcher/native/SecretHelper.cs',
         'apps/portable-launcher/native/AssemblyInfo.cs',
+        'assets/branding/app-icon.ico',
         'scripts/build-portable.ps1',
         'scripts/run-forge-gradle.ps1',
         'scripts/run-forge-tests-in-process.ps1',

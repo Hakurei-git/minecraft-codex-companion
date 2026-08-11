@@ -11,7 +11,7 @@ AgentKit 是给支持 Skill 或 MCP 的 AI 客户端导入的轻量包。它包�
 | 版本 | 适合谁 | 是否能单独运行 |
 | --- | --- | --- |
 | `MinecraftCodexCompanion-Setup.exe` | 希望安装后直接配置和启动的 Windows 用户 | 可以；它包含本地控制服务、界面和 Forge 模组安装资源 |
-| `MinecraftCodexCompanion-AgentKit-v0.1.0.zip` | 希望让 Codex、Claude、反重力或其他支持 MCP 的 AI 学会控制 NPC 的用户 | 不可以；它必须连接同一台电脑上由 EXE 启动的本地服务 |
+| `MinecraftCodexCompanion-AgentKit-v0.1.1.zip` | 希望让 Codex、Claude、反重力或其他支持 MCP 的 AI 学会控制 NPC 的用户 | 不可以；它必须连接同一台电脑上由 EXE 启动的本地服务 |
 
 Skill 负责告诉 AI 应该如何观察、规划、确保安全、分配任务和恢复失败；MCP 才是 AI 真正读取 Minecraft 状态并执行动作的工具通道。只有 Skill 而没有 MCP 时，AI 只能阅读说明，不能移动 NPC。只有 MCP 而没有 Skill 时也能调用工具，但复杂任务的规划、交付和恢复通常不如同时导入两者稳定。
 
