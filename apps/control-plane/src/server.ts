@@ -303,6 +303,20 @@ app.post<{ Params: { id: string }; Body: unknown }>("/api/tasks/:id/cancel", asy
   return service.cancelTask(request.params.id, body.reason);
 });
 
+app.post<{ Params: { id: string }; Body: unknown }>("/api/tasks/:id/retry", async (request, reply) => {
+  const body = z.object({
+    owner: z.string().min(1).default("dashboard"),
+    aiDecisionInteractionId: z.string().trim().min(1).max(128).optional(),
+  }).parse(request.body ?? {});
+  return reply.code(202).send(service.retryTask(
+    request.params.id,
+    body.owner,
+    body.aiDecisionInteractionId
+      ? { aiDecisionInteractionId: body.aiDecisionInteractionId }
+      : {},
+  ));
+});
+
 app.post<{ Params: { id: string }; Body: unknown }>("/api/companions/:id/chat", async (request, reply) => {
   const body = z.object({
     message: z.string().min(1).max(256),

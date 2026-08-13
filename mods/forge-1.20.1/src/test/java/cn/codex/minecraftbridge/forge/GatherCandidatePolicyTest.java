@@ -20,6 +20,15 @@ final class GatherCandidatePolicyTest {
     }
 
     @Test
+    void furnaceStoneTagAllowsDeepDeepslateLootEvaluation() {
+        assertTrue(GatherCandidatePolicy.mayProduce(
+            "#minecraft:stone_crafting_materials",
+            "minecraft:deepslate",
+            false
+        ));
+    }
+
+    @Test
     void unknownSelectorsRemainCompatibleWithModdedLootTables() {
         assertTrue(GatherCandidatePolicy.mayProduce("modded:crystal", "modded:crystal_ore", false));
     }

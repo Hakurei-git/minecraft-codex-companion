@@ -29,11 +29,13 @@ final class IngredientAllocationPolicy {
         for (int ingredient = 0; ingredient < ingredientCount; ingredient++) {
             if (!required.test(ingredient)) continue;
             int found = -1;
+            int smallestRemainingStack = Integer.MAX_VALUE;
             for (int slot = 0; slot < slotCount; slot++) {
-                if (matches.test(ingredient, slot) && stackCount.applyAsInt(slot) > used.getOrDefault(slot, 0)) {
-                    found = slot;
-                    break;
-                }
+                if (!matches.test(ingredient, slot)) continue;
+                int remaining = stackCount.applyAsInt(slot) - used.getOrDefault(slot, 0);
+                if (remaining <= 0 || remaining >= smallestRemainingStack) continue;
+                found = slot;
+                smallestRemainingStack = remaining;
             }
             if (found < 0) return new Result(List.copyOf(allocation), ingredient);
             used.merge(found, 1, Integer::sum);

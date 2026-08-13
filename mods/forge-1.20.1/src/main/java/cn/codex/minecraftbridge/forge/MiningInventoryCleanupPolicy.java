@@ -15,7 +15,7 @@ import java.util.UUID;
 final class MiningInventoryCleanupPolicy {
     static final int TRIGGER_FREE_SLOTS = 1;
     static final int TARGET_FREE_SLOTS = 2;
-    static final int RETAINED_STONE_ITEMS = 64;
+    static final int RETAINED_STONE_ITEMS = 48;
 
     private static final Set<String> DISCARDABLE_STONE = Set.of(
         "minecraft:cobblestone",
@@ -25,19 +25,37 @@ final class MiningInventoryCleanupPolicy {
         "minecraft:andesite",
         "minecraft:diorite",
         "minecraft:granite",
-        "minecraft:tuff"
+        "minecraft:tuff",
+        // Long mining runs also collect ordinary terrain and access blocks.
+        // They are safe fallback cleanup candidates once the useful reserve
+        // is accounted for; gravel is deliberately preferred because it is
+        // unsafe as a corridor floor.
+        "minecraft:gravel",
+        "minecraft:moss_block",
+        "minecraft:dirt",
+        "minecraft:coarse_dirt",
+        "minecraft:rooted_dirt"
     );
 
     private static final Set<String> CORE_SUPPLIES = Set.of(
         "minecraft:ladder",
         "minecraft:torch",
-        "minecraft:wooden_pickaxe",
-        "minecraft:stone_pickaxe",
         "minecraft:iron_pickaxe",
         "minecraft:diamond_pickaxe",
         "minecraft:netherite_pickaxe",
         "minecraft:crafting_table",
         "minecraft:chest"
+    );
+
+    private static final Set<String> OBSOLETE_MINING_TOOLS = Set.of(
+        "minecraft:wooden_pickaxe",
+        "minecraft:stone_pickaxe"
+    );
+
+    private static final Set<String> UPGRADED_MINING_TOOLS = Set.of(
+        "minecraft:iron_pickaxe",
+        "minecraft:diamond_pickaxe",
+        "minecraft:netherite_pickaxe"
     );
 
     record InventorySlot(int index, String itemId, int count) {
@@ -94,6 +112,18 @@ final class MiningInventoryCleanupPolicy {
             }
         }
 
+        boolean hasUpgradedPickaxe = occupied.values().stream()
+            .anyMatch(slot -> UPGRADED_MINING_TOOLS.contains(slot.itemId()));
+        List<InventorySlot> obsoleteTools = hasUpgradedPickaxe
+            ? occupied.values().stream()
+                .filter(slot -> OBSOLETE_MINING_TOOLS.contains(slot.itemId()))
+                .filter(slot -> !protectedIds.contains(slot.itemId()))
+                .sorted(Comparator
+                    .comparingInt((InventorySlot slot) -> obsoleteToolPriority(slot.itemId()))
+                    .thenComparingInt(InventorySlot::index))
+                .toList()
+            : List.of();
+
         List<InventorySlot> candidates = occupied.values().stream()
             .filter(slot -> DISCARDABLE_STONE.contains(slot.itemId()))
             .filter(slot -> !protectedIds.contains(slot.itemId()))
@@ -103,9 +133,13 @@ final class MiningInventoryCleanupPolicy {
             .toList();
         int discardableCount = candidates.stream().mapToInt(InventorySlot::count).sum();
         int discardBudget = Math.max(0, discardableCount - RETAINED_STONE_ITEMS);
-        if (discardBudget <= 0) return List.of();
+        if (discardBudget <= 0 && obsoleteTools.isEmpty()) return List.of();
 
         List<Drop> drops = new ArrayList<>(slotsToFree);
+        for (InventorySlot candidate : obsoleteTools) {
+            if (drops.size() >= slotsToFree) break;
+            drops.add(new Drop(candidate.index(), candidate.itemId(), candidate.count()));
+        }
         for (InventorySlot candidate : candidates) {
             if (drops.size() >= slotsToFree) break;
             // Partial-stack disposal does not release an inventory slot.
@@ -126,13 +160,20 @@ final class MiningInventoryCleanupPolicy {
 
     private static int discardPriority(String itemId) {
         return switch (itemId) {
-            case "minecraft:tuff" -> 0;
-            case "minecraft:andesite", "minecraft:diorite", "minecraft:granite" -> 1;
-            case "minecraft:stone", "minecraft:deepslate" -> 2;
-            case "minecraft:cobbled_deepslate" -> 3;
-            case "minecraft:cobblestone" -> 4;
+            case "minecraft:gravel" -> 0;
+            case "minecraft:moss_block" -> 1;
+            case "minecraft:tuff" -> 2;
+            case "minecraft:andesite", "minecraft:diorite", "minecraft:granite" -> 3;
+            case "minecraft:stone", "minecraft:deepslate" -> 4;
+            case "minecraft:cobbled_deepslate" -> 5;
+            case "minecraft:cobblestone" -> 6;
+            case "minecraft:dirt", "minecraft:coarse_dirt", "minecraft:rooted_dirt" -> 7;
             default -> Integer.MAX_VALUE;
         };
+    }
+
+    private static int obsoleteToolPriority(String itemId) {
+        return "minecraft:wooden_pickaxe".equals(itemId) ? 0 : 1;
     }
 
     private static void addNormalized(Set<String> target, String itemId) {

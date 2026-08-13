@@ -13,6 +13,8 @@ final class GatherRetryPolicy {
 
     enum Decision {
         RETRY_ANOTHER_TARGET,
+        START_DEEP_MINING,
+        START_REMOTE_EXCURSION,
         FAIL_TASK
     }
 
@@ -22,12 +24,65 @@ final class GatherRetryPolicy {
             : Decision.FAIL_TASK;
     }
 
+    static Decision afterSkipping(
+        int uniqueSkippedTargets,
+        boolean craftPrerequisite,
+        boolean deepMiningSupported,
+        boolean remoteRecoveryAllowed
+    ) {
+        return afterSkipping(
+            uniqueSkippedTargets,
+            craftPrerequisite,
+            deepMiningSupported,
+            remoteRecoveryAllowed,
+            0,
+            0
+        );
+    }
+
+    static Decision afterSkipping(
+        int uniqueSkippedTargets,
+        boolean craftPrerequisite,
+        boolean deepMiningSupported,
+        boolean remoteRecoveryAllowed,
+        int completedExcursions,
+        int maxExcursions
+    ) {
+        Decision bounded = afterSkipping(uniqueSkippedTargets);
+        if (bounded != Decision.FAIL_TASK) return bounded;
+        if (!craftPrerequisite || !remoteRecoveryAllowed) return Decision.FAIL_TASK;
+        if (deepMiningSupported) return Decision.START_DEEP_MINING;
+        return completedExcursions < Math.max(0, maxExcursions)
+            ? Decision.START_REMOTE_EXCURSION
+            : Decision.FAIL_TASK;
+    }
+
     static boolean targetIsUnreachable(int consecutivePathFailures, int stalledTicks) {
         return consecutivePathFailures >= MAX_PATH_FAILURES || stalledTicks > MAX_STALLED_TICKS;
     }
 
     static boolean teleportDestinationIsUseful(double distanceToTarget) {
         return Double.isFinite(distanceToTarget) && distanceToTarget <= MAX_USEFUL_TELEPORT_DISTANCE;
+    }
+
+    static boolean teleportChangesChunk(int currentChunkX, int currentChunkZ, int destinationChunkX, int destinationChunkZ) {
+        return currentChunkX != destinationChunkX || currentChunkZ != destinationChunkZ;
+    }
+
+    static boolean shouldAttemptTeleport(
+        double distance,
+        double recallDistance,
+        double verticalDistance,
+        int stalledTicks
+    ) {
+        return Double.isFinite(distance)
+            && (distance > Math.max(0.0D, recallDistance)
+                || verticalDistance > MAX_USEFUL_TELEPORT_DISTANCE
+                || stalledTicks >= NavigationProgressPolicy.SAMPLE_TICKS * 2);
+    }
+
+    static boolean shouldSkipAfterUnusableTeleport(boolean skippableResourceTarget) {
+        return skippableResourceTarget;
     }
 
     static boolean allowsRemoteRecovery(String movement) {

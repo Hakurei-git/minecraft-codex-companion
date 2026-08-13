@@ -43,6 +43,83 @@ final class GatherRetryPolicyTest {
         assertTrue(GatherRetryPolicy.teleportDestinationIsUseful(8.0));
         assertFalse(GatherRetryPolicy.teleportDestinationIsUseful(8.01));
         assertFalse(GatherRetryPolicy.teleportDestinationIsUseful(Double.NaN));
+        assertTrue(GatherRetryPolicy.shouldSkipAfterUnusableTeleport(true));
+        assertFalse(GatherRetryPolicy.shouldSkipAfterUnusableTeleport(false));
+    }
+
+    @Test
+    void switchesSupportedCraftPrerequisitesToDeepMiningAfterLocalTargetsFail() {
+        assertEquals(
+            GatherRetryPolicy.Decision.START_DEEP_MINING,
+            GatherRetryPolicy.afterSkipping(
+                GatherRetryPolicy.MAX_SKIPPED_TARGETS + 1,
+                true,
+                true,
+                true
+            )
+        );
+    }
+
+    @Test
+    void ordinaryAndWalkOnlyGatherStillFailAtTheBound() {
+        int skipped = GatherRetryPolicy.MAX_SKIPPED_TARGETS + 1;
+        assertEquals(
+            GatherRetryPolicy.Decision.FAIL_TASK,
+            GatherRetryPolicy.afterSkipping(skipped, false, true, true)
+        );
+        assertEquals(
+            GatherRetryPolicy.Decision.FAIL_TASK,
+            GatherRetryPolicy.afterSkipping(skipped, true, true, false)
+        );
+        assertEquals(
+            GatherRetryPolicy.Decision.FAIL_TASK,
+            GatherRetryPolicy.afterSkipping(skipped, true, false, true)
+        );
+    }
+
+    @Test
+    void sendsANonMiningCraftPrerequisiteToAnotherSearchRegion() {
+        assertEquals(
+            GatherRetryPolicy.Decision.START_REMOTE_EXCURSION,
+            GatherRetryPolicy.afterSkipping(
+                GatherRetryPolicy.MAX_SKIPPED_TARGETS + 1,
+                true,
+                false,
+                true,
+                0,
+                64
+            )
+        );
+    }
+
+    @Test
+    void failsANonMiningCraftPrerequisiteAfterAllExcursionsAreExhausted() {
+        assertEquals(
+            GatherRetryPolicy.Decision.FAIL_TASK,
+            GatherRetryPolicy.afterSkipping(
+                GatherRetryPolicy.MAX_SKIPPED_TARGETS + 1,
+                true,
+                false,
+                true,
+                64,
+                64
+            )
+        );
+    }
+
+    @Test
+    void remoteTeleportMigratesTheTaskTicketOnlyWhenTheLandingChunkChanges() {
+        assertFalse(GatherRetryPolicy.teleportChangesChunk(-2, 3, -2, 3));
+        assertTrue(GatherRetryPolicy.teleportChangesChunk(-2, 3, -3, 3));
+        assertTrue(GatherRetryPolicy.teleportChangesChunk(-2, 3, -2, 4));
+    }
+
+    @Test
+    void retriesRemoteRecoveryForCliffsOrAStalledPathBelowTheDistanceThreshold() {
+        assertFalse(GatherRetryPolicy.shouldAttemptTeleport(47.0, 48.0, 2.0, 20));
+        assertTrue(GatherRetryPolicy.shouldAttemptTeleport(47.0, 48.0, 20.0, 0));
+        assertTrue(GatherRetryPolicy.shouldAttemptTeleport(47.0, 48.0, 2.0, 40));
+        assertTrue(GatherRetryPolicy.shouldAttemptTeleport(49.0, 48.0, 2.0, 0));
     }
 
     @Test

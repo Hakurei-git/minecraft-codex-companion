@@ -57,6 +57,11 @@ export interface MinecraftControlApi {
     requestedBy?: string,
     options?: AiDecisionMutationOptions,
   ): TaskRecord | Promise<TaskRecord>;
+  retryTask(
+    taskId: string,
+    owner?: string,
+    options?: AiDecisionMutationOptions,
+  ): TaskRecord | Promise<TaskRecord>;
   cancelTask(taskId: string, reason?: string): TaskRecord | Promise<TaskRecord>;
   sendChat(
     companionId: string,
@@ -188,6 +193,22 @@ export class HttpControlClient implements MinecraftControlApi {
       body: JSON.stringify({
         owner,
         ...(requestedBy ? { requestedBy } : {}),
+        ...(options.aiDecisionInteractionId
+          ? { aiDecisionInteractionId: options.aiDecisionInteractionId }
+          : {}),
+      }),
+    });
+  }
+
+  async retryTask(
+    taskId: string,
+    owner = "mcp",
+    options: AiDecisionMutationOptions = {},
+  ): Promise<TaskRecord> {
+    return this.#request(`/api/tasks/${encodeURIComponent(taskId)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({
+        owner,
         ...(options.aiDecisionInteractionId
           ? { aiDecisionInteractionId: options.aiDecisionInteractionId }
           : {}),

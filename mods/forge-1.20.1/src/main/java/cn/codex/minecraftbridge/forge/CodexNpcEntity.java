@@ -710,7 +710,9 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
         setHealth(Math.max(10.0F, getMaxHealth() * 0.5F));
         setFoodLevel(Math.max(10, foodLevel()));
         ServerPlayer owner = owner();
-        if (owner != null && (owner.level() != level() || distanceToSqr(owner) > 24 * 24)) {
+        boolean restoredTaskCheckpoint = tasks.recoverAtActiveTaskCheckpoint();
+        if (!restoredTaskCheckpoint && owner != null
+            && (owner.level() != level() || distanceToSqr(owner) > 24 * 24)) {
             NpcManager.recall(owner, this);
         }
         tasks.resumeAfterRecovery();
@@ -834,6 +836,19 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
     @Override
     public boolean removeWhenFarAway(double distance) {
         return false;
+    }
+
+    /**
+     * The companion owns long-running expeditions whose temporary chunk ticket
+     * is renewed from its task tick. Vanilla normally stops ticking non-player
+     * entities outside the player's simulation distance even when their chunk
+     * is loaded; that would freeze a remote miner immediately after recall or
+     * checkpoint restoration. One canonical companion is cheap to keep active,
+     * and the existing expiring task ticket still controls chunk lifetime.
+     */
+    @Override
+    public boolean isAlwaysTicking() {
+        return true;
     }
 
     @Override

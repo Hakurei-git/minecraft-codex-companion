@@ -378,7 +378,15 @@ describe("BridgeManager", () => {
     expect(service.getTask(task.id).status).toBe("running");
 
     const second = await connect(manager);
-    second.send(JSON.stringify(hello()));
+    const reconnectHello = hello();
+    reconnectHello.companion.snapshot.taskQueue = [{
+      id: task.id,
+      kind: "gather",
+      phase: "active",
+      priority: 50,
+      progress: 0,
+    }];
+    second.send(JSON.stringify(reconnectHello));
     await waitFor(() => service.getCompanion("codex-forge").connected);
     expect(service.getTask(task.id).status).toBe("running");
 
@@ -391,6 +399,49 @@ describe("BridgeManager", () => {
     } satisfies BridgeMessage));
     await waitFor(() => service.getTask(task.id).status === "succeeded");
     expect(service.getTask(task.id).message).toBe("断线期间完成，重连后补发");
+  });
+
+  it("replays the same task id when a reconnect proves the Minecraft checkpoint is missing", async () => {
+    const service = new ControlService();
+    const manager = new BridgeManager({ service, token: TOKEN });
+    const first = await connect(manager);
+    first.send(JSON.stringify(hello()));
+    await waitFor(() => service.listCompanions().length === 1);
+
+    const firstCommand = nextJson(first);
+    const task = service.assignTask("codex-forge", {
+      kind: "gather",
+      itemId: "minecraft:diamond",
+      count: 3,
+      requestedBy: "test",
+    }, "test");
+    expect(await firstCommand).toMatchObject({ type: "run-task", task: { id: task.id } });
+
+    const closed = once(first, "close");
+    first.close();
+    await closed;
+    await waitFor(() => !service.getCompanion("codex-forge").connected);
+
+    const second = await connect(manager);
+    const replay = nextJson(second);
+    const reconnectHello = hello();
+    reconnectHello.companion.snapshot.taskQueue = [];
+    second.send(JSON.stringify(reconnectHello));
+
+    expect(await replay).toMatchObject({
+      type: "run-task",
+      task: { id: task.id, spec: { kind: "gather", itemId: "minecraft:diamond", count: 3 } },
+    });
+    expect(service.getTask(task.id).status).toBe("running");
+
+    second.send(JSON.stringify({
+      type: "task-result",
+      companionId: "codex-forge",
+      taskId: task.id,
+      ok: true,
+      message: "已用原任务 ID 恢复并完成",
+    } satisfies BridgeMessage));
+    await waitFor(() => service.getTask(task.id).status === "succeeded");
   });
 
   it("delivers an in-flight cancellation after the bridge reconnects", async () => {

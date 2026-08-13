@@ -265,6 +265,30 @@ describe("ControlService", () => {
     expect(recoveryBackend.attemptedTaskIds).toEqual([failed.id, failed.id]);
   });
 
+  it("retries a retryable craft task with the same id and original controller", async () => {
+    const service = new ControlService();
+    const backend = new FailOnceBuildBackend();
+    service.registerBackend(backend);
+    const failed = service.assignTask(backend.id, {
+      kind: "craft",
+      itemId: "minecraft:diamond_pickaxe",
+      count: 1,
+      deliverTo: "PlayerOne",
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+    for (let attempt = 0; attempt < 50 && service.getTask(failed.id).status !== "failed"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(() => service.retryTask(failed.id, "codex-driver")).toThrow(/原控制入口/u);
+    const retried = service.retryTask(failed.id, "antigravity-autoplay");
+    expect(retried.id).toBe(failed.id);
+    for (let attempt = 0; attempt < 50 && service.getTask(failed.id).status !== "succeeded"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(service.getTask(failed.id)).toMatchObject({ status: "succeeded", progress: 1 });
+    expect(backend.attemptedTaskIds).toEqual([failed.id, failed.id]);
+  });
+
   it("forwards cancellation for a terminal retryable build checkpoint", async () => {
     const service = new ControlService();
     const backend = new RecoverableCancelBackend();

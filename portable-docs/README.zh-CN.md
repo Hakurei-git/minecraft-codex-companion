@@ -5,7 +5,7 @@
 ## 选择哪个版本
 
 - `MinecraftCodexCompanion-Setup.exe` 是普通用户入口。它是单文件安装器，包含 Companion 本地控制服务、Dashboard、Forge 1.20.1 模组和配置程序；不要求用户安装 Node.js 或手工构建 JAR。
-- `MinecraftCodexCompanion-AgentKit-v0.1.1.zip` 是可选的 AI 接入包。只有在需要把 Minecraft 操作 Skill/MCP 配置导入 Codex、Claude、反重力或其他 AI 客户端时才下载；它不能替代 EXE 和游戏侧模组。
+- `MinecraftCodexCompanion-AgentKit-v0.1.2.zip` 是可选的 AI 接入包。只有在需要把 Minecraft 操作 Skill/MCP 配置导入 Codex、Claude、反重力或其他 AI 客户端时才下载；它不能替代 EXE 和游戏侧模组。
 
 EXE 不包含 Minecraft 账号、Minecraft 游戏本体或 HMCL 登录状态。首次配置前，请准备能够正常进入 Forge 1.20.1 世界的 HMCL 环境。当前完整实机验收基于 HMCL 单人世界。
 

@@ -32,6 +32,7 @@ function observedProgressDetails(message: TaskProgress | TaskResult): TaskProgre
 
 interface PendingTask {
   callbacks: TaskCallbacks;
+  recoveryCommand?: BridgeCommand;
   resolve(message: string): void;
   reject(error: Error): void;
   cleanup(): void;
@@ -151,6 +152,21 @@ export class WebSocketBridgeBackend implements CompanionBackend {
     if (previous !== socket && previous.readyState === WebSocket.OPEN) {
       previous.close(1000, "replaced by reconnect");
     }
+    if (this.#snapshot.taskQueue) {
+      setTimeout(() => {
+        if (this.#socket !== socket || !this.#connected) return;
+        const activeTaskIds = new Set(this.#snapshot.taskQueue?.map((entry) => entry.id));
+        for (const [taskId, pending] of this.#pendingTasks) {
+          if (activeTaskIds.has(taskId) || !pending.recoveryCommand) continue;
+          void this.sendBridgeCommand(pending.recoveryCommand).catch((error) => {
+            const current = this.#pendingTasks.get(taskId);
+            if (current !== pending) return;
+            this.#pendingTasks.delete(taskId);
+            pending.reject(error instanceof Error ? error : new Error(String(error)));
+          });
+        }
+      }, 250);
+    }
     void this.#flushDeferredSafetyCommands();
   }
 
@@ -160,20 +176,27 @@ export class WebSocketBridgeBackend implements CompanionBackend {
 
   async runTask(task: TaskRecord, callbacks: TaskCallbacks, signal: AbortSignal): Promise<string> {
     if (!this.#live()) throw new Error("Minecraft 客户端桥接已断开或心跳超时");
+    const command = this.#taskCommand(task);
+    return this.#trackTask(task, callbacks, signal, command);
+  }
+
+  #taskCommand(task: TaskRecord): Extract<BridgeCommand, { type: "run-task" }> {
     const unresolvedBuildPlan = task.spec.kind === "build" ? this.#resolveBuildPlan?.(task.spec.planId) : undefined;
     const buildPlan = task.spec.kind === "build" && unresolvedBuildPlan
       ? positionBuildPlanForTask(unresolvedBuildPlan, task.spec, this.#snapshot)
       : undefined;
-    const command: BridgeCommand = {
+    return {
       type: "run-task",
       task,
       ...(buildPlan ? { buildPlan } : {}),
     };
-    return this.#trackTask(task, callbacks, signal, command);
   }
 
   async resumeTask(task: TaskRecord, callbacks: TaskCallbacks, signal: AbortSignal): Promise<string> {
     if (!this.#live()) throw new Error("Minecraft 客户端桥接已断开或心跳超时");
+    if (this.#snapshot.taskQueue && !this.#snapshot.taskQueue.some((entry) => entry.id === task.id)) {
+      return this.#trackTask(task, callbacks, signal, this.#taskCommand(task));
+    }
     return this.#trackTask(task, callbacks, signal, undefined, true);
   }
 
@@ -206,6 +229,7 @@ export class WebSocketBridgeBackend implements CompanionBackend {
       };
       this.#pendingTasks.set(task.id, {
         callbacks,
+        ...(command?.type === "run-task" ? { recoveryCommand: command } : {}),
         resolve: (message) => {
           cleanup();
           resolve(message);

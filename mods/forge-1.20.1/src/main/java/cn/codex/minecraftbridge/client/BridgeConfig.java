@@ -31,6 +31,8 @@ public final class BridgeConfig {
     public boolean npcAutoSpawn = true;
     public int npcRecallDistance = 48;
     public int npcRecoveryTicks = 200;
+    /** Number of ordinary safe food items the NPC keeps in its backpack. Set to 0 to disable. */
+    public int npcFoodReserveCount = 8;
     public String npcMaterialMode = "owner";
     public String npcSkinPath = "config/minecraft-codex-companion-skin.png";
     public boolean keepSingleplayerRunningInBackground = true;
@@ -103,6 +105,8 @@ public final class BridgeConfig {
         if (npcRecallDistance > 256) npcRecallDistance = 256;
         if (npcRecoveryTicks < 40) npcRecoveryTicks = 40;
         if (npcRecoveryTicks > 1200) npcRecoveryTicks = 1200;
+        if (npcFoodReserveCount < 0) npcFoodReserveCount = 0;
+        if (npcFoodReserveCount > 64) npcFoodReserveCount = 64;
         if (!List.of("owner", "survival", "creative").contains(npcMaterialMode)) npcMaterialMode = "owner";
         if (npcSkinPath == null || npcSkinPath.isBlank()) npcSkinPath = "config/minecraft-codex-companion-skin.png";
         if (hostileEntityAllowlist == null) hostileEntityAllowlist = new ArrayList<>();

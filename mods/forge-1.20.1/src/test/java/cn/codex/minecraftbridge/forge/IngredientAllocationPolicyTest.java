@@ -35,4 +35,19 @@ class IngredientAllocationPolicyTest {
         assertEquals(2, result.missingIngredientIndex());
         assertEquals(java.util.List.of(0, 0), result.slots());
     }
+
+    @Test
+    void consumesTheSmallestMatchingStackSoCraftingCanFreeItsSlot() {
+        int[] counts = {4, 2, 64};
+        IngredientAllocationPolicy.Result result = IngredientAllocationPolicy.allocate(
+            2,
+            counts.length,
+            ignored -> true,
+            (ingredient, slot) -> slot < 2,
+            slot -> counts[slot]
+        );
+
+        assertTrue(result.complete());
+        assertEquals(java.util.List.of(1, 1), result.slots());
+    }
 }

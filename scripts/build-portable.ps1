@@ -385,7 +385,7 @@ Invoke-Checked $csc @(
 
 $productionPackage = [ordered]@{
     name = 'minecraft-codex-companion-portable-runtime'
-    version = '0.1.1'
+    version = '0.1.2'
     private = $true
     type = 'module'
     dependencies = [ordered]@{
@@ -438,7 +438,7 @@ Assert-TransparentRuntime $stage
 $manifest = [ordered]@{
     format = 2
     name = 'Minecraft Codex Companion Portable'
-    version = '0.1.1'
+    version = '0.1.2'
     platform = 'win32-x64'
     packaging = [ordered]@{
         model = 'transparent-multi-file'
@@ -540,4 +540,3 @@ $result = [PSCustomObject]@{
     PayloadBytes = (Get-ChildItem -LiteralPath $stage -File -Recurse | Measure-Object -Property Length -Sum).Sum
 }
 $result | Format-List
-

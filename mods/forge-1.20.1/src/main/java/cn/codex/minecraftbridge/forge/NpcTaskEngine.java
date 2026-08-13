@@ -202,6 +202,8 @@ public final class NpcTaskEngine {
     private final NpcInteractionProxy proxy;
     private ActiveWork active;
     private final Deque<ActiveWork> pausedWorks = new ArrayDeque<>();
+    private ServerLevel forcedTaskLevel;
+    private ChunkPos forcedTaskChunk;
     private double guardRadius = 12;
     private int attackCooldown;
     private int followRepathCooldown;
@@ -392,6 +394,7 @@ public final class NpcTaskEngine {
     public boolean canStartAutomaticEating() {
         if (assistTarget != null || active != null && "combat".equals(active.kind)) return false;
         if (active != null && "provision-food".equals(active.kind) && active.foodCookingInputId != null) return false;
+        if (active != null && isSurvivalReserveProvision(active)) return false;
         return nearestHostile(npc, 8.0D, "hostile") == null;
     }
 
@@ -610,6 +613,53 @@ public final class NpcTaskEngine {
         npc.setStatus("背包空间不足，正在返回家中整理");
     }
 
+    private void maybeStartAutonomousFoodReserve() {
+        String activeKind = active == null ? "" : active.kind;
+        int reserve = safeProvisioningFoodCount();
+        if (!NpcFoodReservePolicy.shouldProvision(
+            npc.creativeResources(),
+            config.npcFoodReserveCount,
+            reserve,
+            activeKind,
+            assistTarget != null,
+            nearestHostile(npc, 8.0D, "hostile") != null,
+            suspendedForDowned || npc.isDowned()
+        )) return;
+
+        Stance resume = npc.stance() == Stance.WORK ? Stance.FOLLOW : npc.stance();
+        int priority = 70;
+        if (active != null) {
+            ActiveWork interrupted = active;
+            priority = Math.min(1000, interrupted.priority + 1);
+            progress(interrupted, activeProgress(interrupted),
+                "常备口粮不足（" + reserve + "/" + foodReserveTarget() + "），先补足口粮再继续原任务");
+            pauseActive("补充 NPC 常备安全口粮");
+        }
+
+        JsonObject spec = new JsonObject();
+        spec.addProperty("kind", "provision-food");
+        spec.addProperty("source", "auto");
+        spec.addProperty("destination", "backpack");
+        spec.addProperty("count", foodReserveTarget());
+        spec.addProperty("requestedBy", "npc-food-reserve");
+        spec.addProperty("priority", priority);
+        active = new ActiveWork(
+            "local:auto-food:" + npc.getUUID() + ":" + npc.tickCount,
+            spec,
+            new JsonObject(),
+            resume
+        );
+        npc.setStance(Stance.WORK);
+        npc.setStatus("正在补充常备安全口粮 " + reserve + "/" + foodReserveTarget());
+    }
+
+    private int foodReserveTarget() {
+        return Math.max(
+            DeepMiningPolicy.REQUIRED_FOOD_RESERVE,
+            NpcFoodReservePolicy.target(config.npcFoodReserveCount)
+        );
+    }
+
     /** Preserve work while the companion is incapacitated. */
     public void suspendForDowned() {
         suspendedForDowned = true;
@@ -639,6 +689,24 @@ public final class NpcTaskEngine {
         }
     }
 
+    /**
+     * A downed deep miner may resume at the last confirmed two-block-high
+     * stand instead of being recalled to the owner and losing the open tunnel.
+     * Starvation recovery deliberately remains on the surface when no ration
+     * exists; the task will provision food first and then restore the checkpoint.
+     */
+    public boolean recoverAtActiveTaskCheckpoint() {
+        ActiveWork work = active;
+        if (work == null || work.deepMiningPhase.isBlank()
+            || work.deepMiningLastSafeStand == null) return false;
+        if (!npc.creativeResources() && npc.foodLevel() <= HungerPolicy.AUTO_EAT_THRESHOLD
+            && safeProvisioningFoodCount() <= 0) return false;
+        BlockPos checkpoint = safeDeepMiningCheckpoint(work);
+        if (checkpoint == null) return false;
+        restoreDeepMiningCheckpoint(work, checkpoint);
+        return true;
+    }
+
     public void onLivingEntityDefeated(UUID targetId) {
         if (targetId == null) return;
         if (active != null && targetId.equals(active.dragonCombatTargetId)) {
@@ -666,6 +734,10 @@ public final class NpcTaskEngine {
 
     public void onOwnerOnline() {
         if (active != null && !suspendedForDowned) {
+            // Region tickets are intentionally not persisted by Minecraft.
+            // Re-arm the active NPC's chunk as soon as its owner rejoins so a
+            // far-away expedition continues ticking after a world restart.
+            maintainTaskChunkTicket(npc.blockPosition());
             active.pauseReason = "";
             npc.setStance(Stance.WORK);
             npc.setStatus("主人上线，继续 " + active.kind + " 任务");
@@ -738,6 +810,9 @@ public final class NpcTaskEngine {
 
     public void tick() {
         if (attackCooldown > 0) attackCooldown--;
+        if (active == null && pausedWorks.isEmpty() && assistTarget == null) {
+            releaseForcedTaskChunk();
+        }
         ServerPlayer owner = npc.owner();
         if (owner == null) {
             npc.getNavigation().stop();
@@ -786,6 +861,7 @@ public final class NpcTaskEngine {
             }
             return;
         }
+        maybeStartAutonomousFoodReserve();
         if (active == null && assistTarget == null && npc.stance() != Stance.STAY && npc.tickCount % 200 == 0) {
             maybeStartAutonomousStorage();
         }
@@ -796,7 +872,10 @@ public final class NpcTaskEngine {
         } else if (work != null) {
             work.ticks++;
             try {
-                if (!work.kind.equals("build") && !work.buildMaterialGoals.isEmpty()) {
+                if (compactBackpackIfNeeded(work)) {
+                    // Continue the original task on the next tick with the
+                    // newly released slots; no item counts were changed.
+                } else if (!work.kind.equals("build") && !work.buildMaterialGoals.isEmpty()) {
                     tickBuildMaterialPrerequisite(work);
                 } else switch (work.kind) {
                     case "move" -> tickMove(work, target(work.spec.getAsJsonObject("target")));
@@ -834,6 +913,55 @@ public final class NpcTaskEngine {
         }
 
         if (npc.tickCount % Math.max(2, config.snapshotIntervalTicks) == 0) CodexNetwork.sendSnapshot(owner, npc);
+    }
+
+    private boolean compactBackpackIfNeeded(ActiveWork work) {
+        List<InventoryCompactionPolicy.Slot> slots = new ArrayList<>();
+        int occupied = 0;
+        for (int slot = 0; slot < CodexNpcEntity.BACKPACK_SIZE; slot++) {
+            ItemStack stack = npc.inventory().getStackInSlot(slot);
+            if (stack.isEmpty()) continue;
+            occupied++;
+            slots.add(new InventoryCompactionPolicy.Slot(
+                slot,
+                CraftingIngredientAllocator.stackKey(stack),
+                stack.getCount(),
+                stack.getMaxStackSize()
+            ));
+        }
+        if (CodexNpcEntity.BACKPACK_SIZE - occupied > 1) return false;
+
+        List<InventoryCompactionPolicy.Transfer> transfers = InventoryCompactionPolicy.plan(
+            CodexNpcEntity.BACKPACK_SIZE,
+            slots
+        );
+        if (transfers.isEmpty()) return false;
+
+        int beforeOccupied = occupied;
+        for (InventoryCompactionPolicy.Transfer transfer : transfers) {
+            ItemStack source = npc.inventory().getStackInSlot(transfer.fromSlot());
+            ItemStack target = npc.inventory().getStackInSlot(transfer.toSlot());
+            if (source.isEmpty() || target.isEmpty()
+                || !ItemStack.isSameItemSameTags(source, target)) continue;
+            int moved = Math.min(
+                transfer.count(),
+                Math.min(source.getCount(), target.getMaxStackSize() - target.getCount())
+            );
+            if (moved <= 0) continue;
+            target.grow(moved);
+            source.shrink(moved);
+            npc.inventory().setStackInSlot(transfer.toSlot(), target);
+            npc.inventory().setStackInSlot(transfer.fromSlot(), source);
+        }
+
+        int afterOccupied = 0;
+        for (int slot = 0; slot < CodexNpcEntity.BACKPACK_SIZE; slot++) {
+            if (!npc.inventory().getStackInSlot(slot).isEmpty()) afterOccupied++;
+        }
+        int released = Math.max(0, beforeOccupied - afterOccupied);
+        if (released <= 0) return false;
+        progress(work, activeProgress(work), "已合并同类物品并释放 " + released + " 个背包格，继续原任务");
+        return true;
     }
 
     private boolean tickCombatAssist(ServerPlayer owner) {
@@ -1500,7 +1628,12 @@ public final class NpcTaskEngine {
         if (!prepareCraftingWorkstation(work, itemId, work.requiresTable)) return;
         if (work.ticks - work.lastActionTick < 8) return;
         work.lastActionTick = work.ticks;
-        if (!canInsert(output)) {
+        if (!CraftingIngredientAllocator.canInsertAfterConsumption(
+            ingredients,
+            CodexNpcEntity.BACKPACK_SIZE,
+            slot -> npc.inventory().getStackInSlot(slot),
+            output
+        )) {
             fail(work, "NPC 背包没有空间接收制作结果", "INVENTORY_FULL");
             return;
         }
@@ -2527,7 +2660,12 @@ public final class NpcTaskEngine {
         if (requiresTable && !prepareCraftingWorkstation(work, outputId)) return true;
         if (work.ticks - work.lastActionTick < 8) return true;
         ItemStack output = recipe.getResultItem(npc.level().registryAccess()).copy();
-        if (output.isEmpty() || !canInsert(output)) return false;
+        if (output.isEmpty() || !CraftingIngredientAllocator.canInsertAfterConsumption(
+            ingredients,
+            CodexNpcEntity.BACKPACK_SIZE,
+            slot -> npc.inventory().getStackInSlot(slot),
+            output
+        )) return false;
         work.lastActionTick = work.ticks;
         consumeIngredients(ingredients);
         npc.insert(output);
@@ -3095,7 +3233,10 @@ public final class NpcTaskEngine {
             "挖圆石制作熔炉前先准备木镐",
             "制作熔炉需要先准备木镐，但缺少可取得的制作材料"
         )) return true;
-        beginCraftGather(work, "minecraft:cobblestone", missingStone,
+        // Gather the furnace recipe tag rather than only surface cobblestone.
+        // At deep-mining height ordinary deepslate drops cobbled deepslate,
+        // which is equally valid and usually the nearest available material.
+        beginCraftGather(work, "#minecraft:stone_crafting_materials", missingStone,
             "缺少熔炉，先挖 " + missingStone + " 个圆石");
         return true;
     }
@@ -4812,6 +4953,10 @@ public final class NpcTaskEngine {
             tickProvisionFoodCooking(work);
             return;
         }
+        if (work.foodPhase == 3) {
+            tickProvisionFoodFishing(work);
+            return;
+        }
         if (work.foodPhase == 2) {
             tickProvisionFoodDestination(work, destination);
             return;
@@ -5148,6 +5293,7 @@ public final class NpcTaskEngine {
     }
 
     private void tickFoodExpedition(ActiveWork work, String source) {
+        if (maybeBeginDeepMiningRationFishing(work)) return;
         if (work.destination != null) {
             BlockPos searchArea = BlockPos.containing(work.destination);
             maintainTaskChunkTicket(searchArea);
@@ -5222,6 +5368,156 @@ public final class NpcTaskEngine {
         work.noWorkTicks = 0;
         work.lastSearchTick = -10;
         progress(work, activeProgress(work), "附近安全食物不足，正在前往第 " + work.gatherExcursions + " 个远程寻食区");
+    }
+
+    private boolean isSurvivalReserveProvision(ActiveWork work) {
+        return work != null
+            && "provision-food".equals(work.kind)
+            && Set.of("deep-mining-survival", "npc-food-reserve")
+                .contains(string(work.spec, "requestedBy", ""));
+    }
+
+    /**
+     * A mining expedition must not depend on finding a large unprotected herd.
+     * After two unsuccessful surface search regions, use a real fishing rod and
+     * nearby water as the renewable, non-destructive ration fallback.
+     */
+    private boolean maybeBeginDeepMiningRationFishing(ActiveWork work) {
+        if (!isSurvivalReserveProvision(work)
+            || work.gatherExcursions < 2
+            || work.ticks % 100 != 0
+            || findFishingRodSlot() < 0) return false;
+        BlockPos water = findFishingWater(64);
+        if (water == null) return false;
+        npc.getNavigation().stop();
+        work.destination = null;
+        work.targetBlock = null;
+        work.foodAnimalTargetId = null;
+        work.workstation = water.immutable();
+        work.foodPhase = 3;
+        work.fishingCast = false;
+        work.fishingReadyTick = 0;
+        work.stalledTicks = 0;
+        work.lastDistance = -1.0D;
+        work.lastTeleportTarget = null;
+        progress(work, activeProgress(work), "野外口粮来源稀少，改用钓鱼补足深挖口粮");
+        return true;
+    }
+
+    private void tickProvisionFoodFishing(ActiveWork work) {
+        if (!(npc.level() instanceof ServerLevel level)) {
+            fail(work, "钓鱼补给只能在服务端世界执行", "WORLD_UNAVAILABLE");
+            return;
+        }
+        int foodItems = provisioningFoodCount(work);
+        if (FoodProvisionPolicy.shouldComplete(foodItems, work.requestedCount)) {
+            proxy.cancelFishing();
+            work.fishingCast = false;
+            work.fishingReadyTick = 0;
+            work.foodPhase = 1;
+            work.workstation = null;
+            progress(work, activeProgress(work), "钓鱼口粮已备齐，继续整理并烹饪安全口粮");
+            return;
+        }
+        if (discardLowValueFishingJunk(work)) return;
+        if (tickMiningInventoryCleanup(work, null, "minecraft:cod")) return;
+        int rodSlot = findFishingRodSlot();
+        if (rodSlot < 0) {
+            proxy.cancelFishing();
+            work.fishingCast = false;
+            work.fishingReadyTick = 0;
+            work.foodPhase = 1;
+            work.workstation = null;
+            progress(work, activeProgress(work), "钓鱼竿已无法使用，继续寻找其他安全食物来源");
+            return;
+        }
+        if (!isFishableWater(work.workstation)) {
+            work.workstation = findFishingWater(64);
+            if (work.workstation == null) {
+                work.foodPhase = 1;
+                progress(work, activeProgress(work), "附近水面不可用，继续寻找其他安全食物来源");
+                return;
+            }
+        }
+        if (!approach(work, work.workstation, 4.5D, 1.0D)) return;
+        if (rodSlot != CodexNpcEntity.MAIN_HAND_SLOT) equipMainHand(rodSlot);
+        rodSlot = CodexNpcEntity.MAIN_HAND_SLOT;
+        ItemStack rod = npc.inventory().getStackInSlot(rodSlot);
+
+        if (!work.fishingCast) {
+            npc.getLookControl().setLookAt(Vec3.atCenterOf(work.workstation).add(0, 0.4D, 0));
+            npc.swing(InteractionHand.MAIN_HAND);
+            if (!proxy.castFishing(rodSlot)) {
+                if (++work.failedActions >= 3) {
+                    work.foodPhase = 1;
+                    work.workstation = null;
+                    work.failedActions = 0;
+                    progress(work, activeProgress(work), "当前水面无法抛竿，继续寻找其他口粮来源");
+                }
+                return;
+            }
+            work.failedActions = 0;
+            work.fishingCast = true;
+            long seed = level.getSeed() ^ npc.getUUID().getLeastSignificantBits();
+            work.fishingReadyTick = work.ticks
+                + NpcLifeSkillPolicy.fishingWaitTicks(seed, work.completed + foodItems);
+            progress(work, activeProgress(work), "已抛竿，正在为深挖任务钓取安全口粮");
+            return;
+        }
+        if (work.ticks < work.fishingReadyTick) {
+            if (work.ticks % 100 == 0) {
+                taskStatus(work, "正在钓取深挖口粮 " + foodItems + "/" + work.requestedCount);
+            }
+            return;
+        }
+
+        proxy.cancelFishing();
+        work.fishingCast = false;
+        work.fishingReadyTick = 0;
+        rod.hurtAndBreak(1, npc, entity -> entity.broadcastBreakEvent(InteractionHand.MAIN_HAND));
+        npc.inventory().setStackInSlot(rodSlot, rod);
+        List<ItemStack> loot = rollFishingLoot(level, work.workstation, rod);
+        for (ItemStack stack : loot) {
+            if (stack.isEmpty()) continue;
+            if (!FishingProvisioningPolicy.keepLoot(
+                isSafeProvisioningFood(stack),
+                FoodProvisionPolicy.acceptsSourceItem(provisioningSource(work), itemId(stack))
+            )) {
+                spawnThrownStack(stack.copy(), null);
+                continue;
+            }
+            ItemStack remainder = npc.insert(stack.copy());
+            if (!remainder.isEmpty()) spawnThrownStack(remainder, null);
+        }
+        recordInventoryAction(work, "fish-catch");
+        npc.addExhaustion(0.04F);
+        int updated = provisioningFoodCount(work);
+        work.completed = Math.min(work.requestedCount, updated);
+        progress(work, activeProgress(work), "已完成一竿，当前安全口粮 " + updated + "/" + work.requestedCount);
+    }
+
+    private boolean discardLowValueFishingJunk(ActiveWork work) {
+        boolean backpackFull = true;
+        for (int slot = 0; slot < CodexNpcEntity.BACKPACK_SIZE; slot++) {
+            if (npc.inventory().getStackInSlot(slot).isEmpty()) {
+                backpackFull = false;
+                break;
+            }
+        }
+        if (!backpackFull) return false;
+
+        for (int slot = 0; slot < CodexNpcEntity.BACKPACK_SIZE; slot++) {
+            ItemStack current = npc.inventory().getStackInSlot(slot);
+            if (current.isEmpty() || !FishingProvisioningPolicy.disposableJunk(itemId(current))) continue;
+            ItemStack discarded = npc.inventory().extractItem(slot, current.getCount(), false);
+            if (discarded.isEmpty()) continue;
+            spawnThrownStack(discarded, null);
+            recordInventoryAction(work, "drop");
+            npc.swing(InteractionHand.MAIN_HAND);
+            progress(work, activeProgress(work), "背包已满，清出钓鱼杂物并继续补充安全口粮");
+            return true;
+        }
+        return false;
     }
 
     private void tickFoodHarvest(ActiveWork work) {
@@ -6412,7 +6708,7 @@ public final class NpcTaskEngine {
             fail(work, "没有找到任务材料 " + goal.itemId + " 的真实制作配方", "BUILD_MATERIAL_RECIPE_MISSING");
             return;
         }
-        if (!work.deepMiningItemId.isBlank() && tickMiningInventoryCleanup(work, recipe, goal.itemId)) {
+        if (hasSuspendedDeepMining(work) && tickMiningInventoryCleanup(work, recipe, goal.itemId)) {
             work.buildLastProgressTick = work.ticks;
             return;
         }
@@ -6459,6 +6755,14 @@ public final class NpcTaskEngine {
         Recipe<?> recipe = findSmeltingRecipeByOutput(goal.itemId, policyRequirements);
         if (recipe == null || recipe.getIngredients().isEmpty()) {
             fail(work, "没有找到任务材料 " + goal.itemId + " 的真实熔炼配方", "BUILD_MATERIAL_SMELT_RECIPE_MISSING");
+            return;
+        }
+        // Smelting can be reached after a long mining run has filled every
+        // backpack slot. Free bounded low-value terrain slots before loading
+        // or withdrawing from the task-owned furnace so its inputs and output
+        // never force a retryable INVENTORY_FULL failure.
+        if (tickMiningInventoryCleanup(work, recipe, goal.itemId)) {
+            work.buildLastProgressTick = work.ticks;
             return;
         }
         Ingredient inputIngredient = recipe.getIngredients().get(0);
@@ -6782,7 +7086,9 @@ public final class NpcTaskEngine {
         int suspendedGatherInitialCount = work.craftGatherInitialCount;
         int suspendedGatherCompleted = work.craftGatherCompleted;
         int suspendedGatherStartedTick = work.craftGatherStartedTick;
+        DeepMiningCheckpoint suspendedDeepMining = captureDeepMiningCheckpoint(work);
         if (hasCraftGatherPrerequisite(work)) clearCraftGatherPrerequisite(work);
+        if (suspendedDeepMining != null) clearDeepMining(work);
         BuildMaterialGoal goal = new BuildMaterialGoal(
             itemId,
             selector,
@@ -6794,7 +7100,8 @@ public final class NpcTaskEngine {
             suspendedGatherCount,
             suspendedGatherInitialCount,
             suspendedGatherCompleted,
-            suspendedGatherStartedTick
+            suspendedGatherStartedTick,
+            suspendedDeepMining
         );
         work.buildMaterialGoals.addFirst(goal);
         resetBuildMaterialTransient(work);
@@ -6820,6 +7127,7 @@ public final class NpcTaskEngine {
         work.buildMaterialGoals.removeFirst();
         resetBuildMaterialTransient(work);
         restoreSuspendedGather(work, goal);
+        restoreSuspendedDeepMining(work, goal);
         work.buildPhase = work.buildMaterialGoals.isEmpty() ? "scan" : "resume-parent";
         work.buildPhaseStartedTick = work.ticks;
         work.buildLastProgressTick = work.ticks;
@@ -6846,6 +7154,93 @@ public final class NpcTaskEngine {
         work.craftGatherStartedTick = goal.suspendedGatherStartedTick < 0
             ? work.ticks
             : goal.suspendedGatherStartedTick + pausedTicks;
+    }
+
+    private boolean hasSuspendedDeepMining(ActiveWork work) {
+        if (work != null && !work.deepMiningPhase.isBlank()) return true;
+        return work != null && work.buildMaterialGoals.stream()
+            .anyMatch(goal -> goal.suspendedDeepMining != null);
+    }
+
+    private DeepMiningCheckpoint captureDeepMiningCheckpoint(ActiveWork work) {
+        if (work == null || work.deepMiningPhase.isBlank() || work.deepMiningItemId.isBlank()) return null;
+        return new DeepMiningCheckpoint(
+            work.deepMiningPhase,
+            work.deepMiningItemId,
+            work.deepMiningTargetY,
+            DeepMiningPolicy.retainedDirection(work.deepMiningDirection, Direction.NORTH),
+            work.deepMiningPhaseStartedTick,
+            work.deepMiningStaircaseStep,
+            work.deepMiningBranchIndex,
+            work.deepMiningBranchProgress,
+            work.deepMiningRegionIndex,
+            work.deepMiningLastTorchProgress,
+            work.deepMiningBrokenBlocks,
+            work.deepMiningPlacedTorches,
+            work.deepMiningBlockedTurns,
+            work.deepMiningMarkerStage,
+            work.deepMiningEntrySearchIndex,
+            work.deepMiningEntryTargetStartedTick,
+            work.deepMiningPreflightComplete,
+            work.deepMiningExcavationTarget,
+            work.deepMiningResourceTargetStartedTick,
+            work.deepMiningResourceChaseStartedTick,
+            immutable(work.deepMiningEntrance),
+            immutable(work.deepMiningLanding),
+            immutable(work.deepMiningLastSafeStand),
+            immutable(work.deepMiningCaveTarget),
+            immutable(work.targetBlock),
+            immutable(work.deepMiningResourceTimedTarget)
+        );
+    }
+
+    private void restoreSuspendedDeepMining(ActiveWork work, BuildMaterialGoal goal) {
+        DeepMiningCheckpoint checkpoint = goal.suspendedDeepMining;
+        if (checkpoint == null) return;
+        clearDeepMining(work);
+        int pausedTicks = Math.max(0, work.ticks - goal.startedTick);
+        work.deepMiningPhase = checkpoint.phase();
+        work.deepMiningItemId = checkpoint.itemId();
+        work.deepMiningTargetY = checkpoint.targetY();
+        work.deepMiningDirection = DeepMiningPolicy.retainedDirection(checkpoint.direction(), Direction.NORTH);
+        work.deepMiningPhaseStartedTick = shiftedTick(checkpoint.phaseStartedTick(), pausedTicks);
+        work.deepMiningStaircaseStep = checkpoint.staircaseStep();
+        work.deepMiningBranchIndex = checkpoint.branchIndex();
+        work.deepMiningBranchProgress = checkpoint.branchProgress();
+        work.deepMiningRegionIndex = checkpoint.regionIndex();
+        work.deepMiningLastTorchProgress = checkpoint.lastTorchProgress();
+        work.deepMiningBrokenBlocks = checkpoint.brokenBlocks();
+        work.deepMiningPlacedTorches = checkpoint.placedTorches();
+        work.deepMiningBlockedTurns = checkpoint.blockedTurns();
+        work.deepMiningMarkerStage = checkpoint.markerStage();
+        work.deepMiningEntrySearchIndex = checkpoint.entrySearchIndex();
+        work.deepMiningEntryTargetStartedTick = shiftedTick(checkpoint.entryTargetStartedTick(), pausedTicks);
+        work.deepMiningPreflightComplete = checkpoint.preflightComplete();
+        work.deepMiningExcavationTarget = checkpoint.excavationTarget();
+        work.deepMiningResourceTargetStartedTick = shiftedTick(checkpoint.resourceTargetStartedTick(), pausedTicks);
+        work.deepMiningResourceChaseStartedTick = shiftedTick(checkpoint.resourceChaseStartedTick(), pausedTicks);
+        work.deepMiningEntrance = immutable(checkpoint.entrance());
+        work.deepMiningLanding = immutable(checkpoint.landing());
+        work.deepMiningLastSafeStand = immutable(checkpoint.lastSafeStand());
+        work.deepMiningCaveTarget = immutable(checkpoint.caveTarget());
+        work.targetBlock = immutable(checkpoint.targetBlock());
+        work.deepMiningResourceTimedTarget = immutable(checkpoint.resourceTimedTarget());
+        work.destination = null;
+        work.gatherTargets.clear();
+        work.skippedGatherTargets.clear();
+        work.gatherPathFailures = 0;
+        work.lastGatherPathAttemptTick = -1;
+        work.gatherStandPathCursor = 0;
+        work.lastDistance = -1.0D;
+        npc.getNavigation().stop();
+    }
+
+    private static int shiftedTick(int savedTick, int pausedTicks) {
+        return savedTick <= 0 ? savedTick : savedTick + Math.max(0, pausedTicks);
+    }
+
+    private static BlockPos immutable(BlockPos position) {
+        return position == null ? null : position.immutable();
     }
 
     private void resetBuildMaterialTransient(ActiveWork work) {
@@ -8427,32 +8822,53 @@ public final class NpcTaskEngine {
     private boolean teleportNearTaskTargetWhenAllowed(ActiveWork work, BlockPos target, double distance, String status) {
         ServerPlayer owner = npc.owner();
         if (!gatherAllowsRemoteRecovery(work)) return false;
-        if (distance <= config.npcRecallDistance || owner == null || !owner.hasPermissions(2)
+        double verticalDistance = Math.abs(npc.getY() - (target.getY() + 0.5D));
+        if (!GatherRetryPolicy.shouldAttemptTeleport(
+                distance,
+                config.npcRecallDistance,
+                verticalDistance,
+                work.stalledTicks
+            ) || owner == null || !owner.hasPermissions(2)
             || !(npc.level() instanceof ServerLevel level)) return false;
+        boolean skippableResourceTarget = work.kind.equals("gather") || hasCraftGatherPrerequisite(work);
         if (target.equals(work.lastTeleportTarget)) {
-            // Never loop a teleport against the same bad target. Gather tasks switch targets
-            // and continue their bounded expedition; other tasks fail with a clear path error.
-            if (work.kind.equals("gather") || work.craftGatherItemId != null) {
+            // Never loop a teleport against the same bad target. Resource work
+            // can switch targets; workstation, delivery and other task targets
+            // fall back to ordinary pathfinding instead of failing immediately.
+            if (GatherRetryPolicy.shouldSkipAfterUnusableTeleport(skippableResourceTarget)) {
                 skipGatherTarget(work, target);
-            } else {
-                fail(work, "Target remained unreachable after safe teleport", "PATH_NOT_FOUND");
             }
             return false;
         }
         BlockPos destination = safeTaskPositionNear(level, target);
         double destinationDistance = Vec3.atCenterOf(destination).distanceTo(Vec3.atCenterOf(target));
         if (!GatherRetryPolicy.teleportDestinationIsUseful(destinationDistance)) {
-            if (work.kind.equals("gather") || work.craftGatherItemId != null) {
+            if (GatherRetryPolicy.shouldSkipAfterUnusableTeleport(skippableResourceTarget)) {
                 skipGatherTarget(work, target);
             } else {
-                fail(work, "No safe teleport position near target", "PATH_NOT_FOUND");
+                work.lastTeleportTarget = target.immutable();
+                npc.setStatus("未找到安全传送落点，已改为步行前往任务目标");
             }
             return false;
         }
         npc.getNavigation().stop();
+        ChunkPos currentChunk = new ChunkPos(npc.blockPosition());
+        ChunkPos destinationChunk = new ChunkPos(destination);
+        if (GatherRetryPolicy.teleportChangesChunk(
+            currentChunk.x,
+            currentChunk.z,
+            destinationChunk.x,
+            destinationChunk.z
+        )) {
+            // Entity ticks stop immediately when a remote teleport lands outside
+            // every player's simulation distance. Move the persistent task ticket
+            // before teleporting so the next gather tick can actually run.
+            maintainTaskChunkTicket(destination);
+        }
         npc.teleportTo(destination.getX() + 0.5, destination.getY(), destination.getZ() + 0.5);
         npc.setDeltaMovement(Vec3.ZERO);
         npc.fallDistance = 0;
+        maintainTaskChunkTicket(npc.blockPosition());
         work.lastTeleportTarget = target.immutable();
         work.stalledTicks = 0;
         work.gatherPathFailures = 0;
@@ -8490,6 +8906,21 @@ public final class NpcTaskEngine {
     }
 
     private BlockPos safeTaskPositionNear(ServerLevel level, BlockPos target) {
+        int[] verticalOffsets = { 0, 1, -1, 2, -2, 3, -3, 4, -4 };
+        // Prefer a stand on the target's own underground level. Heightmap-only
+        // probing places an NPC on the surface above an underground workstation
+        // and incorrectly declares that otherwise reachable target unsafe.
+        for (int radius = 0; radius <= 6; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (radius > 0 && Math.abs(dx) != radius && Math.abs(dz) != radius) continue;
+                    for (int dy : verticalOffsets) {
+                        BlockPos candidate = target.offset(dx, dy, dz);
+                        if (isDryStandingSpot(level, candidate)) return candidate.immutable();
+                    }
+                }
+            }
+        }
         for (int radius = 0; radius <= 4; radius++) {
             for (int dx = -radius; dx <= radius; dx++) {
                 for (int dz = -radius; dz <= radius; dz++) {
@@ -8529,7 +8960,8 @@ public final class NpcTaskEngine {
         work.lastGatherPathAttemptTick = -1;
         work.gatherStandPathCursor = 0;
         work.noWorkTicks = 0;
-        if (!gatherAllowsRemoteRecovery(work)) {
+        boolean remoteRecoveryAllowed = gatherAllowsRemoteRecovery(work);
+        if (!remoteRecoveryAllowed) {
             if (GatherRetryPolicy.afterSkipping(work.skippedGatherTargets.size()) == GatherRetryPolicy.Decision.FAIL_TASK) {
                 fail(work, "走路采集模式下连续遇到过多不可达目标", "LOCAL_RESOURCE_NOT_REACHABLE");
                 return;
@@ -8537,7 +8969,37 @@ public final class NpcTaskEngine {
             npc.setStatus("走路采集模式：当前资源不可达，正在寻找附近其他目标");
             return;
         }
-        if (GatherRetryPolicy.afterSkipping(work.skippedGatherTargets.size()) == GatherRetryPolicy.Decision.FAIL_TASK) {
+        GatherRetryPolicy.Decision decision = GatherRetryPolicy.afterSkipping(
+            work.skippedGatherTargets.size(),
+            hasCraftGatherPrerequisite(work),
+            hasCraftGatherPrerequisite(work) && DeepMiningPolicy.supports(work.craftGatherItemId),
+            remoteRecoveryAllowed,
+            work.gatherExcursions,
+            GATHER_MAX_EXCURSIONS
+        );
+        if (decision == GatherRetryPolicy.Decision.START_DEEP_MINING) {
+            String itemId = work.craftGatherItemId;
+            startDeepMining(work, itemId);
+            progress(work, activeProgress(work),
+                "附近目标连续不可达，改为开掘安全矿道寻找制作前置材料 " + itemId);
+            return;
+        }
+        if (decision == GatherRetryPolicy.Decision.START_REMOTE_EXCURSION) {
+            work.gatherExcursions++;
+            work.destination = nextGatherSearchDestination(work.gatherExcursions);
+            work.gatherTargets.clear();
+            work.skippedGatherTargets.clear();
+            work.gatherSearchRadius = 16;
+            work.noWorkTicks = 0;
+            work.lastSearchTick = -10;
+            work.lastTeleportTarget = null;
+            work.gatherTreeCluster = false;
+            work.gatherClusterReached = false;
+            progress(work, activeProgress(work),
+                "本区制作材料均不可达，正在前往第 " + work.gatherExcursions + " 个搜索区继续寻找");
+            return;
+        }
+        if (decision == GatherRetryPolicy.Decision.FAIL_TASK) {
             fail(work, "连续遇到过多不可达的采集目标", "RESOURCE_NOT_REACHABLE");
             return;
         }
@@ -8917,7 +9379,11 @@ public final class NpcTaskEngine {
         clearDeepMining(work);
         work.deepMiningItemId = itemId;
         work.deepMiningTargetY = DeepMiningPolicy.targetY(itemId);
-        work.deepMiningDirection = chooseDeepMiningDirection(npc.blockPosition(), Direction.fromYRot(npc.getYRot()));
+        Direction preferredDirection = Direction.fromYRot(npc.getYRot());
+        work.deepMiningDirection = DeepMiningPolicy.retainedDirection(
+            chooseDeepMiningDirection(npc.blockPosition(), preferredDirection),
+            preferredDirection
+        );
         work.deepMiningPhase = "preflight";
         work.deepMiningPhaseStartedTick = work.ticks;
         work.targetBlock = null;
@@ -8948,8 +9414,13 @@ public final class NpcTaskEngine {
         work.deepMiningPlacedTorches = 0;
         work.deepMiningBlockedTurns = 0;
         work.deepMiningMarkerStage = 0;
+        work.deepMiningEntrySearchIndex = 0;
+        work.deepMiningEntryTargetStartedTick = 0;
         work.deepMiningPreflightComplete = false;
         work.deepMiningExcavationTarget = false;
+        work.deepMiningResourceTimedTarget = null;
+        work.deepMiningResourceTargetStartedTick = 0;
+        work.deepMiningResourceChaseStartedTick = 0;
     }
 
     private void tickDeepMining(
@@ -8960,7 +9431,10 @@ public final class NpcTaskEngine {
         boolean prerequisite
     ) {
         if (!deepMiningActiveFor(work, itemId)) startDeepMining(work, itemId);
+        int configuredTargetY = DeepMiningPolicy.targetY(itemId);
+        if (configuredTargetY != Integer.MAX_VALUE) work.deepMiningTargetY = configuredTargetY;
         if (tickMiningInventoryCleanup(work, null, itemId)) return;
+        if (tickDeepMiningFoodReserve(work)) return;
         if (!work.deepMiningPreflightComplete) {
             if (tickDeepMiningPreflight(work, itemId)) return;
             work.deepMiningPreflightComplete = true;
@@ -8986,13 +9460,60 @@ public final class NpcTaskEngine {
             return;
         }
 
+        if (DeepMiningPolicy.needsHigherEntry(itemId, npc.blockPosition().getY())) {
+            if (!"waiting-entry".equals(work.deepMiningPhase)) {
+                npc.getNavigation().stop();
+                work.targetBlock = null;
+                work.destination = null;
+                work.gatherTargets.clear();
+                work.deepMiningCaveTarget = null;
+                work.deepMiningEntrySearchIndex = 0;
+                work.deepMiningEntryTargetStartedTick = 0;
+                work.deepMiningPhase = "waiting-entry";
+                work.deepMiningPhaseStartedTick = work.ticks - 20;
+                work.stalledTicks = 0;
+                work.lastDistance = -1.0D;
+                progress(work, activeProgress(work),
+                    "当前深度不适合采集 " + itemId + "，正在返回更高的安全矿层");
+            }
+            tickDeepMiningWaitingEntry(work);
+            return;
+        }
+
+        String requiredPickaxe = DeepMiningPolicy.requiredPickaxe(itemId);
+        int remainingPickaxeDurability = totalPickaxeRemainingDurability(requiredPickaxe);
+        if (DeepMiningPolicy.suppliesNeedRefresh(
+            npc.creativeResources(),
+            remainingPickaxeDurability,
+            inventoryCount("minecraft:torch"),
+            DeepMiningPolicy.requiredTorches(itemId) > 0
+        )) {
+            npc.getNavigation().stop();
+            work.targetBlock = null;
+            if (tickDeepMiningPreflight(work, itemId)) return;
+        }
+
+        if (restoreDisplacedDeepMiningCheckpoint(work)) return;
+
+        // Finish a branch return before scanning for another visible vein.
+        // Otherwise an exposed ore near the junction can repeatedly pull the
+        // NPC away from the persisted checkpoint; displacement recovery then
+        // teleports it back and the same target is selected again forever.
+        if ("returning".equals(work.deepMiningPhase)) {
+            work.targetBlock = null;
+            work.deepMiningResourceTimedTarget = null;
+            work.deepMiningResourceTargetStartedTick = 0;
+            work.deepMiningResourceChaseStartedTick = 0;
+            tickDeepMiningReturn(work);
+            return;
+        }
+
         if (tickDeepMiningVisibleResource(work, itemId, selector, requested, prerequisite)) return;
 
         switch (work.deepMiningPhase) {
             case "seek-cave" -> tickDeepMiningSeekCave(work);
             case "descending" -> tickDeepMiningDescending(work, selector);
             case "branching" -> tickDeepMiningBranch(work, selector);
-            case "returning" -> tickDeepMiningReturn(work);
             case "waiting-entry" -> tickDeepMiningWaitingEntry(work);
             default -> {
                 work.deepMiningPhase = "preflight";
@@ -9021,9 +9542,34 @@ public final class NpcTaskEngine {
             BuildMaterialGoal goal = work.buildMaterialGoals.peekFirst();
             taskItemIds.add(goal.itemId);
             taskItemIds.add(goal.selector);
+            // A smelting goal may finish gathering eight furnace blocks one
+            // tick before prepareSmeltingWorkstation consumes them. Keep both
+            // vanilla furnace-stone variants protected across that boundary;
+            // otherwise the near-full cleanup pass can discard the completed
+            // prerequisite and create an endless gather-eight/drop-eight loop.
+            if (BuildMaterialPrerequisitePolicy.plan(goal.itemId).action()
+                    == BuildMaterialPrerequisitePolicy.Action.SMELT
+                || findSmeltingRecipeByOutput(goal.itemId) != null) {
+                taskItemIds.add("minecraft:cobblestone");
+                taskItemIds.add("minecraft:cobbled_deepslate");
+                taskItemIds.add("minecraft:furnace");
+            }
         }
         String requiredPickaxe = DeepMiningPolicy.requiredPickaxe(work.deepMiningItemId);
         taskItemIds.add(requiredPickaxe);
+        if (hasSuspendedDeepMining(work)) taskItemIds.add("#minecraft:logs");
+        // Policy protection uses concrete item IDs. Expand active task tags to
+        // the matching stacks that are actually in this backpack so a cleanup
+        // tick cannot throw away a just-completed tagged prerequisite between
+        // gather completion and its consumption by the next action.
+        for (String taskSelector : new ArrayList<>(taskItemIds)) {
+            if (taskSelector == null || !taskSelector.startsWith("#")) continue;
+            ResourceSelector selector = ResourceSelector.parse(taskSelector);
+            for (int slot = 0; slot < CodexNpcEntity.BACKPACK_SIZE; slot++) {
+                ItemStack stack = npc.inventory().getStackInSlot(slot);
+                if (!stack.isEmpty() && selector.matches(stack)) taskItemIds.add(itemId(stack));
+            }
+        }
         Set<String> protectedItems = MiningInventoryCleanupPolicy.protectedItems(
             taskItemIds,
             recipe == null ? List.of() : recipeIngredientOptions(recipe)
@@ -9052,35 +9598,38 @@ public final class NpcTaskEngine {
         npc.swing(InteractionHand.MAIN_HAND);
         progress(work, activeProgress(work),
             "背包接近满载，已丢弃 " + discardedStacks + " 组、共 " + discardedItems
-                + " 个多余石料，保留当前任务材料并继续原任务");
+                + " 个多余低级工具或石料，保留当前任务材料并继续原任务");
         return true;
     }
 
     private boolean tickDeepMiningPreflight(ActiveWork work, String itemId) {
         if (npc.creativeResources()) return false;
-        if (inventoryCount("minecraft:ladder") < DeepMiningPolicy.REQUIRED_LADDERS) {
+        int requiredLadders = DeepMiningPolicy.requiredLadders(itemId, npc.blockPosition().getY());
+        if (inventoryCount("minecraft:ladder") < requiredLadders) {
             beginBuildMaterialGoal(
                 work,
                 "minecraft:ladder",
                 "minecraft:ladder",
-                DeepMiningPolicy.REQUIRED_LADDERS,
-                "下矿前先准备 32 个梯子"
+                requiredLadders,
+                "下矿前先准备 " + requiredLadders + " 个梯子"
             );
             return true;
         }
-        if (inventoryCount("minecraft:torch") < DeepMiningPolicy.REQUIRED_TORCHES) {
+        int requiredTorches = DeepMiningPolicy.requiredTorches(itemId);
+        if (inventoryCount("minecraft:torch") < requiredTorches) {
             beginBuildMaterialGoal(
                 work,
                 "minecraft:torch",
                 "minecraft:torch",
-                DeepMiningPolicy.REQUIRED_TORCHES,
-                "下矿前先准备 32 个火把"
+                requiredTorches,
+                "下矿前先准备 " + requiredTorches + " 个火把"
             );
             return true;
         }
         String pickaxeId = DeepMiningPolicy.requiredPickaxe(itemId);
         int usable = usablePickaxeCount(pickaxeId, DeepMiningPolicy.MIN_PICKAXE_REMAINING_DURABILITY);
         if (!pickaxeId.isBlank() && usable < DeepMiningPolicy.REQUIRED_IRON_PICKAXES) {
+            if (tickMiningInventoryCleanup(work, findCraftRecipe(pickaxeId), pickaxeId)) return true;
             int target = inventoryCount(pickaxeId) + DeepMiningPolicy.REQUIRED_IRON_PICKAXES - usable;
             beginBuildMaterialGoal(
                 work,
@@ -9091,7 +9640,163 @@ public final class NpcTaskEngine {
             );
             return true;
         }
+        int logCount = inventoryCount("#minecraft:logs");
+        if (DeepMiningPolicy.logReserveNeedsRefresh(npc.creativeResources(), logCount)) {
+            beginBuildMaterialGoal(
+                work,
+                "minecraft:oak_log",
+                "#minecraft:logs",
+                DeepMiningPolicy.REQUIRED_LOG_RESERVE,
+                "下矿前先补满一组备用原木"
+            );
+            return true;
+        }
         return false;
+    }
+
+    private boolean tickDeepMiningFoodReserve(ActiveWork work) {
+        int reserve = safeProvisioningFoodCount();
+        if (!DeepMiningPolicy.foodReserveNeedsRefresh(
+            npc.creativeResources(),
+            work.deepMiningPreflightComplete,
+            reserve
+        )) return false;
+
+        progress(work, activeProgress(work),
+            "深挖口粮不足（" + reserve + "/" + DeepMiningPolicy.REQUIRED_FOOD_RESERVE
+                + "），先暂停原任务补足安全口粮");
+        beginDeepMiningFoodProvision(work);
+        return true;
+    }
+
+    private void beginDeepMiningFoodProvision(ActiveWork miningWork) {
+        if (active != miningWork) return;
+        pauseActive("深挖前补充安全口粮");
+
+        JsonObject spec = new JsonObject();
+        spec.addProperty("kind", "provision-food");
+        spec.addProperty("source", "auto");
+        spec.addProperty("destination", "backpack");
+        spec.addProperty("count", foodReserveTarget());
+        spec.addProperty("requestedBy", "deep-mining-survival");
+        spec.addProperty("priority", Math.min(1000, miningWork.priority + 1));
+        ActiveWork food = new ActiveWork(
+            "local:deep-mining-food:" + miningWork.id,
+            spec,
+            new JsonObject(),
+            Stance.WORK
+        );
+        active = food;
+        npc.setStance(Stance.WORK);
+        npc.setStatus("正在为深挖任务补充安全口粮");
+    }
+
+    private int safeProvisioningFoodCount() {
+        int count = 0;
+        for (int slot = 0; slot < CodexNpcEntity.INVENTORY_SIZE; slot++) {
+            ItemStack stack = npc.inventory().getStackInSlot(slot);
+            if (isSafeProvisioningFood(stack)) count += stack.getCount();
+        }
+        return count;
+    }
+
+    private boolean restoreDisplacedDeepMiningCheckpoint(ActiveWork work) {
+        if (!List.of("descending", "branching", "returning").contains(work.deepMiningPhase)) return false;
+        // Visible veins deliberately lead away from the staircase or branch
+        // checkpoint. Let their bounded 15-second chase finish or skip the
+        // target before treating that movement as external displacement.
+        if (DeepMiningPolicy.resourceChaseOwnsMovement(
+            work.targetBlock != null,
+            work.deepMiningResourceChaseStartedTick
+        )) return false;
+        // Returning deliberately moves away from the most recent checkpoint.
+        // Never mistake valid progress through the already-opened branch for an
+        // external displacement, even when a mineshaft floor makes the entity
+        // walk one block above the logical tunnel layer.
+        if ("returning".equals(work.deepMiningPhase)
+            && work.deepMiningLanding != null
+            && work.deepMiningDirection != null) {
+            BlockPos origin = DeepMiningPolicy.branchOrigin(
+                work.deepMiningLanding,
+                work.deepMiningDirection,
+                work.deepMiningBranchIndex,
+                work.deepMiningRegionIndex
+            );
+            BlockPos branchEnd = DeepMiningPolicy.branchStand(
+                work.deepMiningLanding,
+                work.deepMiningDirection,
+                work.deepMiningBranchIndex,
+                work.deepMiningRegionIndex,
+                DeepMiningPolicy.BRANCH_LENGTH
+            );
+            if (DeepMiningPolicy.isOnReturnCorridor(origin, branchEnd, npc.blockPosition())) return false;
+        }
+        BlockPos checkpoint = safeDeepMiningCheckpoint(work);
+        if (checkpoint == null) return false;
+        ServerPlayer owner = npc.owner();
+        boolean ownerCanCheat = owner != null && owner.hasPermissions(2);
+        double distance = npc.position().distanceTo(Vec3.atBottomCenterOf(checkpoint));
+        int verticalDelta = npc.blockPosition().getY() - checkpoint.getY();
+        if (!DeepMiningPolicy.shouldRestoreCheckpoint(ownerCanCheat, distance, verticalDelta)) return false;
+        reconcileDeepMiningBranchCheckpoint(work, checkpoint);
+        restoreDeepMiningCheckpoint(work, checkpoint);
+        progress(work, activeProgress(work),
+            "检测到深挖任务位置偏离，已使用玩家开启的作弊权限返回最后安全矿道检查点");
+        return true;
+    }
+
+    private void reconcileDeepMiningBranchCheckpoint(ActiveWork work, BlockPos checkpoint) {
+        if (!"branching".equals(work.deepMiningPhase) || work.deepMiningBranchProgress <= 0) return;
+        int retainedProgress = DeepMiningPolicy.retainedBranchProgress(
+            work.deepMiningLanding,
+            work.deepMiningDirection,
+            work.deepMiningBranchIndex,
+            work.deepMiningRegionIndex,
+            work.deepMiningBranchProgress,
+            checkpoint
+        );
+        if (retainedProgress == work.deepMiningBranchProgress) return;
+
+        work.deepMiningBranchProgress = retainedProgress;
+        work.deepMiningLastTorchProgress = 0;
+        work.targetBlock = null;
+        work.destination = null;
+        work.stalledTicks = 0;
+        work.lastDistance = -1.0D;
+        work.failedActions = 0;
+        progress(work, activeProgress(work),
+            "深挖安全点已回退到主矿道，已同步分支进度并从安全点继续开掘");
+    }
+
+    private BlockPos safeDeepMiningCheckpoint(ActiveWork work) {
+        if (!(npc.level() instanceof ServerLevel level)) return null;
+        for (BlockPos candidate : new BlockPos[] {
+            work.deepMiningLastSafeStand,
+            work.deepMiningLanding,
+            work.deepMiningEntrance
+        }) {
+            if (candidate == null) continue;
+            ChunkPos chunk = new ChunkPos(candidate);
+            level.getChunkSource().addRegionTicket(TASK_CHUNK_TICKET, chunk, 2, npc.getUUID());
+            level.getChunk(chunk.x, chunk.z);
+            if (isSafeGatherStand(candidate)) return candidate.immutable();
+        }
+        return null;
+    }
+
+    private void restoreDeepMiningCheckpoint(ActiveWork work, BlockPos checkpoint) {
+        maintainTaskChunkTicket(checkpoint);
+        npc.getNavigation().stop();
+        npc.teleportTo(checkpoint.getX() + 0.5D, checkpoint.getY(), checkpoint.getZ() + 0.5D);
+        npc.setDeltaMovement(Vec3.ZERO);
+        npc.fallDistance = 0.0F;
+        work.deepMiningLastSafeStand = checkpoint.immutable();
+        work.targetBlock = null;
+        work.destination = null;
+        work.lastTeleportTarget = checkpoint.immutable();
+        work.stalledTicks = 0;
+        work.lastDistance = -1.0D;
+        work.failedActions = 0;
     }
 
     private int usablePickaxeCount(String itemId, int minimumRemainingDurability) {
@@ -9103,9 +9808,30 @@ public final class NpcTaskEngine {
             int remaining = stack.isDamageableItem()
                 ? stack.getMaxDamage() - stack.getDamageValue()
                 : Integer.MAX_VALUE;
-            if (remaining >= minimumRemainingDurability) count += stack.getCount();
+            int required = stack.isDamageableItem()
+                ? DeepMiningPolicy.minimumUsablePickaxeDurability(
+                    stack.getMaxDamage(),
+                    minimumRemainingDurability
+                )
+                : minimumRemainingDurability;
+            if (remaining >= required) count += stack.getCount();
         }
         return count;
+    }
+
+    private int totalPickaxeRemainingDurability(String itemId) {
+        if (itemId == null || itemId.isBlank()) return Integer.MAX_VALUE;
+        long remaining = 0L;
+        for (int slot = 0; slot < CodexNpcEntity.INVENTORY_SIZE; slot++) {
+            ItemStack stack = npc.inventory().getStackInSlot(slot);
+            if (!itemId(stack).equals(itemId)) continue;
+            int perItem = stack.isDamageableItem()
+                ? Math.max(0, stack.getMaxDamage() - stack.getDamageValue())
+                : Integer.MAX_VALUE;
+            remaining += (long) perItem * Math.max(1, stack.getCount());
+            if (remaining >= Integer.MAX_VALUE) return Integer.MAX_VALUE;
+        }
+        return (int) remaining;
     }
 
     private void tickDeepMiningSeekCave(ActiveWork work) {
@@ -9161,24 +9887,264 @@ public final class NpcTaskEngine {
     }
 
     private void tickDeepMiningWaitingEntry(ActiveWork work) {
-        npc.getNavigation().stop();
         if (work.ticks - work.deepMiningPhaseStartedTick < 20) return;
         work.deepMiningPhaseStartedTick = work.ticks;
-        Direction safeDirection = chooseDeepMiningDirection(
-            npc.blockPosition(),
-            work.deepMiningDirection
+        boolean needsHigherEntry = DeepMiningPolicy.needsHigherEntry(
+            work.deepMiningItemId,
+            npc.blockPosition().getY()
         );
-        if (safeDirection == null) {
+
+        // A water edge, shoreline, or uneven generated surface can make all
+        // four stair candidates around the current block unsafe.  Keep the
+        // same task alive and walk to a nearby dry stand that has at least one
+        // valid staircase direction instead of waiting forever at the lip.
+        if (work.deepMiningCaveTarget == null
+            || !isSafeGatherStand(work.deepMiningCaveTarget)
+            || chooseDeepMiningDirection(work.deepMiningCaveTarget, work.deepMiningDirection) == null
+            || needsHigherEntry && DeepMiningPolicy.needsHigherEntry(
+                work.deepMiningItemId,
+                work.deepMiningCaveTarget.getY()
+            )) {
+            BlockPos previousTarget = work.deepMiningCaveTarget;
+            work.deepMiningCaveTarget = null;
+            if (needsHigherEntry && work.deepMiningEntrySearchIndex == 0) {
+                work.deepMiningCaveTarget = findSurfaceDeepMiningEntryNear(
+                    npc.blockPosition(),
+                    work.deepMiningDirection,
+                    48,
+                    null
+                );
+                work.deepMiningEntrySearchIndex = 1;
+            } else if (!needsHigherEntry && work.deepMiningEntrySearchIndex == 0) {
+                work.deepMiningCaveTarget = findNearbyDeepMiningEntry(
+                    npc.blockPosition(),
+                    work.deepMiningDirection,
+                    16,
+                    6
+                );
+                if (work.deepMiningCaveTarget == null) {
+                    work.deepMiningCaveTarget = findNearbyDeepMiningEntry(
+                        npc.blockPosition(),
+                        work.deepMiningDirection,
+                        32,
+                        10
+                    );
+                }
+                if (work.deepMiningCaveTarget == null) {
+                    work.deepMiningCaveTarget = findSurfaceDeepMiningEntryNear(
+                        npc.blockPosition(),
+                        work.deepMiningDirection,
+                        96,
+                        null
+                    );
+                }
+                // Index zero means that the bounded local scan has not run.
+                // Mark it consumed even when it produced a candidate, so an
+                // unreachable shoreline stand cannot be selected forever.
+                work.deepMiningEntrySearchIndex = 1;
+            }
+            if (work.deepMiningCaveTarget == null) {
+                work.deepMiningCaveTarget = findDeepMiningExpeditionEntry(work);
+            }
+            if (work.deepMiningCaveTarget != null
+                && !work.deepMiningCaveTarget.equals(previousTarget)) {
+                work.stalledTicks = 0;
+                work.lastDistance = -1.0D;
+                work.deepMiningEntryTargetStartedTick = work.ticks;
+            }
+        }
+
+        if (work.deepMiningCaveTarget != null) {
+            double distance = npc.position().distanceTo(
+                Vec3.atBottomCenterOf(work.deepMiningCaveTarget)
+            );
+            trackNavigation(work, distance);
+            ServerPlayer owner = npc.owner();
+            boolean ownerCanCheat = owner != null && owner.hasPermissions(2);
+            int targetAgeTicks = Math.max(0, work.ticks - work.deepMiningEntryTargetStartedTick);
+            boolean targetTimedOut = DeepMiningPolicy.entryTargetTimedOut(distance, targetAgeTicks);
+            if (DeepMiningPolicy.shouldTeleportToEntry(
+                ownerCanCheat,
+                distance,
+                work.stalledTicks
+            ) || (ownerCanCheat && targetTimedOut)) {
+                maintainTaskChunkTicket(work.deepMiningCaveTarget);
+                npc.getNavigation().stop();
+                npc.teleportTo(
+                    work.deepMiningCaveTarget.getX() + 0.5D,
+                    work.deepMiningCaveTarget.getY(),
+                    work.deepMiningCaveTarget.getZ() + 0.5D
+                );
+                npc.setDeltaMovement(Vec3.ZERO);
+                npc.fallDistance = 0.0F;
+                work.lastTeleportTarget = work.deepMiningCaveTarget.immutable();
+                work.stalledTicks = 0;
+                work.lastDistance = -1.0D;
+                work.deepMiningEntryTargetStartedTick = 0;
+                progress(work, activeProgress(work),
+                    "已使用玩家开启的作弊权限传送到远处安全陆地下矿入口");
+                if (acceptDeepMiningEntry(work, "已到达远处安全陆地入口，继续深层采矿")) return;
+            }
+            if (!ownerCanCheat && targetTimedOut) {
+                BlockPos unreachable = work.deepMiningCaveTarget;
+                npc.getNavigation().stop();
+                work.deepMiningCaveTarget = null;
+                work.deepMiningEntryTargetStartedTick = 0;
+                work.stalledTicks = 0;
+                work.lastDistance = -1.0D;
+                progress(work, activeProgress(work),
+                    "入口步行不可达，已跳过并继续扩大远征搜索范围");
+                maintainTaskChunkTicket(unreachable);
+                return;
+            }
+            if (distance > 2.0D) {
+                navigateTowardBlock(work.deepMiningCaveTarget, 1.05D);
+                if (work.ticks % 40 == 0) {
+                    npc.setStatus("正在前往附近安全的深挖入口");
+                    progress(work, activeProgress(work), "当前入口不安全，正在步行寻找附近安全陆地入口");
+                }
+                return;
+            }
+            if (acceptDeepMiningEntry(work, "已到达附近安全陆地入口，继续寻找深挖路径")) return;
+            work.deepMiningCaveTarget = null;
+            work.deepMiningEntryTargetStartedTick = 0;
+            work.stalledTicks = 0;
+            work.lastDistance = -1.0D;
+        }
+
+        if (!acceptDeepMiningEntry(work, "检测到安全入口，继续深层采矿")) {
             if (work.ticks % 100 == 0) npc.setStatus("等待可达的安全陆地入口");
             return;
         }
-        work.deepMiningEntrance = npc.blockPosition().immutable();
-        work.deepMiningLastSafeStand = work.deepMiningEntrance;
-        work.deepMiningDirection = safeDirection;
-        work.deepMiningCaveTarget = null;
-        work.deepMiningBlockedTurns = 0;
-        work.deepMiningPhase = "seek-cave";
-        progress(work, activeProgress(work), "检测到安全入口，继续深层采矿");
+    }
+
+    private boolean acceptDeepMiningEntry(ActiveWork work, String message) {
+        BlockPos actual = npc.blockPosition();
+        Direction actualDirection = chooseDeepMiningDirection(actual, work.deepMiningDirection);
+        if (isSafeGatherStand(actual)
+            && actualDirection != null
+            && !DeepMiningPolicy.needsHigherEntry(work.deepMiningItemId, actual.getY())) {
+            npc.getNavigation().stop();
+            work.deepMiningEntrance = actual.immutable();
+            work.deepMiningLastSafeStand = actual.immutable();
+            work.deepMiningDirection = actualDirection;
+            work.deepMiningCaveTarget = null;
+            work.deepMiningEntryTargetStartedTick = 0;
+            work.deepMiningBlockedTurns = 0;
+            work.deepMiningPhase = "seek-cave";
+            progress(work, activeProgress(work), message);
+            return true;
+        }
+
+        // Navigation can stop one block above the requested stand on a shore
+        // or a shallow ledge.  Only accept the requested candidate when the
+        // entity has actually entered that stand; never lock a stale y value
+        // into the staircase checkpoint.
+        BlockPos candidate = work.deepMiningCaveTarget;
+        if (candidate == null || actual.distManhattan(candidate) > 1) return false;
+        Direction candidateDirection = chooseDeepMiningDirection(candidate, work.deepMiningDirection);
+        if (!isSafeGatherStand(candidate)
+            || candidateDirection == null
+            || DeepMiningPolicy.needsHigherEntry(work.deepMiningItemId, candidate.getY())) return false;
+        npc.getNavigation().moveTo(candidate.getX() + 0.5D, candidate.getY(), candidate.getZ() + 0.5D, 1.0D);
+        return false;
+    }
+
+    private BlockPos findNearbyDeepMiningEntry(
+        BlockPos origin,
+        Direction preferred,
+        int radius,
+        int verticalRadius
+    ) {
+        return findBlockAt(position -> DeepMiningPolicy.isUsableNearbyEntry(
+                position.equals(origin),
+                isSafeGatherStand(position),
+                chooseDeepMiningDirection(position, preferred) != null
+            ),
+            radius,
+            verticalRadius
+        );
+    }
+
+    private BlockPos findDeepMiningExpeditionEntry(ActiveWork work) {
+        if (!(npc.level() instanceof ServerLevel level)) return null;
+        // Index one is the first expedition probe because zero is reserved for
+        // the one-time local scan performed by tickDeepMiningWaitingEntry.
+        int attempt = Math.max(0, work.deepMiningEntrySearchIndex - 1);
+        work.deepMiningEntrySearchIndex = Math.max(2, work.deepMiningEntrySearchIndex + 1);
+        BlockPos searchCenter;
+        NpcHomeStorage.Home home = null;
+        ServerPlayer owner = npc.owner();
+        if (owner != null) home = NpcHomeStorage.resolve(owner);
+        if (home != null && home.dimension().equals(level.dimension()) && attempt < 4) {
+            Direction[] directions = {
+                Direction.NORTH,
+                Direction.EAST,
+                Direction.SOUTH,
+                Direction.WEST,
+            };
+            searchCenter = home.position().relative(directions[attempt], 32);
+        } else {
+            int expeditionAttempt = home != null && home.dimension().equals(level.dimension())
+                ? Math.max(0, attempt - 4)
+                : attempt;
+            searchCenter = DeepMiningPolicy.entryExpeditionProbe(
+                npc.blockPosition(),
+                expeditionAttempt
+            );
+        }
+
+        ChunkPos chunk = new ChunkPos(searchCenter);
+        level.getChunkSource().addRegionTicket(TASK_CHUNK_TICKET, chunk, 2, npc.getUUID());
+        level.getChunk(chunk.x, chunk.z);
+        BlockPos candidate = findSurfaceDeepMiningEntryNear(
+            searchCenter,
+            work.deepMiningDirection,
+            DeepMiningPolicy.ENTRY_PROBE_RADIUS,
+            home
+        );
+        if (candidate == null && attempt % 4 == 3) {
+            progress(work, activeProgress(work),
+                "附近没有安全陆地入口，正在扩大远征搜索范围（已检查 " + (attempt + 1) + " 个区域）");
+        }
+        return candidate;
+    }
+
+    private BlockPos findSurfaceDeepMiningEntryNear(
+        BlockPos center,
+        Direction preferred,
+        int radius,
+        NpcHomeStorage.Home protectedHome
+    ) {
+        if (!(npc.level() instanceof ServerLevel level)) return null;
+        int boundedRadius = Math.max(1, radius);
+        for (int ring = 0; ring <= boundedRadius; ring++) {
+            BlockPos best = null;
+            double bestDistance = Double.MAX_VALUE;
+            for (int dx = -ring; dx <= ring; dx++) {
+                for (int dz = -ring; dz <= ring; dz++) {
+                    if (ring > 0 && Math.abs(dx) != ring && Math.abs(dz) != ring) continue;
+                    int x = center.getX() + dx;
+                    int z = center.getZ() + dz;
+                    BlockPos chunkProbe = new BlockPos(x, center.getY(), z);
+                    if (!level.hasChunkAt(chunkProbe) || !level.getWorldBorder().isWithinBounds(chunkProbe)) continue;
+                    int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+                    BlockPos candidate = new BlockPos(x, y, z);
+                    if (protectedHome != null
+                        && protectedHome.dimension().equals(level.dimension())
+                        && candidate.distSqr(protectedHome.position())
+                            < DeepMiningPolicy.ENTRY_HOME_CLEARANCE * DeepMiningPolicy.ENTRY_HOME_CLEARANCE) continue;
+                    if (!isSafeGatherStand(candidate)
+                        || chooseDeepMiningDirection(candidate, preferred) == null) continue;
+                    double distance = candidate.distSqr(center);
+                    if (distance >= bestDistance) continue;
+                    best = candidate.immutable();
+                    bestDistance = distance;
+                }
+            }
+            if (best != null) return best;
+        }
+        return null;
     }
 
     private void beginDeepMiningDescent(ActiveWork work, String message) {
@@ -9258,7 +10224,10 @@ public final class NpcTaskEngine {
             );
             return;
         }
-        if (!current.equals(branchOrigin)) {
+        if (DeepMiningPolicy.shouldApproachBranchOrigin(
+            work.deepMiningBranchProgress,
+            current.equals(branchOrigin)
+        )) {
             BlockPos nextSpine = nextHorizontalStep(current, branchOrigin);
             if (tickDeepMiningCorridor(work, nextSpine, selector)) {
                 work.deepMiningLastSafeStand = nextSpine.immutable();
@@ -9292,8 +10261,62 @@ public final class NpcTaskEngine {
             work.deepMiningBranchIndex,
             work.deepMiningRegionIndex
         );
-        double distance = npc.position().distanceTo(Vec3.atBottomCenterOf(origin));
-        if (distance <= 1.25D) {
+        BlockPos branchEnd = DeepMiningPolicy.branchStand(
+            work.deepMiningLanding,
+            work.deepMiningDirection,
+            work.deepMiningBranchIndex,
+            work.deepMiningRegionIndex,
+            DeepMiningPolicy.BRANCH_LENGTH
+        );
+        boolean checkpointOnReturnCorridor = DeepMiningPolicy.isOnReturnCorridor(
+            origin,
+            branchEnd,
+            work.deepMiningLastSafeStand
+        );
+        if (DeepMiningPolicy.shouldRelocateRegionAfterSpineReroute(
+            work.deepMiningBranchProgress,
+            checkpointOnReturnCorridor
+        )) {
+            relocateDeepMiningRegionToCheckpoint(work,
+                "通往下一矿区的主矿道遇到障碍，已从最后安全位置建立新矿区继续采集");
+            return;
+        }
+        BlockPos current = npc.blockPosition();
+        if (isSafeGatherStand(current) && DeepMiningPolicy.isImprovedReturnCheckpoint(
+            origin,
+            branchEnd,
+            current,
+            work.deepMiningLastSafeStand
+        )) {
+            work.deepMiningLastSafeStand = DeepMiningPolicy.canonicalReturnCheckpoint(origin, current).immutable();
+        }
+        Vec3 originPoint = Vec3.atBottomCenterOf(origin);
+        double distance = npc.position().distanceTo(originPoint);
+        // Navigation commonly stops one collision-width short of the centre of
+        // a one-block branch junction.  The tunnel is already excavated, so use
+        // the same collision-checked short physical step as descent movement to
+        // cross the final block boundary instead of waiting forever at ~1.27 m.
+        if (!DeepMiningPolicy.reachedStand(npc.position(), origin)
+            && distance <= 3.2D
+            && isSafeGatherStand(origin)) {
+            Vec3 step = DeepMiningPolicy.closeRangeStep(npc.position(), originPoint);
+            if (step.lengthSqr() > 0.000001D) {
+                npc.move(MoverType.SELF, step);
+                current = npc.blockPosition();
+                distance = npc.position().distanceTo(originPoint);
+                if (isSafeGatherStand(current) && DeepMiningPolicy.isImprovedReturnCheckpoint(
+                    origin,
+                    branchEnd,
+                    current,
+                    work.deepMiningLastSafeStand
+                )) {
+                    work.deepMiningLastSafeStand = DeepMiningPolicy.canonicalReturnCheckpoint(origin, current).immutable();
+                }
+            }
+        }
+        if (DeepMiningPolicy.reachedReturnOrigin(npc.position(), origin)
+            || DeepMiningPolicy.reachedStand(npc.position(), origin)
+            || distance <= 0.75D) {
             npc.getNavigation().stop();
             work.deepMiningLastSafeStand = origin.immutable();
             work.deepMiningBranchIndex++;
@@ -9305,7 +10328,7 @@ public final class NpcTaskEngine {
                 "已返回主矿道，开始第 " + (work.deepMiningBranchIndex + 1) + " 条分支");
             return;
         }
-        npc.getNavigation().moveTo(origin.getX() + 0.5D, origin.getY(), origin.getZ() + 0.5D, 1.05D);
+        npc.getNavigation().moveTo(originPoint.x, originPoint.y, originPoint.z, 1.05D);
         if (work.ticks % 40 == 0) npc.setStatus("正在沿已开掘矿道返回主矿道");
     }
 
@@ -9320,8 +10343,23 @@ public final class NpcTaskEngine {
         maintainTaskChunkTicket(desiredStand);
         BlockPos floor = desiredStand.below();
         if (!hasSolidSafeMiningFloor(floor)) {
+            BlockState floorState = npc.level().getBlockState(floor);
+            if (mayBreakDeepMiningAccess(floor)) {
+                if (work.ticks - work.lastActionTick < 8) return false;
+                int floorToolSlot = bestToolSlot(floorState);
+                if (floorToolSlot >= 0) equipMainHand(floorToolSlot);
+                work.lastActionTick = work.ticks;
+                npc.swing(InteractionHand.MAIN_HAND);
+                if (proxy.breakBlock(floor, floorToolSlot >= 0 ? CodexNpcEntity.MAIN_HAND_SLOT : -1)) {
+                    recordInventoryAction(work, "deep-mining-clear-floor");
+                    work.deepMiningBrokenBlocks++;
+                    npc.absorbNearbyItemsAt(Vec3.atCenterOf(floor), 2.5D);
+                }
+                return false;
+            }
             if (!placeDeepMiningFloor(work, floor)) {
-                rerouteDeepMining(work, "前方缺少安全支撑或存在液体，已改道");
+                rerouteDeepMining(work, "前方地板 " + id(npc.level().getBlockState(floor).getBlock())
+                    + " 无法形成安全支撑，已改道");
             }
             return false;
         }
@@ -9332,7 +10370,8 @@ public final class NpcTaskEngine {
         )) {
             BlockState state = npc.level().getBlockState(excavation);
             if (!npc.level().getFluidState(excavation).isEmpty()) {
-                rerouteDeepMining(work, "前方发现水或岩浆，已从最后安全位置改道");
+                rerouteDeepMining(work, "前方 " + id(state.getBlock())
+                    + " 含有液体，已从最后安全位置改道");
                 return false;
             }
             if (state.getCollisionShape(npc.level(), excavation).isEmpty()) continue;
@@ -9342,7 +10381,8 @@ public final class NpcTaskEngine {
                 return false;
             }
             if (!mayBreakDeepMiningAccess(excavation)) {
-                rerouteDeepMining(work, "遇到液体、坠落方块、保护方块或不可破坏方块，已改道");
+                rerouteDeepMining(work, "矿道方块 " + id(state.getBlock())
+                    + " 不可安全破坏，已改道");
                 return false;
             }
             if (work.ticks - work.lastActionTick < 8) return false;
@@ -9432,13 +10472,54 @@ public final class NpcTaskEngine {
                     work.targetBlock = pollGatherTarget(work, selector);
                 }
             }
+            if (work.targetBlock == null) {
+                work.deepMiningResourceTimedTarget = null;
+                work.deepMiningResourceTargetStartedTick = 0;
+            } else if (!work.targetBlock.equals(work.deepMiningResourceTimedTarget)) {
+                work.deepMiningResourceTimedTarget = work.targetBlock.immutable();
+                work.deepMiningResourceTargetStartedTick = work.ticks;
+            }
         }
-        if (work.targetBlock == null) return false;
+        if (work.targetBlock == null) {
+            work.deepMiningResourceChaseStartedTick = 0;
+            return false;
+        }
+        if (work.deepMiningResourceChaseStartedTick <= 0) {
+            work.deepMiningResourceChaseStartedTick = work.ticks;
+        }
+        if (work.deepMiningResourceTimedTarget == null
+            || !work.targetBlock.equals(work.deepMiningResourceTimedTarget)) {
+            work.deepMiningResourceTimedTarget = work.targetBlock.immutable();
+            work.deepMiningResourceTargetStartedTick = work.ticks;
+        }
+        if (DeepMiningPolicy.resourceTargetTimedOut(
+            work.ticks - work.deepMiningResourceChaseStartedTick
+        )) {
+            BlockPos unreachable = work.targetBlock.immutable();
+            work.skippedGatherTargets.add(unreachable);
+            work.skippedGatherTargets.addAll(work.gatherTargets);
+            work.gatherTargets.clear();
+            work.targetBlock = null;
+            work.deepMiningResourceTimedTarget = null;
+            work.deepMiningResourceTargetStartedTick = 0;
+            work.deepMiningResourceChaseStartedTick = 0;
+            npc.getNavigation().stop();
+            work.stalledTicks = 0;
+            work.gatherPathFailures = 0;
+            work.lastDistance = -1.0D;
+            work.lastGatherPathAttemptTick = -1;
+            work.gatherStandPathCursor = 0;
+            progress(work, activeProgress(work), "矿脉目标 " + unreachable.toShortString()
+                + " 在 15 秒内没有可达交互站位，已记住并继续当前矿道");
+            return true;
+        }
         if (!approachGatherTarget(work, work.targetBlock, 2.8D, 1.1D)) return true;
         BlockPos brokenTarget = work.targetBlock.immutable();
         BlockState state = npc.level().getBlockState(brokenTarget);
         if (!matchesGatherBlock(brokenTarget, selector, bestToolStack())) {
             work.targetBlock = null;
+            work.deepMiningResourceTimedTarget = null;
+            work.deepMiningResourceTargetStartedTick = 0;
             return true;
         }
         if (!npc.creativeResources() && state.requiresCorrectToolForDrops() && !hasUsableToolFor(state)) {
@@ -9455,6 +10536,8 @@ public final class NpcTaskEngine {
             if (++work.failedActions >= 3) {
                 work.skippedGatherTargets.add(brokenTarget);
                 work.targetBlock = null;
+                work.deepMiningResourceTimedTarget = null;
+                work.deepMiningResourceTargetStartedTick = 0;
                 work.failedActions = 0;
             }
             return true;
@@ -9464,6 +10547,9 @@ public final class NpcTaskEngine {
         refreshConnectedResourcesAfterBreak(work, brokenTarget, selector, false);
         work.deepMiningBrokenBlocks++;
         work.targetBlock = null;
+        work.deepMiningResourceTimedTarget = null;
+        work.deepMiningResourceTargetStartedTick = 0;
+        work.deepMiningResourceChaseStartedTick = 0;
         work.failedActions = 0;
         npc.addExhaustion(0.08F);
         if (prerequisite) {
@@ -9526,8 +10612,7 @@ public final class NpcTaskEngine {
         if (!npc.level().getFluidState(target).isEmpty()) return false;
         BlockState current = npc.level().getBlockState(target);
         if (!current.canBeReplaced()) return false;
-        int slot = findItemSlot("#forge:cobblestone");
-        if (slot < 0) slot = findItemSlot("minecraft:cobbled_deepslate");
+        int slot = findDeepMiningFloorMaterialSlot();
         if (slot < 0) return false;
         Direction supportDirection = findSupport(target);
         if (supportDirection == null) return false;
@@ -9541,16 +10626,23 @@ public final class NpcTaskEngine {
         return true;
     }
 
+    private int findDeepMiningFloorMaterialSlot() {
+        for (String selector : DeepMiningPolicy.floorMaterialSelectors()) {
+            int slot = findItemSlot(selector);
+            if (slot >= 0) return slot;
+        }
+        return -1;
+    }
+
     private boolean mayBreakDeepMiningAccess(BlockPos position) {
         BlockState state = npc.level().getBlockState(position);
-        String blockId = id(state.getBlock());
-        if (npc.level().getBlockEntity(position) != null || isProtectedHomeGatherResource(position)) return false;
-        if (DeepMiningPolicy.isUnsafeExcavation(
-            blockId,
+        return DeepMiningPolicy.mayBreakCorridorObstacle(
+            state.isAir(),
             !npc.level().getFluidState(position).isEmpty(),
-            state.getDestroySpeed(npc.level(), position)
-        )) return false;
-        return mayBreakMiningAccess(position) || blockId.endsWith("_ore");
+            state.getDestroySpeed(npc.level(), position),
+            npc.level().getBlockEntity(position) != null,
+            isProtectedHomeGatherResource(position)
+        );
     }
 
     private void rerouteDeepMining(ActiveWork work, String message) {
@@ -9579,8 +10671,57 @@ public final class NpcTaskEngine {
             work.deepMiningDirection = reroute;
             work.deepMiningStaircaseStep = 0;
         } else if (work.deepMiningPhase.equals("branching")) {
+            BlockPos origin = DeepMiningPolicy.branchOrigin(
+                work.deepMiningLanding,
+                work.deepMiningDirection,
+                work.deepMiningBranchIndex,
+                work.deepMiningRegionIndex
+            );
+            BlockPos branchEnd = DeepMiningPolicy.branchStand(
+                work.deepMiningLanding,
+                work.deepMiningDirection,
+                work.deepMiningBranchIndex,
+                work.deepMiningRegionIndex,
+                DeepMiningPolicy.BRANCH_LENGTH
+            );
+            boolean checkpointOnReturnCorridor = DeepMiningPolicy.isOnReturnCorridor(
+                origin,
+                branchEnd,
+                work.deepMiningLastSafeStand
+            );
+            if (DeepMiningPolicy.shouldRelocateRegionAfterSpineReroute(
+                work.deepMiningBranchProgress,
+                checkpointOnReturnCorridor
+            )) {
+                relocateDeepMiningRegionToCheckpoint(work, message);
+                return;
+            }
             work.deepMiningPhase = "returning";
         }
+        progress(work, activeProgress(work), message);
+    }
+
+    private void relocateDeepMiningRegionToCheckpoint(ActiveWork work, String message) {
+        BlockPos checkpoint = work.deepMiningLastSafeStand == null
+            ? npc.blockPosition().immutable()
+            : work.deepMiningLastSafeStand.immutable();
+        npc.getNavigation().stop();
+        work.deepMiningLanding = checkpoint;
+        work.deepMiningRegionIndex = 0;
+        work.deepMiningBranchIndex = 0;
+        work.deepMiningBranchProgress = 0;
+        work.deepMiningLastTorchProgress = 0;
+        work.deepMiningPhase = "branching";
+        work.deepMiningPhaseStartedTick = work.ticks;
+        work.deepMiningBlockedTurns = 0;
+        work.targetBlock = null;
+        work.destination = null;
+        work.deepMiningResourceTimedTarget = null;
+        work.deepMiningResourceTargetStartedTick = 0;
+        work.deepMiningResourceChaseStartedTick = 0;
+        work.stalledTicks = 0;
+        work.lastDistance = -1.0D;
+        work.failedActions = 0;
         progress(work, activeProgress(work), message);
     }
 
@@ -9905,7 +11046,23 @@ public final class NpcTaskEngine {
 
     private void maintainTaskChunkTicket(BlockPos position) {
         if (!(npc.level() instanceof ServerLevel level)) return;
-        level.getChunkSource().addRegionTicket(TASK_CHUNK_TICKET, new ChunkPos(position), 2, npc.getUUID());
+        ChunkPos chunk = new ChunkPos(position);
+        level.getChunkSource().addRegionTicket(TASK_CHUNK_TICKET, chunk, 2, npc.getUUID());
+        if (active == null) return;
+        if (forcedTaskLevel == level && chunk.equals(forcedTaskChunk)) return;
+
+        releaseForcedTaskChunk();
+        level.setChunkForced(chunk.x, chunk.z, true);
+        forcedTaskLevel = level;
+        forcedTaskChunk = chunk;
+    }
+
+    private void releaseForcedTaskChunk() {
+        if (forcedTaskLevel != null && forcedTaskChunk != null) {
+            forcedTaskLevel.setChunkForced(forcedTaskChunk.x, forcedTaskChunk.z, false);
+        }
+        forcedTaskLevel = null;
+        forcedTaskChunk = null;
     }
 
     private boolean matchesGatherBlock(BlockPos position, ResourceSelector selector, ItemStack tool) {
@@ -10462,7 +11619,12 @@ public final class NpcTaskEngine {
                 if (!candidate.canCraftInDimensions(2, 2)
                     && !prepareCraftingWorkstation(work, outputId)) return true;
                 if (work.ticks - work.lastActionTick < 8) return true;
-                if (!canInsert(output)) {
+                if (!CraftingIngredientAllocator.canInsertAfterConsumption(
+                    allocation,
+                    CodexNpcEntity.BACKPACK_SIZE,
+                    slot -> npc.inventory().getStackInSlot(slot),
+                    output
+                )) {
                     fail(work, "NPC 背包没有空间接收前置材料 " + outputId, "INVENTORY_FULL");
                     return true;
                 }
@@ -11251,14 +12413,22 @@ public final class NpcTaskEngine {
         InteractionResult result = proxy.useItemOn(placement.below(), Direction.UP, stack, sourceSlot);
         work.lastActionTick = work.ticks;
         boolean placed = id(level.getBlockState(placement).getBlock()).equals(workstationId);
-        if (!placed && !result.consumesAction()) {
+        boolean placedDirectly = false;
+        if (WorkstationPolicy.shouldAttemptDirectPlacement(placed)) {
             placed = placeWorkstationDirectly(level, placement, workstationId, workstationItem, sourceSlot, fallback);
+            placedDirectly = placed;
         }
         if (!placed || !id(level.getBlockState(placement).getBlock()).equals(workstationId)) {
-            fail(work, "工作站放置被世界保护或其他模组拒绝", "WORKSTATION_PLACEMENT_DENIED");
+            work.skippedWorkstationTargets.add(placement);
+            work.targetBlock = null;
+            work.stalledTicks = 0;
+            work.lastDistance = -1.0D;
+            progress(work, activeProgress(work),
+                "当前工作站放置点被占用或拒绝，正在改用附近其他安全位置");
             return null;
         }
-        if (sourceSlot < 0 && !npc.creativeResources() && fallback != null && result.consumesAction()) {
+        if (sourceSlot < 0 && !npc.creativeResources() && fallback != null
+            && result.consumesAction() && !placedDirectly) {
             consumeMatching(fallback.selector(), fallback.count());
         }
         work.targetBlock = null;
@@ -11277,7 +12447,7 @@ public final class NpcTaskEngine {
         Predicate<BlockPos> reachable = position -> !work.skippedWorkstationTargets.contains(position)
             && isReachableWorkstationPlacement(position, 3.2);
         if (!work.kind.equals("build") || work.buildOrigin == null || work.buildBlocks == null) {
-            return NpcHomeStorage.findSafePlacement(level, local, npc.blockPosition(), 6, reachable);
+            return NpcHomeStorage.findSafePlacement(level, local, npc.blockPosition(), 12, reachable);
         }
 
         int minX = Integer.MAX_VALUE;
@@ -12213,7 +13383,10 @@ public final class NpcTaskEngine {
         checkpoint.addProperty("deepMiningPhase", work.deepMiningPhase);
         checkpoint.addProperty("deepMiningItemId", work.deepMiningItemId);
         checkpoint.addProperty("deepMiningTargetY", work.deepMiningTargetY);
-        checkpoint.addProperty("deepMiningDirection", work.deepMiningDirection.getName());
+        checkpoint.addProperty(
+            "deepMiningDirection",
+            DeepMiningPolicy.retainedDirection(work.deepMiningDirection, Direction.NORTH).getName()
+        );
         checkpoint.addProperty("deepMiningPhaseStartedTick", work.deepMiningPhaseStartedTick);
         checkpoint.addProperty("deepMiningStaircaseStep", work.deepMiningStaircaseStep);
         checkpoint.addProperty("deepMiningBranchIndex", work.deepMiningBranchIndex);
@@ -12224,8 +13397,12 @@ public final class NpcTaskEngine {
         checkpoint.addProperty("deepMiningPlacedTorches", work.deepMiningPlacedTorches);
         checkpoint.addProperty("deepMiningBlockedTurns", work.deepMiningBlockedTurns);
         checkpoint.addProperty("deepMiningMarkerStage", work.deepMiningMarkerStage);
+        checkpoint.addProperty("deepMiningEntrySearchIndex", work.deepMiningEntrySearchIndex);
+        checkpoint.addProperty("deepMiningEntryTargetStartedTick", work.deepMiningEntryTargetStartedTick);
         checkpoint.addProperty("deepMiningPreflightComplete", work.deepMiningPreflightComplete);
         checkpoint.addProperty("deepMiningExcavationTarget", work.deepMiningExcavationTarget);
+        checkpoint.addProperty("deepMiningResourceTargetStartedTick", work.deepMiningResourceTargetStartedTick);
+        checkpoint.addProperty("deepMiningResourceChaseStartedTick", work.deepMiningResourceChaseStartedTick);
         checkpoint.addProperty("fishingCast", work.fishingCast);
         checkpoint.addProperty("fishingReadyTick", work.fishingReadyTick);
         checkpoint.addProperty("fishingStoragePhase", work.fishingStoragePhase);
@@ -12295,6 +13472,7 @@ public final class NpcTaskEngine {
         putBlock(checkpoint, "deepMiningLanding", work.deepMiningLanding);
         putBlock(checkpoint, "deepMiningLastSafeStand", work.deepMiningLastSafeStand);
         putBlock(checkpoint, "deepMiningCaveTarget", work.deepMiningCaveTarget);
+        putBlock(checkpoint, "deepMiningResourceTimedTarget", work.deepMiningResourceTimedTarget);
         if (work.bedPlacementFacing != null) checkpoint.addProperty("bedPlacementFacing", work.bedPlacementFacing.getName());
         checkpoint.add("skippedGatherTargets", blocks(work.skippedGatherTargets));
         checkpoint.add("skippedStorageTargets", blocks(work.skippedStorageTargets));
@@ -12367,10 +13545,23 @@ public final class NpcTaskEngine {
         work.deepMiningPlacedTorches = Math.max(0, integer(value, "deepMiningPlacedTorches", 0));
         work.deepMiningBlockedTurns = Math.max(0, integer(value, "deepMiningBlockedTurns", 0));
         work.deepMiningMarkerStage = Math.max(0, Math.min(3, integer(value, "deepMiningMarkerStage", 0)));
+        work.deepMiningEntrySearchIndex = Math.max(0, integer(value, "deepMiningEntrySearchIndex", 0));
+        work.deepMiningEntryTargetStartedTick = Math.max(
+            0,
+            integer(value, "deepMiningEntryTargetStartedTick", 0)
+        );
         work.deepMiningPreflightComplete = value.has("deepMiningPreflightComplete")
             && value.get("deepMiningPreflightComplete").getAsBoolean();
         work.deepMiningExcavationTarget = value.has("deepMiningExcavationTarget")
             && value.get("deepMiningExcavationTarget").getAsBoolean();
+        work.deepMiningResourceTargetStartedTick = Math.max(
+            0,
+            integer(value, "deepMiningResourceTargetStartedTick", 0)
+        );
+        work.deepMiningResourceChaseStartedTick = Math.max(
+            0,
+            integer(value, "deepMiningResourceChaseStartedTick", 0)
+        );
         work.fishingCast = value.has("fishingCast") && value.get("fishingCast").getAsBoolean();
         work.fishingReadyTick = integer(value, "fishingReadyTick", 0);
         work.fishingStoragePhase = Math.max(
@@ -12455,6 +13646,7 @@ public final class NpcTaskEngine {
         work.deepMiningLanding = readBlock(value, "deepMiningLanding");
         work.deepMiningLastSafeStand = readBlock(value, "deepMiningLastSafeStand");
         work.deepMiningCaveTarget = readBlock(value, "deepMiningCaveTarget");
+        work.deepMiningResourceTimedTarget = readBlock(value, "deepMiningResourceTimedTarget");
         work.bedPlacementFacing = Direction.byName(string(value, "bedPlacementFacing", ""));
         readBlocks(value, "skippedGatherTargets", work.skippedGatherTargets);
         readBlocks(value, "skippedStorageTargets", work.skippedStorageTargets);
@@ -12565,6 +13757,9 @@ public final class NpcTaskEngine {
                 value.addProperty("suspendedGatherCompleted", goal.suspendedGatherCompleted);
                 value.addProperty("suspendedGatherStartedTick", goal.suspendedGatherStartedTick);
             }
+            if (goal.suspendedDeepMining != null) {
+                value.add("suspendedDeepMining", goal.suspendedDeepMining.toJson());
+            }
             putBlock(value, "ownedFurnace", goal.ownedFurnace);
             result.add(value);
         }
@@ -12607,7 +13802,10 @@ public final class NpcTaskEngine {
                 Math.max(0, integer(value, "suspendedGatherCount", 0)),
                 Math.max(0, integer(value, "suspendedGatherInitialCount", 0)),
                 Math.max(0, integer(value, "suspendedGatherCompleted", 0)),
-                integer(value, "suspendedGatherStartedTick", -1)
+                integer(value, "suspendedGatherStartedTick", -1),
+                value.has("suspendedDeepMining") && value.get("suspendedDeepMining").isJsonObject()
+                    ? DeepMiningCheckpoint.fromJson(value.getAsJsonObject("suspendedDeepMining"))
+                    : null
             );
             goal.stalledTicks = Math.max(0, integer(value, "stalledTicks", 0));
             goal.attemptedRoutes = Math.max(0, integer(value, "attemptedRoutes", 0));
@@ -12767,6 +13965,7 @@ public final class NpcTaskEngine {
         private final int suspendedGatherInitialCount;
         private final int suspendedGatherCompleted;
         private final int suspendedGatherStartedTick;
+        private final DeepMiningCheckpoint suspendedDeepMining;
 
         private BuildMaterialGoal(
             String itemId,
@@ -12779,7 +13978,8 @@ public final class NpcTaskEngine {
             int suspendedGatherCount,
             int suspendedGatherInitialCount,
             int suspendedGatherCompleted,
-            int suspendedGatherStartedTick
+            int suspendedGatherStartedTick,
+            DeepMiningCheckpoint suspendedDeepMining
         ) {
             this.itemId = itemId;
             this.selector = selector;
@@ -12792,6 +13992,7 @@ public final class NpcTaskEngine {
             this.suspendedGatherInitialCount = suspendedGatherInitialCount;
             this.suspendedGatherCompleted = suspendedGatherCompleted;
             this.suspendedGatherStartedTick = suspendedGatherStartedTick;
+            this.suspendedDeepMining = suspendedDeepMining;
         }
     }
 
@@ -12833,6 +14034,8 @@ public final class NpcTaskEngine {
         private int deepMiningPlacedTorches;
         private int deepMiningBlockedTurns;
         private int deepMiningMarkerStage;
+        private int deepMiningEntrySearchIndex;
+        private int deepMiningEntryTargetStartedTick;
         private int eatingSequence;
         private int fishingReadyTick;
         private int fishingStoragePhase;
@@ -12859,6 +14062,8 @@ public final class NpcTaskEngine {
         private boolean gatherAccessTarget;
         private boolean deepMiningPreflightComplete;
         private boolean deepMiningExcavationTarget;
+        private int deepMiningResourceTargetStartedTick;
+        private int deepMiningResourceChaseStartedTick;
         private boolean fishingCast;
         private boolean requiresTable;
         private boolean storageExpanded;
@@ -12908,6 +14113,7 @@ public final class NpcTaskEngine {
         private BlockPos deepMiningLanding;
         private BlockPos deepMiningLastSafeStand;
         private BlockPos deepMiningCaveTarget;
+        private BlockPos deepMiningResourceTimedTarget;
         private Direction bedPlacementFacing;
         private Direction deepMiningDirection = Direction.NORTH;
         private Recipe<?> recipe;

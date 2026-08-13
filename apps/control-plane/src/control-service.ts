@@ -653,6 +653,37 @@ export class ControlService {
     return this.#requeueBuildTask(runtime, task, owner);
   }
 
+  /** Requeues one retryable task with the same id, regardless of task kind. */
+  retryTask(
+    taskId: string,
+    owner = "dashboard",
+    options: AiDecisionMutationOptions = {},
+  ): TaskRecord {
+    const task = this.getTask(taskId);
+    this.#assertAiDecisionMutationAllowed(task.companionId, options.aiDecisionInteractionId);
+    const runtime = this.#requireCompanion(task.companionId);
+    this.#assertLease(runtime, owner);
+    const taskOwner = this.#taskOwners.get(task.id) ?? "local";
+    if (taskOwner !== owner && taskOwner !== "local") {
+      throw new ControlError({
+        code: "TASK_OWNER_MISMATCH",
+        message: "只能由原控制入口重试该任务",
+        statusCode: 409,
+        retryable: false,
+      });
+    }
+    if (["queued", "running", "paused"].includes(task.status)) return task;
+    if (task.status !== "failed" || task.error?.retryable !== true) {
+      throw new ControlError({
+        code: "TASK_NOT_RETRYABLE",
+        message: "该任务当前不可重试",
+        statusCode: 409,
+        retryable: false,
+      });
+    }
+    return this.#requeueBuildTask(runtime, task, owner);
+  }
+
   #requeueBuildTask(runtime: RuntimeCompanion, task: TaskRecord, owner: string): TaskRecord {
     if (task.spec.kind === "macro") {
       const steps = this.#resolveMacroSteps(task.spec);
@@ -1147,7 +1178,16 @@ export class ControlService {
     if (this.#terminalNotifications.has(task.id)) return;
     const owner = this.#taskOwners.get(task.id);
     if (!owner || !TERMINAL_CHAT_OWNERS.has(owner)) return;
-    await this.#notifyTaskTerminal(task);
+    // A legacy journal may contain mojibake from before chat validation was added.
+    // Do not let a historical notification reject during backend registration and
+    // bring down the control service before unfinished tasks can be recovered.
+    try {
+      await this.#notifyTaskTerminal(task);
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error && error.code === "INVALID_GAME_CHAT_TEXT")) {
+        throw error;
+      }
+    }
     this.#terminalNotifications.add(task.id);
   }
 

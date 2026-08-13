@@ -27,4 +27,10 @@ final class WorkstationPolicyTest {
         assertFalse(WorkstationPolicy.canSupply(false, 3, false, WorkstationPolicy.fallbackMaterialCost("minecraft:crafting_table")));
         assertTrue(WorkstationPolicy.canSupply(false, 4, false, WorkstationPolicy.fallbackMaterialCost("minecraft:crafting_table")));
     }
+
+    @Test
+    void retriesDirectPlacementWheneverTheRequestedBlockIsStillAbsent() {
+        assertTrue(WorkstationPolicy.shouldAttemptDirectPlacement(false));
+        assertFalse(WorkstationPolicy.shouldAttemptDirectPlacement(true));
+    }
 }

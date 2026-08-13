@@ -112,11 +112,100 @@ final class MiningInventoryCleanupPolicyTest {
     }
 
     @Test
+    void protectsConcreteLogsExpandedFromADeepMiningReserveSelector() {
+        Set<String> protectedItems = MiningInventoryCleanupPolicy.protectedItems(
+            List.of("minecraft:spruce_log", "minecraft:oak_log"),
+            List.of()
+        );
+
+        assertTrue(protectedItems.contains("minecraft:spruce_log"));
+        assertTrue(protectedItems.contains("minecraft:oak_log"));
+    }
+
+    @Test
     void discardedItemsRemainExcludedFromTheSameNpc() {
         UUID npc = UUID.randomUUID();
         assertTrue(MiningInventoryCleanupPolicy.isDiscardedBy(npc, npc));
         assertFalse(MiningInventoryCleanupPolicy.isDiscardedBy(npc, UUID.randomUUID()));
         assertFalse(MiningInventoryCleanupPolicy.isDiscardedBy(npc, null));
+    }
+
+    @Test
+    void freesObsoletePickaxeSlotsAfterAnIronUpgrade() {
+        List<MiningInventoryCleanupPolicy.InventorySlot> inventory = new ArrayList<>();
+        inventory.add(slot(0, "minecraft:iron_pickaxe", 1));
+        inventory.add(slot(1, "minecraft:wooden_pickaxe", 1));
+        inventory.add(slot(2, "minecraft:stone_pickaxe", 1));
+        inventory.add(slot(3, "minecraft:cobbled_deepslate", 61));
+        for (int index = 4; index < 27; index++) {
+            inventory.add(slot(index, "minecraft:item_" + index, 1));
+        }
+
+        assertEquals(List.of(
+            new MiningInventoryCleanupPolicy.Drop(1, "minecraft:wooden_pickaxe", 1),
+            new MiningInventoryCleanupPolicy.Drop(2, "minecraft:stone_pickaxe", 1)
+        ), MiningInventoryCleanupPolicy.plan(27, inventory, Set.of("minecraft:diamond")));
+    }
+
+    @Test
+    void keepsTheRequiredStonePickaxeDuringIronAcquisition() {
+        List<MiningInventoryCleanupPolicy.InventorySlot> inventory = new ArrayList<>();
+        inventory.add(slot(0, "minecraft:iron_pickaxe", 1));
+        inventory.add(slot(1, "minecraft:wooden_pickaxe", 1));
+        inventory.add(slot(2, "minecraft:stone_pickaxe", 1));
+        for (int index = 3; index < 27; index++) {
+            inventory.add(slot(index, "minecraft:item_" + index, 1));
+        }
+
+        assertEquals(List.of(
+            new MiningInventoryCleanupPolicy.Drop(1, "minecraft:wooden_pickaxe", 1)
+        ), MiningInventoryCleanupPolicy.plan(
+            27,
+            inventory,
+            Set.of("minecraft:stone_pickaxe")
+        ));
+    }
+
+    @Test
+    void freesAStoneSlotWhenMixedStoneStacksFillTheBackpack() {
+        List<MiningInventoryCleanupPolicy.InventorySlot> inventory = new ArrayList<>();
+        inventory.add(slot(0, "minecraft:cobblestone", 54));
+        inventory.add(slot(1, "minecraft:cobbled_deepslate", 55));
+        for (int index = 2; index < 27; index++) {
+            inventory.add(slot(index, "minecraft:item_" + index, 1));
+        }
+
+        assertEquals(List.of(
+            new MiningInventoryCleanupPolicy.Drop(1, "minecraft:cobbled_deepslate", 55)
+        ), MiningInventoryCleanupPolicy.plan(27, inventory, Set.of()));
+    }
+
+    @Test
+    void freesMultipleTerrainSlotsBeforeSmeltingWithoutDroppingTaskMaterials() {
+        List<MiningInventoryCleanupPolicy.InventorySlot> inventory = new ArrayList<>();
+        inventory.add(slot(0, "minecraft:raw_iron", 5));
+        inventory.add(slot(1, "minecraft:diamond_pickaxe", 1));
+        inventory.add(slot(2, "minecraft:dirt", 63));
+        inventory.add(slot(3, "minecraft:gravel", 29));
+        inventory.add(slot(4, "minecraft:moss_block", 5));
+        inventory.add(slot(5, "minecraft:cobblestone", 4));
+        for (int index = 6; index < 33; index++) {
+            inventory.add(slot(index, "minecraft:item_" + index, 1));
+        }
+
+        assertEquals(List.of(
+            new MiningInventoryCleanupPolicy.Drop(3, "minecraft:gravel", 29),
+            new MiningInventoryCleanupPolicy.Drop(4, "minecraft:moss_block", 5)
+        ), MiningInventoryCleanupPolicy.plan(
+            33,
+            inventory,
+            Set.of(
+                "minecraft:raw_iron",
+                "minecraft:iron_ingot",
+                "minecraft:diamond_pickaxe",
+                "minecraft:cobblestone"
+            )
+        ));
     }
 
     private static MiningInventoryCleanupPolicy.InventorySlot slot(int index, String itemId, int count) {

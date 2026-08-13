@@ -194,6 +194,7 @@ final class NpcTaskPersistenceTest {
         parent.addProperty("startedTick", 200);
         parent.addProperty("stalledTicks", 10);
         parent.addProperty("attemptedRoutes", 1);
+        parent.add("suspendedDeepMining", suspendedDeepMiningCheckpoint());
         goals.add(parent);
         JsonObject child = new JsonObject();
         child.addProperty("itemId", "minecraft:sand");
@@ -242,6 +243,26 @@ final class NpcTaskPersistenceTest {
             1,
             restoredCheckpoint.getAsJsonArray("buildMaterialGoals").get(0).getAsJsonObject().get("attemptedRoutes").getAsInt()
         );
+        JsonObject mining = restoredCheckpoint.getAsJsonArray("buildMaterialGoals").get(0).getAsJsonObject()
+            .getAsJsonObject("suspendedDeepMining");
+        assertEquals("minecraft:diamond", mining.get("itemId").getAsString());
+        assertEquals(87, mining.get("staircaseStep").getAsInt());
+        assertEquals(-51, mining.getAsJsonObject("lastSafeStand").get("y").getAsInt());
+    }
+
+    private static JsonObject suspendedDeepMiningCheckpoint() {
+        JsonObject mining = new JsonObject();
+        mining.addProperty("phase", "branching");
+        mining.addProperty("itemId", "minecraft:diamond");
+        mining.addProperty("targetY", -58);
+        mining.addProperty("direction", "west");
+        mining.addProperty("staircaseStep", 87);
+        JsonObject lastSafe = new JsonObject();
+        lastSafe.addProperty("x", -107);
+        lastSafe.addProperty("y", -51);
+        lastSafe.addProperty("z", -2);
+        mining.add("lastSafeStand", lastSafe);
+        return mining;
     }
 
     @Test
