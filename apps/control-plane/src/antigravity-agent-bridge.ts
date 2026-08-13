@@ -12,12 +12,17 @@ const SESSION_VERSION = 1;
 const AGENT_API_TIMEOUT_MS = 15_000;
 const CONVERSATION_IDLE_TIMEOUT_SECONDS = 60;
 const RECOVERY_IDLE_TIMEOUT_SECONDS = 10;
-const LOCATION_FAILURE_BACKOFF_MS = 10 * 60 * 1_000;
+const DEFAULT_LOCATION_FAILURE_BACKOFF_MS = 30 * 1_000;
 const DEFAULT_CONVERSATION_TITLE = "Execute Minecraft Woodcutting Task";
 const DEFAULT_MAX_CONVERSATION_TURNS = 80;
 const DEFAULT_MAX_CONVERSATION_PROMPT_CHARACTERS = 120_000;
 const ROTATED_TITLE_SUFFIX = / \[MC-(\d+)\]$/u;
 const LOCATION_UNSUPPORTED_PATTERN = /user\s+location\s+is\s+not\s+supported|location[^\r\n]{0,80}not\s+supported/iu;
+const ANTIGRAVITY_RECOVERY_MESSAGE = /^\s*(?:(?:恢复|重连|解除)(?:一下)?(?:反重力|antigravity)(?:会话)?|(?:反重力|antigravity)(?:会话)?(?:恢复|重连)|(?:recover|reconnect|reset)\s+antigravity|antigravity\s+(?:recover|reconnect|reset))\s*[。！!]*\s*$/iu;
+
+export function isAntigravityRecoveryMessage(message: string): boolean {
+  return ANTIGRAVITY_RECOVERY_MESSAGE.test(message);
+}
 
 export class AntigravityAutoTriggerError extends Error {
   constructor(
@@ -35,7 +40,7 @@ export function normalizeAntigravityAutoTriggerFailure(caught: unknown): Antigra
   const raw = redactSensitiveText(caught instanceof Error ? caught.message : String(caught));
   if (LOCATION_UNSUPPORTED_PATTERN.test(raw)) {
     return new AntigravityAutoTriggerError(
-      "反重力上游模型发生地区限制并拒绝了当前请求；本地 MCP 与绑定会话仍正常。已暂停自动重试 10 分钟，避免重复刷屏。",
+      "反重力上游模型发生地区限制并拒绝了当前请求；本地 MCP 与绑定会话仍正常。",
       "LOCATION_UNSUPPORTED",
       true,
     );
@@ -100,6 +105,8 @@ export interface AntigravityAgentBridgeOptions {
   requiredConversationTitle?: string;
   maxConversationTurns?: number;
   maxConversationPromptCharacters?: number;
+  locationFailureBackoffMs?: number;
+  now?: () => number;
 }
 
 function boundedPositiveInteger(value: number | undefined, fallback: number, maximum: number): number {
@@ -288,6 +295,7 @@ function promptFor(
       "必须且只能调用一次 mc_submit_ai_decision；禁止调用 mc_chat、mc_observe、mc_assign_task、mc_control_companion、终端、文件、浏览器或其他工具。",
       "decision.type 只能是 chat、clarify、inspect、control、task、skill 或 retry-build。一次只能创建一个根任务或一个 Skill。",
       "task 用于一个 TaskSpec；skill 用于已安装的声明式动作链。缺少前置材料、工具、工作台、熔炉和远程搜索由本地任务执行器处理，不要拆成多次工具调用。",
+      "玩家询问你在做什么、状态、生命、饱食度、背包或装备时，提交 type=inspect 和正确 scope；decision.reply 只写一小句符合当前继承/自定义人格的自然开场，不得编造任何状态数值。本地服务会把真实快照事实追加到这句人格台词后。",
       "玩家要肉时使用 provision-food，foodCategory=meat、source=hunt；明确‘给我’时 destination=player。不得用西瓜或植物食物替代肉。",
       "大规模或破坏性建造若不是已审查的内置 Skill，返回 clarify 要求确认。不要虚构任务已完成。",
       `本轮可见输出 token 预算为 ${settings.tokenBudget}；这是反重力外部会话的软预算，请只做一次简短决策。`,
@@ -340,6 +348,8 @@ export class AntigravityAgentBridge {
   readonly #requiredConversationTitle: string;
   readonly #maxConversationTurns: number;
   readonly #maxConversationPromptCharacters: number;
+  readonly #locationFailureBackoffMs: number;
+  readonly #now: () => number;
   #queue: Promise<void> = Promise.resolve();
   #automaticRetryBlockedUntil = 0;
   #automaticRetryBlockCode: AntigravityAutoTriggerError["code"] | null = null;
@@ -376,6 +386,12 @@ export class AntigravityAgentBridge {
       DEFAULT_MAX_CONVERSATION_PROMPT_CHARACTERS,
       10_000_000,
     );
+    this.#locationFailureBackoffMs = boundedPositiveInteger(
+      options.locationFailureBackoffMs,
+      DEFAULT_LOCATION_FAILURE_BACKOFF_MS,
+      60 * 60 * 1_000,
+    );
+    this.#now = options.now ?? Date.now;
     if (!this.#requiredConversationTitle || this.#requiredConversationTitle.length > 240) {
       throw new Error("反重力会话标题必须是 1 到 240 个可见字符");
     }
@@ -387,13 +403,16 @@ export class AntigravityAgentBridge {
     context: AntigravityTriggerContext = {},
   ): Promise<void> {
     const execute = async () => {
-      if (Date.now() < this.#automaticRetryBlockedUntil) {
+      const now = this.#now();
+      if (now < this.#automaticRetryBlockedUntil) {
+        const remainingSeconds = Math.max(1, Math.ceil((this.#automaticRetryBlockedUntil - now) / 1_000));
         throw new AntigravityAutoTriggerError(
-          "反重力自动触发仍处于退避期",
+          `反重力上游暂时不可用，${remainingSeconds} 秒后会在下一条消息自动重试；网络恢复后也可在 T 中输入“恢复反重力”立即重连。`,
           "COOLDOWN",
-          false,
+          true,
         );
       }
+      if (this.#automaticRetryBlockedUntil > 0) this.#clearAutomaticRetryBlock();
       try {
         const endpoint = await this.#endpoint();
         const session = await this.#resolveSession(endpoint, false);
@@ -421,8 +440,14 @@ export class AntigravityAgentBridge {
       } catch (caught) {
         const failure = normalizeAntigravityAutoTriggerFailure(caught);
         if (failure.code === "LOCATION_UNSUPPORTED") {
-          this.#automaticRetryBlockedUntil = Date.now() + LOCATION_FAILURE_BACKOFF_MS;
+          this.#automaticRetryBlockedUntil = this.#now() + this.#locationFailureBackoffMs;
           this.#automaticRetryBlockCode = failure.code;
+          const retrySeconds = Math.max(1, Math.ceil(this.#locationFailureBackoffMs / 1_000));
+          throw new AntigravityAutoTriggerError(
+            `${failure.message} 已暂停自动触发 ${retrySeconds} 秒；到期后的下一条消息会自动试探恢复。网络已恢复时，也可在 T 中输入“恢复反重力”立即重连。`,
+            failure.code,
+            true,
+          );
         }
         throw failure;
       }
@@ -616,7 +641,9 @@ export class AntigravityAgentBridge {
     try {
       const endpoint = await this.#endpoint();
       const session = await this.#resolveSession(endpoint, false);
-      const blocked = Date.now() < this.#automaticRetryBlockedUntil;
+      const now = this.#now();
+      const blocked = now < this.#automaticRetryBlockedUntil;
+      const remainingSeconds = Math.max(1, Math.ceil((this.#automaticRetryBlockedUntil - now) / 1_000));
       return {
         available: true,
         connected: true,
@@ -624,7 +651,7 @@ export class AntigravityAgentBridge {
         projectId: session.projectId,
         conversationTitle: session.conversationTitle ?? null,
         message: blocked && this.#automaticRetryBlockCode === "LOCATION_UNSUPPORTED"
-          ? "反重力本地会话已连接；上游模型存在地区限制，自动重试暂时暂停"
+          ? `反重力本地会话已连接；上游暂时不可用，${remainingSeconds} 秒后下一条消息会自动重试，也可在 T 中输入“恢复反重力”立即重连`
           : "反重力自动触发已就绪",
       };
     } catch (caught) {

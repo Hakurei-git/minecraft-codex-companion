@@ -717,4 +717,27 @@ describe("ControlService", () => {
     expect(accepted).toMatchObject({ sender: "PlayerOne", message: "陪我探索" });
     expect(rejected).toBeNull();
   });
+
+  it("preserves an arbitrary inherited-persona opening while appending verified inspection facts", async () => {
+    const service = new ControlService();
+    service.registerBackend(new SimulatorBackend());
+    const interactionId = service.beginAiDecision({
+      sequence: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "你刚刚在干嘛呢",
+    });
+
+    const result = await service.submitAiDecision(interactionId, {
+      type: "inspect",
+      scope: "activity",
+      reply: "这是当前绑定人格生成的自然开场",
+      summary: "读取当前活动",
+    });
+
+    expect(result.reply).toMatch(/^这是当前绑定人格生成的自然开场。/u);
+    expect(result.reply).toContain("待命");
+    expect(result.reply).not.toContain("猫娘");
+  });
 });

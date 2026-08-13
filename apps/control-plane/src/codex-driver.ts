@@ -1061,7 +1061,7 @@ export class CodexDriver {
   ): Promise<DeterministicChatAction | null> {
     const companion = await Promise.resolve(this.#control.getCompanion(companionId)).catch(() => null);
     const action = parseDeterministicChatAction(message, sender, companion?.name ?? "");
-    return action && ["control", "inspect", "inspect-item-history"].includes(action.operation)
+    return action && ["control"].includes(action.operation)
       ? action
       : null;
   }

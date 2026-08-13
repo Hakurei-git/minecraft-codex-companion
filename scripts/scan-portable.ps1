@@ -226,9 +226,9 @@ if ($SkipDefender -or $AllowUnavailableScanner) {
                 $versionOutput = @(& $resolvedClamScanPath '--version' 2>&1)
                 $versionExitCode = $LASTEXITCODE
                 $clamVersion = (($versionOutput -join "`n").Trim() `
-                    -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%' `
                     -replace [Regex]::Escape($resolvedClamDatabaseRoot), '%CLAM_DATABASE%' `
-                    -replace [Regex]::Escape($resolvedClamScanPath), 'clamscan')
+                    -replace [Regex]::Escape($resolvedClamScanPath), 'clamscan' `
+                    -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%')
                 $scanner.engineEvidence = [ordered]@{
                     executable = Split-Path -Leaf $resolvedClamScanPath
                     executableSha256 = $clamExecutableHash
@@ -257,11 +257,11 @@ if ($SkipDefender -or $AllowUnavailableScanner) {
                     $scanOutput = @(& $resolvedClamScanPath "--database=$resolvedClamDatabaseRoot" '--recursive=yes' '--stdout' $scanTarget 2>&1)
                     $scanExitCode = $LASTEXITCODE
                     $sanitizedOutput = (($scanOutput -join "`n").Trim() `
-                        -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%' `
                         -replace [Regex]::Escape($ArtifactRoot), '%ARTIFACT_ROOT%' `
                         -replace [Regex]::Escape($archivePath), '%ARCHIVE%' `
                         -replace [Regex]::Escape($resolvedClamDatabaseRoot), '%CLAM_DATABASE%' `
-                        -replace [Regex]::Escape($resolvedClamScanPath), 'clamscan')
+                        -replace [Regex]::Escape($resolvedClamScanPath), 'clamscan' `
+                        -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%')
                     if ($sanitizedOutput.Length -gt 8000) {
                         $sanitizedOutput = $sanitizedOutput.Substring(0, 8000) + "`n[truncated]"
                     }
@@ -363,9 +363,9 @@ if ($SkipDefender -or $AllowUnavailableScanner) {
                 $scanOutput = @(& $mpCmdRun -Scan -ScanType 3 -File $scanTarget -DisableRemediation 2>&1)
                 $scanExitCode = $LASTEXITCODE
                 $sanitizedOutput = (($scanOutput -join "`n").Trim() `
-                    -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%' `
                     -replace [Regex]::Escape($ArtifactRoot), '%ARTIFACT_ROOT%' `
-                    -replace [Regex]::Escape($archivePath), '%ARCHIVE%')
+                    -replace [Regex]::Escape($archivePath), '%ARCHIVE%' `
+                    -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%')
                 $targetReports += [ordered]@{
                     target = if ($scanTarget -eq $ArtifactRoot) { 'payload-directory' } else { 'release-archive' }
                     exitCode = $scanExitCode

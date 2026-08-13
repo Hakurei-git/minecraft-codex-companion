@@ -213,8 +213,6 @@ final class DeepMiningPolicyTest {
         assertEquals(32, DeepMiningPolicy.REQUIRED_TORCHES);
         assertEquals(2, DeepMiningPolicy.REQUIRED_IRON_PICKAXES);
         assertEquals(200, DeepMiningPolicy.MIN_PICKAXE_REMAINING_DURABILITY);
-        assertTrue(DeepMiningPolicy.shouldPlaceTorch(8, 0));
-        assertFalse(DeepMiningPolicy.shouldPlaceTorch(8, 8));
         assertTrue(DeepMiningPolicy.isUnsafeExcavation("minecraft:stone", true, 1.5F));
         assertFalse(DeepMiningPolicy.isUnsafeExcavation("minecraft:gravel", false, 0.6F));
         assertFalse(DeepMiningPolicy.isUnsafeExcavation("minecraft:sand", false, 0.5F));
@@ -240,11 +238,33 @@ final class DeepMiningPolicyTest {
     }
 
     @Test
+    void retriesTorchPlacementAfterAnUnconfirmedAttemptEvenWhenInventoryIsAvailable() {
+        int lastConfirmedTorchProgress = 0;
+
+        assertTrue(DeepMiningPolicy.shouldPlaceTorch(8, lastConfirmedTorchProgress));
+        // A failed placement leaves the confirmed progress unchanged, so the
+        // next tunnel block must retry instead of waiting for another multiple.
+        assertTrue(DeepMiningPolicy.shouldPlaceTorch(9, lastConfirmedTorchProgress));
+
+        lastConfirmedTorchProgress = 9;
+        assertFalse(DeepMiningPolicy.shouldPlaceTorch(16, lastConfirmedTorchProgress));
+        assertTrue(DeepMiningPolicy.shouldPlaceTorch(17, lastConfirmedTorchProgress));
+    }
+
+    @Test
     void relocatesFromAnUnsafeEntryOnlyToAUsableNearbyStand() {
         assertFalse(DeepMiningPolicy.isUsableNearbyEntry(true, true, true));
         assertFalse(DeepMiningPolicy.isUsableNearbyEntry(false, false, true));
         assertFalse(DeepMiningPolicy.isUsableNearbyEntry(false, true, false));
         assertTrue(DeepMiningPolicy.isUsableNearbyEntry(false, true, true));
+    }
+
+    @Test
+    void fallsBackToDirectStaircaseMiningWhenNoNaturalCaveIsAvailable() {
+        assertTrue(DeepMiningPolicy.canStartDirectDescent(true, true, false));
+        assertFalse(DeepMiningPolicy.canStartDirectDescent(false, true, false));
+        assertFalse(DeepMiningPolicy.canStartDirectDescent(true, false, false));
+        assertFalse(DeepMiningPolicy.canStartDirectDescent(true, true, true));
     }
 
     @Test
@@ -291,7 +311,9 @@ final class DeepMiningPolicyTest {
     @Test
     void refreshesDeepMiningSuppliesBeforeToolsOrTorchesRunOut() {
         assertFalse(DeepMiningPolicy.suppliesNeedRefresh(true, 0, 0));
-        assertFalse(DeepMiningPolicy.suppliesNeedRefresh(false, 400, 16));
+        // The reported failure happened with 28 torches in the backpack. That
+        // inventory is healthy; a missing world placement is a separate bug.
+        assertFalse(DeepMiningPolicy.suppliesNeedRefresh(false, 400, 28));
         assertTrue(DeepMiningPolicy.suppliesNeedRefresh(false, 199, 16));
         assertTrue(DeepMiningPolicy.suppliesNeedRefresh(false, 400, 3));
     }
@@ -337,6 +359,42 @@ final class DeepMiningPolicyTest {
             DeepMiningPolicy.CHECKPOINT_RESTORE_VERTICAL_DELTA
         ));
         assertFalse(DeepMiningPolicy.shouldRestoreCheckpoint(true, Double.NaN, 100));
+    }
+
+    @Test
+    void rejectsSurfaceCheckpointsThatRetainCompletedDeepMiningProgress() {
+        BlockPos entrance = new BlockPos(-215, 71, -177);
+        BlockPos expectedLanding = DeepMiningPolicy.staircaseStand(
+            entrance,
+            Direction.NORTH,
+            129
+        );
+        BlockPos corruptSurfaceCheckpoint = new BlockPos(-215, 71, -423);
+
+        assertEquals(129, DeepMiningPolicy.staircaseProgress(
+            entrance,
+            Direction.NORTH,
+            129,
+            expectedLanding
+        ));
+        assertEquals(-1, DeepMiningPolicy.staircaseProgress(
+            entrance,
+            Direction.NORTH,
+            129,
+            corruptSurfaceCheckpoint
+        ));
+        assertTrue(DeepMiningPolicy.isValidMiningLayer(-58, expectedLanding));
+        assertFalse(DeepMiningPolicy.isValidMiningLayer(-58, corruptSurfaceCheckpoint));
+        assertTrue(DeepMiningPolicy.isConsistentBranchCheckpoint(
+            -58,
+            expectedLanding,
+            expectedLanding.east(12)
+        ));
+        assertFalse(DeepMiningPolicy.isConsistentBranchCheckpoint(
+            -58,
+            expectedLanding,
+            corruptSurfaceCheckpoint
+        ));
     }
 
     @Test

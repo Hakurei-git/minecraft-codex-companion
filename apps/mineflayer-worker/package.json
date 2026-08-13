@@ -1,6 +1,6 @@
 {
   "name": "@mc/mineflayer-worker",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@mc/protocol": "0.1.2",
+    "@mc/protocol": "0.1.3",
     "mineflayer": "latest",
     "mineflayer-collectblock": "latest",
     "mineflayer-pathfinder": "latest",

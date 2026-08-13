@@ -44,7 +44,7 @@
 GitHub Releases 提供两种下载：
 
 - **[Windows 安装程序 EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**：普通用户使用的完整版本，不需要安装 Node.js 或手工构建模组。
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.2)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.3)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
 
 安装器不会内置或迁移账号、API Key、反重力会话、Minecraft 存档和本机路径。
 
@@ -174,7 +174,7 @@ $env:MC_BRIDGE_TOKEN = "至少16字符的自定义令牌"
 - `persona.mode = "inherit"` 是默认值，沿用当前 AI 服务或 Agent 已有的人格。反重力本身已经设好人格时直接使用这一项即可，无需在 Minecraft 项目里重复配置；MCP 只增加游戏上下文和操作能力，不会清除或替换反重力的人格。
 - `persona.mode = "custom"` 用于增加 Minecraft 专属人格覆盖，可填写 `displayName`、`personality`、`speakingStyle` 和 `memoryNotes`。这些内容叠加在基础人格之上，而不是清除基础人格。
 
-便携客户端会按任务列表中的完整标题精确绑定反重力对话，并保存稳定会话 ID 后通过本机 Agent API 自动触发它；无需手工保持 `mc_list_chat_messages` 轮询，也不会因打开其他对话而改变绑定。反重力原有的人格和上下文会继续沿用。普通消息会复用当前会话；本地只累计轮数和提示字符数，达到默认 80 轮或 120000 个提示字符后才调用 `new-conversation` 创建一个带 `[MC-2]`、`[MC-3]` 序号的新会话，随后继续复用新会话，重启后也会优先恢复它，不会每条消息创建窗口。所有玩家可见内容仍由 Agent 调用 `mc_chat` 发进游戏；长任务分配后 Agent 会尽快结束本轮，任务继续在游戏侧运行，控制服务会主动发送完成、失败或取消结果，从而避免反重力界面的 `Working…` 超时中断游戏动作。若会话异常假忙，可在便携客户端执行“恢复反重力会话”。`mc_list_chat_messages` 仅保留给手动 MCP 工作流使用。
+便携客户端会按任务列表中的完整标题精确绑定反重力对话，并保存稳定会话 ID 后通过本机 Agent API 自动触发它；无需手工保持 `mc_list_chat_messages` 轮询，也不会因打开其他对话而改变绑定。反重力原有的人格和上下文会继续沿用。普通消息会复用当前会话；本地只累计轮数和提示字符数，达到默认 80 轮或 120000 个提示字符后才调用 `new-conversation` 创建一个带 `[MC-2]`、`[MC-3]` 序号的新会话，随后继续复用新会话，重启后也会优先恢复它，不会每条消息创建窗口。所有玩家可见内容仍由 Agent 调用 `mc_chat` 发进游戏；长任务分配后 Agent 会尽快结束本轮，任务继续在游戏侧运行，控制服务会主动发送完成、失败或取消结果，从而避免反重力界面的 `Working…` 超时中断游戏动作。若会话异常假忙，可在便携客户端执行“恢复反重力会话”，也可直接在 Minecraft 的 `T` 聊天输入“恢复反重力”或“重连反重力”。上游网络或地区错误会进行 30 秒可见退避，期间每条消息都会收到状态提示；退避到期后的下一条消息会自动重新试探，不会再静默失联 10 分钟。`mc_list_chat_messages` 仅保留给手动 MCP 工作流使用。
 
 ## HMCL 安全克隆
 
@@ -327,7 +327,7 @@ npm run smoke:capabilities
 - 游戏聊天没有回复：自由聊天关闭时使用 `@Codex`、`@Claude`、`@多代理` 或 `@反重力`；自由聊天开启时检查 `playerName` 和响应端。Mineflayer 还需要一个 `chatLeader`。
 - 多代理协作降级：确认至少 Codex 本机登录或 Codex 自定义配置可用；Claude 未配置时仍会由 Codex 顾问和协调器继续，但不会伪造 Claude 方案。协作模式只产生一条最终游戏回复。
 - 游戏里看不到 NPC：确认克隆实例已升级到 Forge 模组 `0.2.0`，再使用 Dashboard 的“召回”或 MCP `mc_control_companion` 的 `recall`；旧 `0.1.0` 只会控制玩家自身。
-- 反重力自由聊天没有回复：确认响应端是“反重力 MCP”、反重力程序正在运行，并在便携客户端查看“自动触发已就绪”；核对会话标题后点“按标题绑定会话”，必要时再点“恢复反重力会话”。普通聊天不需要 `@`，手动 MCP 模式才需要轮询 `mc_list_chat_messages`。
+- 反重力自由聊天没有回复：确认响应端是“反重力 MCP”、反重力程序正在运行，并在便携客户端查看“自动触发已就绪”；核对会话标题后点“按标题绑定会话”。网络刚恢复或会话假忙时，可直接在 Minecraft 的 `T` 聊天输入“恢复反重力”，也可点“恢复反重力会话”。普通聊天不需要 `@`，手动 MCP 模式才需要轮询 `mc_list_chat_messages`。
 - Claude 测试失败：确认地址支持 Anthropic Messages API 和工具调用，而不是只支持 OpenAI Chat Completions。
 - 移动/采集失败：Forge NPC 不依赖 Baritone；检查目标是否受领地保护、路径是否完全封闭、背包是否已满，以及未开作弊时是否仍在远程步行。NeoForge 或 Mineflayer 再检查各自的导航能力和服务器兼容性。
 - 建筑无法开始：导入后必须先确认计划，再分配 `build` 任务；生存模式会先查家中仓库，再按真实配方制作/熔炼或采集安全原料。液体桶、危险/不可再生方块及没有安全上游的模组材料仍需玩家提前放入背包或家中箱子；同时检查权限、背包空间和目标区域是否被占用。

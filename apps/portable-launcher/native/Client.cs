@@ -1467,6 +1467,30 @@ namespace MinecraftCodexCompanion
 
     internal static class ClientProgram
     {
+        private const string ProductionMutexName = "Local\\MinecraftCodexCompanionClient";
+
+        private static string ResolveMutexName()
+        {
+            string suffix = Environment.GetEnvironmentVariable("MC_COMPANION_CLIENT_TEST_MUTEX_SUFFIX");
+            if (String.IsNullOrWhiteSpace(suffix) || suffix.Length > 64) return ProductionMutexName;
+
+            string executable = Path.GetFullPath(Application.ExecutablePath);
+            string temporaryRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar
+            ) + Path.DirectorySeparatorChar;
+            if (!executable.StartsWith(temporaryRoot, StringComparison.OrdinalIgnoreCase)) return ProductionMutexName;
+
+            foreach (char character in suffix)
+            {
+                if (!Char.IsLetterOrDigit(character) && character != '-' && character != '_')
+                {
+                    return ProductionMutexName;
+                }
+            }
+            return ProductionMutexName + "-test-" + suffix;
+        }
+
         [STAThread]
         private static int Main(string[] args)
         {
@@ -1504,7 +1528,7 @@ namespace MinecraftCodexCompanion
             }
 
             bool created;
-            using (System.Threading.Mutex mutex = new System.Threading.Mutex(true, "Local\\MinecraftCodexCompanionClient", out created))
+            using (System.Threading.Mutex mutex = new System.Threading.Mutex(true, ResolveMutexName(), out created))
             {
                 if (!created)
                 {

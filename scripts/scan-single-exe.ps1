@@ -104,8 +104,8 @@ if (-not $resolvedDatabase) { throw "Local ClamAV signature database is unavaila
 $versionOutput = @(& $resolvedClamScan '--version' 2>&1)
 $versionExitCode = $LASTEXITCODE
 $version = (($versionOutput -join "`n").Trim() `
-    -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%' `
-    -replace [Regex]::Escape($resolvedClamScan), 'clamscan')
+    -replace [Regex]::Escape($resolvedClamScan), 'clamscan' `
+    -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%')
 if ($versionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
     throw "Local ClamAV version check failed."
 }
@@ -113,10 +113,10 @@ if ($versionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
 $scanOutput = @(& $resolvedClamScan "--database=$resolvedDatabase" '--stdout' $ExecutablePath 2>&1)
 $scanExitCode = $LASTEXITCODE
 $sanitizedOutput = (($scanOutput -join "`n").Trim() `
-    -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%' `
     -replace [Regex]::Escape($ExecutablePath), '%SINGLE_EXE%' `
     -replace [Regex]::Escape($resolvedDatabase), '%CLAM_DATABASE%' `
-    -replace [Regex]::Escape($resolvedClamScan), 'clamscan')
+    -replace [Regex]::Escape($resolvedClamScan), 'clamscan' `
+    -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%')
 if ($sanitizedOutput.Length -gt 8000) {
     $sanitizedOutput = $sanitizedOutput.Substring(0, 8000) + "`n[truncated]"
 }

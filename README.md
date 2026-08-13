@@ -44,7 +44,7 @@ Movement, gathering, crafting, smelting, storage, combat, dragon care, and const
 GitHub Releases provide two editions:
 
 - **[Windows Setup EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**: the complete edition for normal Windows users. It installs the local runtime and Forge bridge without requiring Node.js or a manual mod build.
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.2)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.3)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
 
 The installer does not embed or migrate accounts, API keys, Antigravity conversations, Minecraft worlds, or machine-specific paths.
 
@@ -140,6 +140,8 @@ When free chat is disabled, directed prefixes remain available:
 ```
 
 When free chat is enabled, the configured player may press `T` and speak normally. Exact `stop`, `halt`, or emergency-stop messages bypass AI and cancel tasks locally. Chinese deterministic phrases cover the broadest set of direct actions in this release; English free-form actions should use Smart AI.
+
+If Antigravity stops replying after a network or provider-location error, type `恢复反重力` or `重连反重力` in Minecraft `T` chat. This local command clears the stale conversation state and retry backoff without invoking the model. Location failures use a visible 30-second backoff; messages during it receive a status reply, and the next message after expiry automatically probes the provider again.
 
 ## Capabilities
 

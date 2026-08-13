@@ -121,6 +121,14 @@ function taskStepSummary(task: TaskRecord | null): string {
   return `；当前第 ${task.currentStepIndex + 1} 步${taskKindLabel(task.currentStepKind)}${progressText}${countText}${retainedText}`;
 }
 
+function personaInspectionReply(personaReply: string, factualReply: string): string {
+  const prefix = personaReply.trim().replace(/[。！？!?]+$/u, "");
+  if (!prefix || /^(?:状态|结果|查询结果|实时状态)$/u.test(prefix)) return factualReply;
+  const maxPrefixLength = Math.max(0, 220 - factualReply.length - 2);
+  if (maxPrefixLength < 1) return factualReply.slice(0, 220);
+  return `${prefix.slice(0, maxPrefixLength)}。${factualReply}`.slice(0, 220);
+}
+
 export function inspectionReply(
   companion: Companion,
   scope: "activity" | "vitals" | "inventory" | "full",
@@ -186,7 +194,7 @@ export async function commitAiTaskDecision(
     const activeTask = companion.activeTaskId
       ? await Promise.resolve(control.getTask(companion.activeTaskId)).catch(() => null)
       : null;
-    reply = inspectionReply(companion, decision.scope, activeTask);
+    reply = personaInspectionReply(decision.reply, inspectionReply(companion, decision.scope, activeTask));
   } else if (decision.type === "control") {
     await control.controlCompanion(context.companionId, decision.action, {
       aiDecisionInteractionId: context.interactionId,

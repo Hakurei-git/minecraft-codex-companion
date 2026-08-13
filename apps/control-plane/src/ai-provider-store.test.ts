@@ -33,15 +33,15 @@ describe("AiProviderStore", () => {
       name: "Private Codex",
       baseUrl: "https://gateway.example.test/v1/",
       model: "codex-private",
-      apiKey: "sk-private-value",
+      apiKey: "fixture-private-value",
     });
 
     expect(created.hasApiKey).toBe(true);
     expect(created.baseUrl).toBe("https://gateway.example.test/v1");
     const persisted = await readFile(path.join(stateDirectory, "ai-providers.json"), "utf8");
-    expect(persisted).not.toContain("sk-private-value");
+    expect(persisted).not.toContain("fixture-private-value");
     expect(persisted).toContain("test:");
-    expect((await store.runtime(created.id)).apiKey).toBe("sk-private-value");
+    expect((await store.runtime(created.id)).apiKey).toBe("fixture-private-value");
 
     await store.update(created.id, {
       kind: "codex-api",
@@ -49,7 +49,7 @@ describe("AiProviderStore", () => {
       baseUrl: "https://gateway.example.test/v1",
       model: "codex-private-v2",
     });
-    expect((await store.runtime(created.id)).apiKey).toBe("sk-private-value");
+    expect((await store.runtime(created.id)).apiKey).toBe("fixture-private-value");
     await store.activate(created.id);
 
     const reloaded = new AiProviderStore({

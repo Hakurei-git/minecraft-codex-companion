@@ -10,6 +10,7 @@ import { aiProviderDraftSchema, aiTaskDecisionSchema, buildImportRequestSchema, 
 import { AiProviderStore } from "./ai-provider-store.js";
 import {
   AntigravityAgentBridge,
+  isAntigravityRecoveryMessage,
   normalizeAntigravityAutoTriggerFailure,
 } from "./antigravity-agent-bridge.js";
 import { CodexDriver } from "./codex-driver.js";
@@ -86,6 +87,23 @@ const bridgeManager = new BridgeManager({
   token: bridgeToken,
   onDiagnostic: (message) => app.log.warn({ component: "minecraft-bridge" }, redactSensitiveText(message)),
   onChat: async (message) => {
+    const settings = await service.getChatSettings(message.companionId);
+    const configuredPlayer = message.sender.trim().toLocaleLowerCase() === settings.playerName.trim().toLocaleLowerCase();
+    if (configuredPlayer && isAntigravityRecoveryMessage(message.message)) {
+      try {
+        const recovered = await antigravityAgent.recoverBoundConversation();
+        await service.sendChat(message.companionId, recovered.message, "antigravity-recovery", { phase: "chat" });
+      } catch (caught) {
+        const detail = redactSensitiveText(caught instanceof Error ? caught.message : String(caught));
+        await service.sendChat(
+          message.companionId,
+          `反重力恢复失败：${detail}`,
+          "antigravity-recovery",
+          { phase: "chat" },
+        ).catch(() => undefined);
+      }
+      return true;
+    }
     const directedAntigravity = message.message.match(ANTIGRAVITY_DIRECTED_MESSAGE);
     const routedMessage = directedAntigravity?.[1]
       ? { ...message, message: directedAntigravity[1] }
@@ -100,7 +118,6 @@ const bridgeManager = new BridgeManager({
       });
       if (localResult.handled) return true;
     }
-    const settings = await service.getChatSettings(message.companionId);
     if (directedAntigravity?.[1] || settings.target === "antigravity-mcp") {
       const recorded = await service.recordIncomingChat(
         routedMessage,

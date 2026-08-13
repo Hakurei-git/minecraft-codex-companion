@@ -237,8 +237,37 @@ final class DeepMiningPolicy {
 
     static boolean shouldPlaceTorch(int tunnelProgress, int lastTorchProgress) {
         return tunnelProgress > 0
-            && tunnelProgress % TORCH_INTERVAL == 0
-            && tunnelProgress > lastTorchProgress;
+            && tunnelProgress >= Math.max(0, lastTorchProgress) + TORCH_INTERVAL;
+    }
+
+    static int staircaseProgress(
+        BlockPos entrance,
+        Direction direction,
+        int maximumProgress,
+        BlockPos checkpoint
+    ) {
+        if (entrance == null || checkpoint == null) return -1;
+        int maximum = Math.max(0, maximumProgress);
+        int verticalProgress = entrance.getY() - checkpoint.getY();
+        if (verticalProgress < 0 || verticalProgress > maximum) return -1;
+        return staircaseStand(entrance, direction, verticalProgress).equals(checkpoint)
+            ? verticalProgress
+            : -1;
+    }
+
+    static boolean isValidMiningLayer(int targetY, BlockPos checkpoint) {
+        if (checkpoint == null || targetY == Integer.MAX_VALUE) return false;
+        return checkpoint.getY() <= targetY && checkpoint.getY() >= targetY - 16;
+    }
+
+    static boolean isConsistentBranchCheckpoint(
+        int targetY,
+        BlockPos landing,
+        BlockPos checkpoint
+    ) {
+        return isValidMiningLayer(targetY, landing)
+            && checkpoint != null
+            && checkpoint.getY() == landing.getY();
     }
 
     static Vec3 closeRangeStep(Vec3 current, Vec3 target) {
@@ -317,6 +346,14 @@ final class DeepMiningPolicy {
         boolean hasSafeStairDirection
     ) {
         return !sameAsOrigin && safeStand && hasSafeStairDirection;
+    }
+
+    static boolean canStartDirectDescent(
+        boolean safeStand,
+        boolean safeDirection,
+        boolean needsHigherEntry
+    ) {
+        return safeStand && safeDirection && !needsHigherEntry;
     }
 
     static Direction retainedDirection(Direction safeDirection, Direction preferredDirection) {

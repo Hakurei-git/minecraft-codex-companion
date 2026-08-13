@@ -337,8 +337,10 @@ export class ControlService {
     if (!pending) {
       throw new ControlError({
         code: "AI_DECISION_NOT_PENDING",
-        message: "智能规划交互不存在、已完成或已超时",
+        message: "这条旧的智能请求已经完成、超时或因上游错误失效，不能再次执行",
         statusCode: 404,
+        retryable: false,
+        suggestedRecovery: "请在 Minecraft 的 T 聊天中重新发送原请求；如果刚恢复网络，可先输入“恢复反重力”立即重连",
       });
     }
     if (pending.submitting) {

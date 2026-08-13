@@ -44,7 +44,7 @@ test("offline pinned Forge packaging is explicit, hash-bound, and runs every For
   assert.match(buildScript, /\^\[A-Fa-f0-9\]\{64\}\$/);
   assert.match(buildScript, /Pinned Forge bridge JAR SHA-256 does not match/);
   assert.match(buildScript, /run-forge-tests-in-process\.ps1/);
-  assert.match(buildScript, /pinned-sha256-and-375-tests/);
+  assert.match(buildScript, /pinned-sha256-and-421-tests/);
   assert.match(buildScript, /OfflineNodeModulesRoot/);
   assert.match(buildScript, /Assert-OfflineNodeModules/);
   assert.match(buildScript, /Offline node_modules contains filesystem links or reparse points/);
@@ -142,6 +142,16 @@ test("privacy claims are derived from verified scanner evidence", () => {
   assert.match(scanScript, /Portable antivirus gate failed closed/);
   assert.doesNotMatch(scanScript, /localOnly = \$true/);
   assert.doesNotMatch(scanScript, /Invoke-WebRequest|Invoke-RestMethod|HttpClient|WebClient|https?:\/\//i);
+});
+
+test("scanner reports replace exact artifact paths before generic user-profile paths", () => {
+  const singleArtifact = singleScanScript.indexOf("[Regex]::Escape($ExecutablePath), '%SINGLE_EXE%'");
+  const singleProfile = singleScanScript.indexOf("[a-z]:\\\\users\\\\[^\\\\]+', '%USERPROFILE%'", singleArtifact);
+  assert.ok(singleArtifact >= 0 && singleProfile > singleArtifact);
+
+  const portableArtifact = scanScript.indexOf("[Regex]::Escape($ArtifactRoot), '%ARTIFACT_ROOT%'");
+  const portableProfile = scanScript.indexOf("[a-z]:\\\\users\\\\[^\\\\]+', '%USERPROFILE%'", portableArtifact);
+  assert.ok(portableArtifact >= 0 && portableProfile > portableArtifact);
 });
 
 test("archive integrity is verified before antivirus selection", () => {

@@ -90,6 +90,7 @@ $browseContent = $null
 $pickerProcessId = $null
 $clientProcessId = $null
 $savedState = $env:MC_COMPANION_STATE_DIR
+$savedClientTestMutexSuffix = $env:MC_COMPANION_CLIENT_TEST_MUTEX_SUFFIX
 try {
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -310,6 +311,7 @@ public static class PortablePickerAutomation
     $launcherProcess = $null
 
     $desktopEndpointFile = Join-Path $testRoot "desktop-endpoint.json"
+    $env:MC_COMPANION_CLIENT_TEST_MUTEX_SUFFIX = [Guid]::NewGuid().ToString("N")
     $desktopLauncherProcess = Start-Process -FilePath $launcherExe -ArgumentList @(
         '--endpoint-file', ('"' + $desktopEndpointFile + '"')
     ) -PassThru
@@ -421,6 +423,7 @@ public static class PortablePickerAutomation
     }
     Stop-TestProcessesUnderRoot $testRoot
     $env:MC_COMPANION_STATE_DIR = $savedState
+    $env:MC_COMPANION_CLIENT_TEST_MUTEX_SUFFIX = $savedClientTestMutexSuffix
     if ($testRoot.StartsWith($tempPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $testRoot)) {
         Remove-TestTreeWithRetry $testRoot
     }

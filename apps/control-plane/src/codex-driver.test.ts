@@ -382,14 +382,22 @@ describe("CodexDriver", () => {
     expect(control).toHaveBeenCalledWith("codex-sim", "recall");
     expect(fake.started.prompts).toHaveLength(0);
 
+    fake.started.plannerDecision = {
+      type: "inspect",
+      scope: "full",
+      reply: "我来看看现在的情况。",
+      summary: "读取完整状态",
+    };
     const status = await driver.enqueue({
       companionId: "codex-sim",
       sender: "PlayerOne",
       message: "Codex，汇报完整状态",
     });
-    expect(status.status).toBe("succeeded");
-    expect(status.reply).toContain("生命 20/20");
-    expect(fake.started.plannerPrompts).toHaveLength(0);
+    const finishedStatus = await waitForRequest(driver, status.id);
+    expect(finishedStatus.status).toBe("succeeded");
+    expect(finishedStatus.reply).toContain("我来看看现在的情况");
+    expect(finishedStatus.reply).toContain("生命 20/20");
+    expect(fake.started.plannerPrompts).toHaveLength(1);
 
     const collaboration = await driver.handleInGameChat({
       companionId: "codex-sim",
@@ -1036,6 +1044,24 @@ describe("CodexDriver", () => {
     expect(request.status).toBe("succeeded");
     expect(request.reply).toContain("没有执行任务");
     expect(request.reply).toContain("待命");
+    expect(fake.started.prompts).toHaveLength(0);
+  });
+
+  it("does not let local inspection bypass an Antigravity persona in smart mode", async () => {
+    const { service, fake, driver } = await createHarness("mc-antigravity-persona-inspection-");
+    await configureChat(service, {
+      target: "antigravity-mcp",
+      actionMode: "smart",
+      persona: { mode: "inherit", displayName: "", personality: "", speakingStyle: "", memoryNotes: "" },
+    });
+
+    const routed = await driver.handleImmediateInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "你刚刚在干嘛呢",
+    });
+
+    expect(routed).toEqual({ handled: false, request: null });
     expect(fake.started.prompts).toHaveLength(0);
   });
 

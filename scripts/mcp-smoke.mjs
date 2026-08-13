@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const endpoint = new URL(process.env.MC_MCP_URL ?? "http://127.0.0.1:8765/mcp");
-const client = new Client({ name: "minecraft-companion-smoke", version: "0.1.2" });
+const client = new Client({ name: "minecraft-companion-smoke", version: "0.1.3" });
 
 try {
   await client.connect(new StreamableHTTPClientTransport(endpoint));

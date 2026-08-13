@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AntigravityAgentBridge,
   AntigravityAutoTriggerError,
+  isAntigravityRecoveryMessage,
   normalizeAntigravityAutoTriggerFailure,
   parseAntigravityEndpointLog,
   parseAntigravityConversationSummaries,
@@ -58,6 +59,26 @@ Local:       https://127.0.0.1:57422/
   });
 });
 
+describe("isAntigravityRecoveryMessage", () => {
+  it.each([
+    "恢复反重力",
+    "重连反重力",
+    "解除反重力会话",
+    "反重力恢复",
+    "antigravity reconnect",
+  ])("accepts the local recovery command %s", (message) => {
+    expect(isAntigravityRecoveryMessage(message)).toBe(true);
+  });
+
+  it.each([
+    "恢复跟随",
+    "反重力在吗",
+    "帮我恢复反重力任务",
+  ])("does not intercept ordinary chat %s", (message) => {
+    expect(isAntigravityRecoveryMessage(message)).toBe(false);
+  });
+});
+
 describe("AntigravityAgentBridge", () => {
   it("keeps the exact stored binding visible while Antigravity is offline", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-offline-binding-"));
@@ -106,6 +127,10 @@ describe("AntigravityAgentBridge", () => {
     const conversations = path.join(home, "conversations");
     const logPath = path.join(root, "main.log");
     await mkdir(conversations, { recursive: true });
+    await mkdir(path.join(home, "bin"), { recursive: true });
+    const executable = path.join(home, "language_server.exe");
+    await writeFile(executable, "fixture", "utf8");
+    await writeFile(path.join(home, "bin", "agentapi.bat"), `"${executable}" agentapi %*\n`, "utf8");
     await writeFile(path.join(conversations, `${CONVERSATION_ID}.db`), "target", "utf8");
     await writeFile(path.join(conversations, `${OTHER_CONVERSATION_ID}.db`), "newest", "utf8");
     await writeFile(path.join(home, "agyhub_summaries_proto.pb"), summaryIndex([
@@ -160,6 +185,10 @@ Local: https://127.0.0.1:57422/
     const conversations = path.join(home, "conversations");
     const logPath = path.join(root, "main.log");
     await mkdir(conversations, { recursive: true });
+    await mkdir(path.join(home, "bin"), { recursive: true });
+    const executable = path.join(home, "language_server.exe");
+    await writeFile(executable, "fixture", "utf8");
+    await writeFile(path.join(home, "bin", "agentapi.bat"), `"${executable}" agentapi %*\n`, "utf8");
     await writeFile(path.join(conversations, `${CONVERSATION_ID}.db`), "conversation", "utf8");
     await writeFile(path.join(home, "agyhub_summaries_proto.pb"), summaryIndex([
       { conversationId: CONVERSATION_ID, title: "Execute Minecraft Woodcutting Task" },
@@ -354,6 +383,10 @@ Local: https://127.0.0.1:57422/
     const conversations = path.join(home, "conversations");
     const logPath = path.join(root, "main.log");
     await mkdir(conversations, { recursive: true });
+    await mkdir(path.join(home, "bin"), { recursive: true });
+    const executable = path.join(home, "language_server.exe");
+    await writeFile(executable, "fixture", "utf8");
+    await writeFile(path.join(home, "bin", "agentapi.bat"), `"${executable}" agentapi %*\n`, "utf8");
     await writeFile(path.join(conversations, `${CONVERSATION_ID}.db`), "conversation", "utf8");
     await writeFile(path.join(home, "agyhub_summaries_proto.pb"), summaryIndex([
       { conversationId: CONVERSATION_ID, title: "Execute Minecraft Woodcutting Task" },
@@ -363,11 +396,15 @@ Starting app (v2.4.3) with dynamic port…
 Spawning: language_server.exe --csrf_token 22222222-2222-2222-2222-222222222222
 Local: https://127.0.0.1:57422/
 `, "utf8");
+    let now = 1_000;
+    let locationRejected = true;
     const runner = vi.fn(async (args: string[]) => {
       if (args[0] === "get-conversation-metadata") {
         return { response: { conversationMetadata: { metadata: { projectId: "outside-of-project" } } } };
       }
-      return { error: "User location is not supported for the API use" };
+      return locationRejected
+        ? { error: "User location is not supported for the API use" }
+        : { response: { sendMessage: { recipientId: CONVERSATION_ID } } };
     });
     const bridge = new AntigravityAgentBridge({
       stateDirectory,
@@ -375,6 +412,8 @@ Local: https://127.0.0.1:57422/
       antigravityLogPath: logPath,
       runAgentApi: runner,
       waitForIdle: async () => undefined,
+      locationFailureBackoffMs: 5_000,
+      now: () => now,
     });
     const message = {
       sequence: 1,
@@ -399,9 +438,22 @@ Local: https://127.0.0.1:57422/
     const callsAfterFirstFailure = runner.mock.calls.length;
     await expect(bridge.trigger({ ...message, sequence: 2 }, persona)).rejects.toMatchObject({
       code: "COOLDOWN",
-      notifyPlayer: false,
+      notifyPlayer: true,
     });
     expect(runner).toHaveBeenCalledTimes(callsAfterFirstFailure);
+    await expect(bridge.status()).resolves.toMatchObject({
+      connected: true,
+      message: expect.stringContaining("5 秒后"),
+    });
+
+    now += 5_000;
+    locationRejected = false;
+    await expect(bridge.trigger({ ...message, sequence: 3 }, persona)).resolves.toBeUndefined();
+    expect(runner.mock.calls.length).toBeGreaterThan(callsAfterFirstFailure);
+    await expect(bridge.status()).resolves.toMatchObject({
+      connected: true,
+      message: "反重力自动触发已就绪",
+    });
   });
 
   it("fails closed instead of drifting to the newest conversation when no exact binding exists", async () => {
