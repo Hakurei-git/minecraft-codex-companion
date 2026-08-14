@@ -386,7 +386,7 @@ Invoke-Checked $csc @(
 
 $productionPackage = [ordered]@{
     name = 'minecraft-codex-companion-portable-runtime'
-    version = '0.1.5'
+    version = '0.1.6'
     private = $true
     type = 'module'
     dependencies = [ordered]@{
@@ -439,7 +439,7 @@ Assert-TransparentRuntime $stage
 $manifest = [ordered]@{
     format = 2
     name = 'Minecraft Codex Companion Portable'
-    version = '0.1.5'
+    version = '0.1.6'
     platform = 'win32-x64'
     packaging = [ordered]@{
         model = 'transparent-multi-file'

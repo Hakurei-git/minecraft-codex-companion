@@ -29,8 +29,17 @@ if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
 if (Test-Path -LiteralPath $pidPath -PathType Leaf) {
     $oldPid = 0
     [void][int]::TryParse((Get-Content -Raw -LiteralPath $pidPath).Trim(), [ref]$oldPid)
-    if ($oldPid -gt 0 -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {
-        throw "An isolated palette control service is already running"
+    $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $listener) {
+        $listenerProcess = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+        if ($oldPid -gt 0 -and
+            $listener.OwningProcess -eq $oldPid -and
+            $null -ne $listenerProcess -and
+            $listenerProcess.ProcessName -eq "node") {
+            throw "An isolated palette control service is already running"
+        }
+        throw "Port $Port is already used by an unexpected process; no process was stopped"
     }
 }
 

@@ -11,6 +11,9 @@ param(
     [Parameter(Mandatory = $true, ParameterSetName = "NormalizeOnly")]
     [switch]$NormalizeOnly,
 
+    [ValidateLength(1, 256)]
+    [string]$ControlBaseUri = "http://127.0.0.1:8765",
+
     [switch]$DraftOnly,
 
     [switch]$RespawnIfDead
@@ -136,7 +139,12 @@ public static class MinecraftBackgroundChatPost
 '@
 }
 
-$baseUri = [Uri]"http://127.0.0.1:8765/"
+$controlUri = [Uri]$ControlBaseUri
+if ($controlUri.Scheme -ne "http" -or
+    $controlUri.Host.ToLowerInvariant() -notin @("127.0.0.1", "localhost", "::1", "[::1]")) {
+    throw "ControlBaseUri must be an HTTP loopback URL"
+}
+$baseUri = [Uri]($controlUri.GetLeftPart([UriPartial]::Authority) + "/")
 function Get-ClientUiState {
     $response = Invoke-RestMethod -Uri ([Uri]::new($baseUri, "api/companions")) -TimeoutSec 2
     $companions = @(

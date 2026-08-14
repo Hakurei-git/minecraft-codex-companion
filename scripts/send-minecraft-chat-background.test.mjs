@@ -11,6 +11,9 @@ test("background Minecraft chat posts Unicode code points through PostMessageW",
   assert.match(source, /Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String/u);
   assert.match(source, /clientUiState/u);
   assert.match(source, /RespawnIfDead/u);
+  assert.match(source, /ControlBaseUri/u);
+  assert.match(source, /ControlBaseUri must be an HTTP loopback URL/u);
+  assert.match(source, /127\.0\.0\.1.*localhost.*::1/u);
   assert.match(source, /active-minecraft-window\.status/u);
   assert.match(source, /GetWindowThreadProcessId/u);
   assert.match(source, /FindLargestWindowForProcess/u);

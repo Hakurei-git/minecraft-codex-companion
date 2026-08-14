@@ -44,7 +44,7 @@ Movement, gathering, crafting, smelting, storage, combat, dragon care, and const
 GitHub Releases provide two editions:
 
 - **[Windows Setup EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**: the complete edition for normal Windows users. It installs the local runtime and Forge bridge without requiring Node.js or a manual mod build.
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.5)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.6)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
 
 The installer does not embed or migrate accounts, API keys, Antigravity conversations, Minecraft worlds, or machine-specific paths.
 
@@ -148,6 +148,7 @@ If Antigravity stops replying after a network or provider-location error, type `
 - Observe position, health, hunger, equipment, inventory, blocks, nearby entities, task state, and bounded item transaction history.
 - Follow, guard, move, explore, gather whole trees or ore clusters, craft, smelt, farm, fish, sleep, eat, drop items, and store or retrieve items.
 - Resolve recipe prerequisites recursively, including lower-tier tools, crafting tables, furnaces, fuel, safe raw-material gathering, return, and physical delivery.
+- When home storage is full, recursively obtain materials, craft and physically place a crafting table and chest, then resume the same storage task. Placement uses player-equivalent Forge events rather than direct world edits.
 - Persist active tasks, paused work, storage operations, deep-mining checkpoints, and recoverable construction failure points across bridge, control-service, and Minecraft restarts.
 - Import staged JSON, Sponge `.schem`, Litematica `.litematic`, and PNG build plans after preview and confirmation.
 - Support the audited `bookofdragons` and `saintsdragons` integrations for care, following, riding, shared seating, terrain recovery, landing, recall, and combat assistance.

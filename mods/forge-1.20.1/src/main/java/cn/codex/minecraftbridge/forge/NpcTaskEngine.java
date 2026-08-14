@@ -2449,6 +2449,7 @@ public final class NpcTaskEngine {
                 case "fish" -> "继续补齐钓鱼竿依赖";
                 case "ranch" -> "继续准备畜牧前置材料";
                 case "provision-food" -> "继续烹饪并补足口粮";
+                case "store", "organize-storage" -> "返回家园制作并放置新箱子";
                 default -> "继续制作 " + work.outputItemId;
             };
             progress(work, activeProgress(work), "前置材料已补齐，" + next);
@@ -3578,6 +3579,10 @@ public final class NpcTaskEngine {
     }
 
     private void tickStore(ActiveWork work) {
+        if (hasCraftGatherPrerequisite(work)) {
+            tickCraftGatherPrerequisite(work);
+            return;
+        }
         String requestedId = work.spec.has("itemId") && !work.spec.get("itemId").isJsonNull()
             ? work.spec.get("itemId").getAsString()
             : null;
@@ -3729,6 +3734,10 @@ public final class NpcTaskEngine {
     }
 
     private void tickOrganizeStorage(ActiveWork work) {
+        if (hasCraftGatherPrerequisite(work)) {
+            tickCraftGatherPrerequisite(work);
+            return;
+        }
         int radius = integer(work.spec, "radius", HomeStoragePolicy.DEFAULT_RADIUS);
         if (!work.initialized) {
             work.initialized = true;
@@ -3751,7 +3760,7 @@ public final class NpcTaskEngine {
         if (!(blockEntity instanceof Container) || blockEntity instanceof AbstractFurnaceBlockEntity) {
             work.skippedStorageTargets.add(work.workstation);
             work.workstation = findHomeStorage(null, false, work, radius);
-            if (work.workstation == null) fail(work, "家中仓库容器已不存在", "CONTAINER_MISSING");
+            if (work.workstation == null) work.workstation = createHomeStorageIfPossible(work, radius);
             return;
         }
         StorageSortResult sorted = organizeHomeStorageTransactional(radius);
@@ -12513,40 +12522,21 @@ public final class NpcTaskEngine {
 
         int chestSlot = findUnreservedExpansionItemSlot(work, "minecraft:chest");
         BlockPos table = NpcHomeStorage.findCraftingTable(level, home, radius);
-        int planks = usableExpansionMaterialCount(work, "#minecraft:planks");
-        if (!HomeStoragePolicy.canExpandStorage(chestSlot < 0 ? 0 : 1, planks, table != null, npc.creativeResources())) {
-            int required = HomeStoragePolicy.CHEST_PLANKS + (table == null ? HomeStoragePolicy.CRAFTING_TABLE_PLANKS : 0);
-            fail(work, "家中仓库已满，扩建需要箱子或至少 " + required + " 个木板", "HOME_STORAGE_MATERIALS_MISSING");
+        if (chestSlot < 0 && !npc.creativeResources()) {
+            Recipe<?> chestRecipe = findCraftRecipe("minecraft:chest");
+            if (chestRecipe == null) {
+                fail(work, "当前世界没有可用的箱子制作配方", "HOME_STORAGE_RECIPE_MISSING");
+                return null;
+            }
+            if (craftOnePrerequisite(work, "minecraft:chest", "已制作仓库扩容所需箱子")) return null;
+            if (active != work) return null;
+            if (prepareCraftPrerequisite(work, "minecraft:chest", chestRecipe)) return null;
+            fail(work, "无法安全取得制作箱子所需的真实材料", "HOME_STORAGE_MATERIALS_MISSING");
             return null;
         }
-        if (work.ticks - work.lastActionTick < 8) return null;
 
-        if (chestSlot < 0 && !npc.creativeResources() && table == null) {
-            BlockPos tablePosition = NpcHomeStorage.findSafePlacement(
-                level,
-                home,
-                home.position(),
-                radius,
-                position -> isStoragePlacementCellClear(level, position)
-            );
-            if (tablePosition == null) {
-                fail(work, "家附近没有可以安全放置工作台的位置", "HOME_PLACEMENT_BLOCKED");
-                return null;
-            }
-            if (!approach(work, tablePosition, 3.2, 1.08)) return null;
-            ItemStack tableStack = new ItemStack(Items.CRAFTING_TABLE);
-            InteractionResult result = proxy.useItemOn(tablePosition.below(), Direction.UP, tableStack, -1);
-            work.lastActionTick = work.ticks;
-            if (!result.consumesAction() || !level.getBlockState(tablePosition).is(Blocks.CRAFTING_TABLE)) {
-                fail(work, "工作台放置被世界保护或其他模组拒绝", "HOME_PLACEMENT_DENIED");
-                return null;
-            }
-            consumeExpansionMaterial(work, "#minecraft:planks", HomeStoragePolicy.CRAFTING_TABLE_PLANKS);
-            npc.swing(InteractionHand.MAIN_HAND);
-            work.storageExpanded = true;
-            progress(work, activeProgress(work), "已在家园制作并放置工作台，准备制作箱子");
-            return null;
-        }
+        if (work.ticks - work.lastActionTick < 8) return null;
+        table = NpcHomeStorage.findCraftingTable(level, home, radius);
 
         BlockPos placementAnchor = table == null ? home.position() : table;
         BlockPos chestPosition = NpcHomeStorage.findSafePlacement(
@@ -12572,9 +12562,6 @@ public final class NpcTaskEngine {
         if (!result.consumesAction() || !(placed instanceof Container)) {
             fail(work, "箱子放置被世界保护或其他模组拒绝", "HOME_PLACEMENT_DENIED");
             return null;
-        }
-        if (chestSlot < 0 && !npc.creativeResources()) {
-            consumeExpansionMaterial(work, "#minecraft:planks", HomeStoragePolicy.CHEST_PLANKS);
         }
         npc.swing(InteractionHand.MAIN_HAND);
         work.storageExpanded = true;
@@ -12747,6 +12734,7 @@ public final class NpcTaskEngine {
         work.taskOwnedWorkstation = placement.immutable();
         work.taskOwnedWorkstationId = workstationId;
         work.pendingWorkstationPlacement = null;
+        StorageLiveFixture.recordTaskWorkstationPlacement(npc, placement, placedDirectly);
         npc.swing(InteractionHand.MAIN_HAND);
         progress(work, activeProgress(work), "已制作并安全放置 " + workstationId);
         return placement;

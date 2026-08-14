@@ -527,6 +527,14 @@ describe("protocol schemas", () => {
       suite: "storage",
       mode: "inspect-expand",
     });
+    expect(liveFixtureRequestSchema.parse({ suite: "storage", mode: "setup-craft-expand" })).toEqual({
+      suite: "storage",
+      mode: "setup-craft-expand",
+    });
+    expect(liveFixtureRequestSchema.parse({ suite: "storage", mode: "inspect-craft-expand" })).toEqual({
+      suite: "storage",
+      mode: "inspect-craft-expand",
+    });
     expect(liveFixtureRequestSchema.parse({ suite: "storage", mode: "setup-restart" })).toEqual({
       suite: "storage",
       mode: "setup-restart",

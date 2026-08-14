@@ -211,7 +211,8 @@ final class LiveFixturePolicy {
     private static List<String> storage(String mode) {
         return switch (mode) {
             case "setup-retrieve", "inspect-retrieve", "setup-organize", "inspect-organize",
-                 "setup-expand", "inspect-expand", "setup-restart", "inspect-restart", "cleanup" ->
+                 "setup-expand", "inspect-expand", "setup-craft-expand", "inspect-craft-expand",
+                 "setup-restart", "inspect-restart", "cleanup" ->
                 List.of("execute if entity @s run data get entity @s Air");
             default -> throw new IllegalArgumentException("Unknown storage fixture mode");
         };

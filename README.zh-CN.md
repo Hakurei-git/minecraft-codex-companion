@@ -44,7 +44,7 @@
 GitHub Releases 提供两种下载：
 
 - **[Windows 安装程序 EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**：普通用户使用的完整版本，不需要安装 Node.js 或手工构建模组。
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.5)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.6)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
 
 安装器不会内置或迁移账号、API Key、反重力会话、Minecraft 存档和本机路径。
 
@@ -278,6 +278,7 @@ npm run start -w @mc/mineflayer-worker
 
 - 观察位置、生命、饥饿、装备、背包、方块和附近实体。
 - 聊天、跟随、守卫、移动、探索、整树/矿脉采集、制作、烧炼、耕种、钓鱼、睡觉、真实进食、物理投掷和存储。制作与烧炼会按当前世界的真实配方递归补齐工具、工作台、熔炉、燃料和允许安全采集的原始资源，例如“铁锭 → 原铁 → 石镐 → 木镐 → 原木”；农务循环会在种子耗尽时继续采集或制作种子，而不是把未完成任务误报为成功。无法安全取得时明确停止并报告，不会凭空补物品。
+- 家园仓库已满时，会递归取得材料、制作并通过玩家等价的 Forge 事件真实放置工作台和箱子，再恢复同一个存储任务；不会用直接世界编辑伪造扩容成功。
 - 活动任务、暂停队列和最近一次可恢复的建造失败点会写入 NPC 存档；控制服务另有不含凭据的本机任务日志。战斗插队、玩家离线、保存退出、桥接断线、整个控制服务重启、跨维度召回或 NPC 倒地后，都能重新挂接当前步骤并按优先级继续后续步骤。
 - 有权限约束的战斗，以及本地反应和撤退。
 - 观察、喂食、治疗、驯服、跟随、停留、骑乘、骑龙飞行/降落/召回/协战、下龙和照顾龙蛋；当前只适配整合包中的 `bookofdragons` 与 `saintsdragons`。

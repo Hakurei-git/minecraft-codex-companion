@@ -83,6 +83,8 @@ describe("live fixture route", () => {
       { suite: "resource-priority", mode: "setup-torches" },
       { suite: "resource-priority", mode: "inspect-craft" },
       { suite: "food-survival", mode: "setup-16" },
+      { suite: "storage", mode: "setup-craft-expand" },
+      { suite: "storage", mode: "inspect-craft-expand" },
     ] as const) {
       const response = await app.inject({
         method: "POST",
@@ -97,6 +99,8 @@ describe("live fixture route", () => {
       { type: "live-fixture", suite: "resource-priority", mode: "setup-torches" },
       { type: "live-fixture", suite: "resource-priority", mode: "inspect-craft" },
       { type: "live-fixture", suite: "food-survival", mode: "setup-16" },
+      { type: "live-fixture", suite: "storage", mode: "setup-craft-expand" },
+      { type: "live-fixture", suite: "storage", mode: "inspect-craft-expand" },
     ]);
   });
 

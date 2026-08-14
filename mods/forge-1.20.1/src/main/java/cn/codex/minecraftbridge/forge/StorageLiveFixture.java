@@ -1,5 +1,6 @@
 package cn.codex.minecraftbridge.forge;
 
+import cn.codex.minecraftbridge.MinecraftCodexBridge;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.Registries;
@@ -19,12 +20,17 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.common.util.FakePlayer;
+import net.minecraftforge.event.level.BlockEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -34,6 +40,7 @@ import java.util.Set;
 
 /** Reversible home-storage state used only by loopback live acceptance tests. */
 @SuppressWarnings("deprecation")
+@Mod.EventBusSubscriber(modid = MinecraftCodexBridge.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 final class StorageLiveFixture {
     private static final String MARKER_TAG = "CodexAcceptanceStorageMarker";
     private static final String ITEM_TAG = "CodexAcceptanceStorageItem";
@@ -62,11 +69,42 @@ final class StorageLiveFixture {
             case "inspect-organize" -> inspectOrganize(player, npc);
             case "setup-expand" -> setup(player, npc, "expand");
             case "inspect-expand" -> inspectExpand(player, npc);
+            case "setup-craft-expand" -> setup(player, npc, "craft-expand");
+            case "inspect-craft-expand" -> inspectCraftExpand(player, npc);
             case "setup-restart" -> setup(player, npc, "restart");
             case "inspect-restart" -> inspectRestart(player, npc);
             case "cleanup" -> cleanup(player, npc, true);
             default -> throw new IllegalArgumentException("Unknown storage fixture mode");
         }
+    }
+
+    @SubscribeEvent
+    public static void recordPlacement(BlockEvent.EntityPlaceEvent event) {
+        if (event.isCanceled() || !(event.getLevel() instanceof ServerLevel level)) return;
+        ArmorStand marker = markerNear(level, Vec3.atCenterOf(event.getPos()), HomeStoragePolicy.DEFAULT_RADIUS + 8.0D);
+        if (marker == null) return;
+        CompoundTag state = marker.getPersistentData().getCompound(STATE_KEY);
+        if (!"craft-expand".equals(state.getString("Scenario")) || !insideFixture(state, event.getPos())) return;
+        if (!(event.getEntity() instanceof FakePlayer)) {
+            state.putInt("UnknownWorldEdits", state.getInt("UnknownWorldEdits") + 1);
+        } else if (event.getPlacedBlock().is(Blocks.CRAFTING_TABLE)) {
+            recordDynamicPlacement(state, event.getPos(), "table", false);
+        } else if (event.getPlacedBlock().is(Blocks.CHEST)) {
+            recordDynamicPlacement(state, event.getPos(), "chest", false);
+        } else {
+            state.putInt("UnknownWorldEdits", state.getInt("UnknownWorldEdits") + 1);
+        }
+        marker.getPersistentData().put(STATE_KEY, state);
+    }
+
+    static void recordTaskWorkstationPlacement(CodexNpcEntity npc, BlockPos position, boolean direct) {
+        if (npc == null || position == null || npc.owner() == null) return;
+        ArmorStand marker = findMarker(npc.owner(), npc);
+        if (marker == null) return;
+        CompoundTag state = marker.getPersistentData().getCompound(STATE_KEY);
+        if (!"craft-expand".equals(state.getString("Scenario")) || !insideFixture(state, position)) return;
+        recordDynamicPlacement(state, position, "table", direct);
+        marker.getPersistentData().put(STATE_KEY, state);
     }
 
     static String setupRefusalReason(
@@ -128,6 +166,7 @@ final class StorageLiveFixture {
         state.putDouble("StartZ", npc.getZ());
         state.putFloat("StartYaw", npc.getYRot());
         state.putFloat("StartPitch", npc.getXRot());
+        state.putLongArray("DynamicBlocks", new long[0]);
         saveRespawn(player, state);
         savePlayerSafety(player, state);
         protectPlayer(player);
@@ -151,11 +190,19 @@ final class StorageLiveFixture {
 
         List<BlockPos> fixtureChests = new ArrayList<>();
         try {
+            if (scenario.equals("craft-expand")) {
+                player.gameMode.changeGameModeForPlayer(GameType.SURVIVAL);
+                protectPlayer(player);
+                if (npc.creativeResources()) {
+                    throw new IllegalStateException("Craft-expand fixture requires survival material mode");
+                }
+            }
             NpcHomeStorage.Home home = new NpcHomeStorage.Home(level.dimension(), fixtureHome, true);
             switch (scenario) {
                 case "retrieve" -> setupRetrieve(level, home, fixtureChests);
                 case "organize" -> setupOrganize(level, home, npc, fixtureChests);
                 case "expand" -> setupExpand(level, home, npc, fixtureChests);
+                case "craft-expand" -> setupCraftExpand(level, home, npc, fixtureChests);
                 case "restart" -> setupRestart(level, home, fixtureChests);
                 default -> throw new IllegalArgumentException("Unknown storage fixture scenario");
             }
@@ -209,6 +256,22 @@ final class StorageLiveFixture {
         }
         container.setChanged();
         insertNpcStack(npc, fixtureStack(Items.CHEST, 1, "expansion-chest"));
+        insertNpcStack(npc, fixtureStack(Items.DIRT, 4, "surplus"));
+    }
+
+    private static void setupCraftExpand(
+        ServerLevel level,
+        NpcHomeStorage.Home home,
+        CodexNpcEntity npc,
+        List<BlockPos> fixtureChests
+    ) {
+        BlockPos full = placeEmptyChest(level, home, fixtureChests);
+        Container container = (Container) level.getBlockEntity(full);
+        for (int slot = 0; slot < container.getContainerSize(); slot++) {
+            container.setItem(slot, fixtureStack(Items.COBBLESTONE, 64, "filler"));
+        }
+        container.setChanged();
+        insertNpcStack(npc, fixtureStack(Items.OAK_LOG, 3, "expansion-log"));
         insertNpcStack(npc, fixtureStack(Items.DIRT, 4, "surplus"));
     }
 
@@ -402,6 +465,8 @@ final class StorageLiveFixture {
                 loadPlacementArea(level, candidate, HomeStoragePolicy.DEFAULT_RADIUS);
                 NpcHomeStorage.Home home = new NpcHomeStorage.Home(level.dimension(), candidate, true);
                 if (!NpcHomeStorage.findContainers(level, home, HomeStoragePolicy.DEFAULT_RADIUS).isEmpty()) continue;
+                if (scenario.equals("craft-expand")
+                    && NpcHomeStorage.findCraftingTable(level, home, HomeStoragePolicy.DEFAULT_RADIUS) != null) continue;
                 if (scenario.equals("restart") && restartCellCapacity(level, home) < RESTART_ITEM_COUNT) continue;
                 BlockPos placement = NpcHomeStorage.findSafePlacement(
                     level, home, candidate, 10, position -> isolatedChestCell(level, position)
@@ -456,6 +521,58 @@ final class StorageLiveFixture {
         npc.tasks().stay();
         npc.setStatus("storage-fixture:expand homeFiller=" + homeFiller + ",homeSurplus=" + homeSurplus
             + ",npc=" + npcFixture + ",expanded=" + expanded);
+    }
+
+    private static void inspectCraftExpand(ServerPlayer player, CodexNpcEntity npc) {
+        FixtureContext context = requireContext(player, npc, "craft-expand");
+        int homeFiller = countHome(context, "filler");
+        int homeSurplus = countHome(context, "surplus");
+        int npcFixture = countNpc(npc, null);
+        int npcLogs = countNpcItem(npc, Items.OAK_LOG);
+        int npcPlanks = countNpcItem(npc, Items.OAK_PLANKS);
+        int npcTables = countNpcItem(npc, Items.CRAFTING_TABLE);
+        int npcChests = countNpcItem(npc, Items.CHEST);
+        Set<BlockPos> fixtureChests = blockSet(context.state().getLongArray("FixtureChests"));
+        int expanded = 0;
+        for (BlockPos position : NpcHomeStorage.findContainers(context.level(), context.home(), HomeStoragePolicy.DEFAULT_RADIUS)) {
+            if (!fixtureChests.contains(position)) expanded++;
+        }
+        int tables = countDynamicBlock(context, Blocks.CRAFTING_TABLE);
+        int tablePlacements = context.state().getInt("TablePlacements");
+        int chestPlacements = context.state().getInt("ChestPlacements");
+        int directPlacements = context.state().getInt("DirectPlacements");
+        int unknown = context.state().getInt("UnknownWorldEdits");
+        npc.tasks().stay();
+        npc.setStatus(craftExpandInspectionStatus(
+            homeFiller, homeSurplus, npcFixture, npcLogs, npcPlanks, npcTables, npcChests,
+            expanded, tables, tablePlacements, chestPlacements, directPlacements, unknown
+        ));
+    }
+
+    static String craftExpandInspectionStatus(
+        int homeFiller,
+        int homeSurplus,
+        int npcFixture,
+        int npcLogs,
+        int npcPlanks,
+        int npcTables,
+        int npcChests,
+        int expanded,
+        int tables,
+        int tablePlacements,
+        int chestPlacements,
+        int directPlacements,
+        int unknown
+    ) {
+        String status = "storage-fixture:craft-expand|hf=" + homeFiller
+            + ",hs=" + homeSurplus + ",nf=" + npcFixture + ",nl=" + npcLogs
+            + ",np=" + npcPlanks + ",nt=" + npcTables + ",nc=" + npcChests
+            + ",e=" + expanded + ",t=" + tables + ",tp=" + tablePlacements
+            + ",cp=" + chestPlacements + ",d=" + directPlacements + ",u=" + unknown;
+        if (status.length() > 120) {
+            throw new IllegalStateException("Craft-expand inspection exceeds the 120-character status limit");
+        }
+        return status;
     }
 
     private static void inspectRestart(ServerPlayer player, CodexNpcEntity npc) {
@@ -518,6 +635,7 @@ final class StorageLiveFixture {
         );
         removeFixtureStacksFromHome(level, home);
         Set<BlockPos> original = blockSet(state.getLongArray("FixtureChests"));
+        int dynamicConflicts = 0;
         List<BlockPos> candidates = new ArrayList<>(NpcHomeStorage.findContainers(
             level, home, HomeStoragePolicy.DEFAULT_RADIUS
         ));
@@ -525,6 +643,17 @@ final class StorageLiveFixture {
         for (BlockPos position : candidates) {
             if (!original.contains(position) && !isEmptyFixtureChest(level, position)) continue;
             if (isEmptyFixtureChest(level, position)) level.setBlockAndUpdate(position, Blocks.AIR.defaultBlockState());
+        }
+        for (long packed : state.getLongArray("DynamicBlocks")) {
+            BlockPos position = BlockPos.of(packed);
+            if (level.getBlockState(position).isAir()) continue;
+            if (level.getBlockState(position).is(Blocks.CRAFTING_TABLE)) {
+                level.setBlockAndUpdate(position, Blocks.AIR.defaultBlockState());
+            } else if (isEmptyFixtureChest(level, position)) {
+                level.setBlockAndUpdate(position, Blocks.AIR.defaultBlockState());
+            } else {
+                dynamicConflicts++;
+            }
         }
         for (ItemEntity item : level.getEntitiesOfClass(
             ItemEntity.class,
@@ -552,6 +681,9 @@ final class StorageLiveFixture {
         String restoredStatus = npc.status();
         clearMarkerReference(npc);
         marker.discard();
+        if (dynamicConflicts > 0) {
+            throw new IllegalStateException("Storage fixture cleanup found " + dynamicConflicts + " modified dynamic blocks");
+        }
         if (report) reportAndRestoreStatus(player, npc, "storage-fixture:cleanup restored", restoredStatus);
     }
 
@@ -647,6 +779,8 @@ final class StorageLiveFixture {
 
     private static void savePlayerSafety(ServerPlayer player, CompoundTag state) {
         state.putBoolean("PlayerSafetySaved", true);
+        state.putString("PlayerGameMode", player.gameMode.getGameModeForPlayer().getName());
+        state.putBoolean("PlayerFlying", player.getAbilities().flying);
         state.putBoolean("PlayerInvulnerable", player.getAbilities().invulnerable);
         state.putInt("PlayerAirSupply", player.getAirSupply());
         state.putInt("PlayerFireTicks", player.getRemainingFireTicks());
@@ -661,6 +795,9 @@ final class StorageLiveFixture {
 
     private static void restorePlayerSafety(ServerPlayer player, CompoundTag state) {
         if (!state.getBoolean("PlayerSafetySaved")) return;
+        GameType savedMode = GameType.byName(state.getString("PlayerGameMode"), GameType.SURVIVAL);
+        player.gameMode.changeGameModeForPlayer(savedMode == null ? GameType.SURVIVAL : savedMode);
+        player.getAbilities().flying = state.getBoolean("PlayerFlying") && player.getAbilities().mayfly;
         player.getAbilities().invulnerable = state.getBoolean("PlayerInvulnerable");
         player.setAirSupply(state.getInt("PlayerAirSupply"));
         player.setRemainingFireTicks(state.getInt("PlayerFireTicks"));
@@ -734,6 +871,40 @@ final class StorageLiveFixture {
         return null;
     }
 
+    private static ArmorStand markerNear(ServerLevel level, Vec3 position, double radius) {
+        return level.getEntitiesOfClass(
+            ArmorStand.class,
+            new AABB(position, position).inflate(radius),
+            candidate -> candidate.getTags().contains(MARKER_TAG)
+                && "craft-expand".equals(candidate.getPersistentData().getCompound(STATE_KEY).getString("Scenario"))
+        ).stream().min(Comparator.comparingDouble(candidate -> candidate.distanceToSqr(position))).orElse(null);
+    }
+
+    private static boolean insideFixture(CompoundTag state, BlockPos position) {
+        BlockPos home = BlockPos.of(state.getLong("FixtureHome"));
+        return Math.abs(position.getX() - home.getX()) <= HomeStoragePolicy.DEFAULT_RADIUS
+            && Math.abs(position.getY() - home.getY()) <= 8
+            && Math.abs(position.getZ() - home.getZ()) <= HomeStoragePolicy.DEFAULT_RADIUS;
+    }
+
+    private static void recordDynamicPlacement(CompoundTag state, BlockPos position, String kind, boolean direct) {
+        if (!appendUnique(state, "DynamicBlocks", position)) return;
+        if ("table".equals(kind)) state.putInt("TablePlacements", state.getInt("TablePlacements") + 1);
+        if ("chest".equals(kind)) state.putInt("ChestPlacements", state.getInt("ChestPlacements") + 1);
+        if (direct) state.putInt("DirectPlacements", state.getInt("DirectPlacements") + 1);
+    }
+
+    private static boolean appendUnique(CompoundTag state, String key, BlockPos position) {
+        long packed = position.asLong();
+        long[] current = state.getLongArray(key);
+        for (long value : current) if (value == packed) return false;
+        long[] updated = new long[current.length + 1];
+        System.arraycopy(current, 0, updated, 0, current.length);
+        updated[current.length] = packed;
+        state.putLongArray(key, updated);
+        return true;
+    }
+
     private static void removeFixtureStacks(ServerPlayer player, CodexNpcEntity npc) {
         for (int slot = 0; slot < CodexNpcEntity.INVENTORY_SIZE; slot++) {
             if (isFixtureStack(npc.inventory().getStackInSlot(slot))) npc.inventory().setStackInSlot(slot, ItemStack.EMPTY);
@@ -798,6 +969,23 @@ final class StorageLiveFixture {
         for (int slot = 0; slot < CodexNpcEntity.INVENTORY_SIZE; slot++) {
             ItemStack stack = npc.inventory().getStackInSlot(slot);
             if (isFixtureStack(stack) && (role == null || role.equals(itemRole(stack)))) count += stack.getCount();
+        }
+        return count;
+    }
+
+    private static int countNpcItem(CodexNpcEntity npc, Item item) {
+        int count = 0;
+        for (int slot = 0; slot < CodexNpcEntity.INVENTORY_SIZE; slot++) {
+            ItemStack stack = npc.inventory().getStackInSlot(slot);
+            if (stack.is(item)) count += stack.getCount();
+        }
+        return count;
+    }
+
+    private static int countDynamicBlock(FixtureContext context, net.minecraft.world.level.block.Block block) {
+        int count = 0;
+        for (long packed : context.state().getLongArray("DynamicBlocks")) {
+            if (context.level().getBlockState(BlockPos.of(packed)).is(block)) count++;
         }
         return count;
     }

@@ -965,6 +965,8 @@ export const liveFixtureRequestSchema = z.discriminatedUnion("suite", [
       "inspect-organize",
       "setup-expand",
       "inspect-expand",
+      "setup-craft-expand",
+      "inspect-craft-expand",
       "setup-restart",
       "inspect-restart",
       "cleanup",
