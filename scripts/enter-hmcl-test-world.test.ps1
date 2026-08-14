@@ -14,6 +14,8 @@ if ($errors.Count -gt 0) {
 
 $source = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
 foreach ($required in @(
+    'EntryPoint = "PostMessageW"',
+    '[MinecraftBackgroundInput]::Text($handle, $targetWorldId)',
     'ShowWindowAsync($handle, 6)',
     'ClipCursor(IntPtr.Zero)',
     'ReleaseCursorCapture($handle)',
@@ -27,6 +29,9 @@ foreach ($required in @(
     if (-not $source.Contains($required)) {
         throw "Background world entry is missing cursor-release invariant: $required"
     }
+}
+if ($source.Contains("$targetWorldId -cmatch '^[\x20-\x7e]+$'")) {
+    throw "Background world entry still skips localized world names"
 }
 if ($source.Contains('$keptRunningAtBottom = [MinecraftBackgroundInput]::SetWindowPos')) {
     throw "Background world entry still leaves a restored GLFW window able to retain cursor capture"

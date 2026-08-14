@@ -26,7 +26,7 @@ const startScript = await readFile(
 
 test("default portable build forcibly rebuilds and validates the Forge bridge", () => {
   assert.match(buildScript, /run-forge-gradle\.ps1/);
-  assert.match(buildScript, /"build",\s*\r?\n\s*"--rerun-tasks"/);
+  assert.match(buildScript, /"clean",\s*\r?\n\s*"build",\s*\r?\n\s*"--rerun-tasks"/);
   assert.match(buildScript, /\$forgeBuildForced = \[string\]::IsNullOrWhiteSpace\(\$PinnedForgeJarSha256\)/);
   assert.match(buildScript, /if \(\$forgeBuildForced\) \{\s*\r?\n\s*Invoke-Checked/);
   assert.match(buildScript, /forgeBuildStartedAt/);
@@ -44,7 +44,7 @@ test("offline pinned Forge packaging is explicit, hash-bound, and runs every For
   assert.match(buildScript, /\^\[A-Fa-f0-9\]\{64\}\$/);
   assert.match(buildScript, /Pinned Forge bridge JAR SHA-256 does not match/);
   assert.match(buildScript, /run-forge-tests-in-process\.ps1/);
-  assert.match(buildScript, /pinned-sha256-and-421-tests/);
+  assert.match(buildScript, /pinned-sha256-and-425-tests/);
   assert.match(buildScript, /OfflineNodeModulesRoot/);
   assert.match(buildScript, /Assert-OfflineNodeModules/);
   assert.match(buildScript, /Offline node_modules contains filesystem links or reparse points/);
@@ -78,6 +78,8 @@ test("Windows launchers embed the versioned multi-resolution project icon", () =
 
 test("local startup inherits the configured Antigravity conversation title", () => {
   assert.match(startScript, /launcherConfig\.antigravityConversationTitle/);
+  assert.match(startScript, /launcherConfig\.antigravityConfigPath/);
+  assert.match(startScript, /MC_ANTIGRAVITY_CONFIG_PATH/);
   assert.match(startScript, /MC_ANTIGRAVITY_CONVERSATION_TITLE/);
   assert.match(
     startScript,
@@ -102,8 +104,10 @@ test("ClamAV is optional, project-local, and selected before installed antivirus
 });
 
 test("ClamAV records engine and database evidence and requires two clean targets", () => {
+  assert.match(scanScript, /function Invoke-NativeCapture/);
+  assert.match(scanScript, /\$ErrorActionPreference = 'Continue'/);
   assert.match(scanScript, /Get-FileHash -Algorithm SHA256 -LiteralPath \$resolvedClamScanPath/);
-  assert.match(scanScript, /& \$resolvedClamScanPath '--version'/);
+  assert.match(scanScript, /Invoke-NativeCapture \$resolvedClamScanPath @\('--version'\)/);
   assert.match(scanScript, /databaseEvidence/);
   assert.match(scanScript, /sha256 = \(Get-FileHash -Algorithm SHA256 -LiteralPath \$_\.FullName\)/);
   assert.match(scanScript, /foreach \(\$scanTarget in \$scanTargets\)/);
@@ -113,6 +117,13 @@ test("ClamAV records engine and database evidence and requires two clean targets
   assert.match(scanScript, /requiredTargetCount = 2/);
   assert.match(scanScript, /allTargetsClean = \$targetReports\.Count -eq 2 -and \$cleanTargetCount -eq 2/);
   assert.match(scanScript, /clamav-local-cli-and-static-database/);
+});
+
+test("single-EXE ClamAV capture treats stderr warnings as scan evidence", () => {
+  assert.match(singleScanScript, /function Invoke-NativeCapture/);
+  assert.match(singleScanScript, /\$ErrorActionPreference = 'Continue'/);
+  assert.match(singleScanScript, /\$scanResult = Invoke-NativeCapture/);
+  assert.match(singleScanScript, /\$scanExitCode = \$scanResult\.ExitCode/);
 });
 
 test("Kaspersky fails closed when read-only KSN proof is unavailable", () => {

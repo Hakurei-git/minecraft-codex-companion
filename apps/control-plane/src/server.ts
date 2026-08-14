@@ -76,6 +76,9 @@ const codexDriver = new CodexDriver({
 const antigravityAgent = new AntigravityAgentBridge({
   stateDirectory,
   ...(process.env.MC_ANTIGRAVITY_HOME ? { antigravityHome: process.env.MC_ANTIGRAVITY_HOME } : {}),
+  ...(process.env.MC_ANTIGRAVITY_CONFIG_PATH
+    ? { antigravityConfigPath: process.env.MC_ANTIGRAVITY_CONFIG_PATH }
+    : {}),
   ...(process.env.MC_ANTIGRAVITY_LOG_PATH ? { antigravityLogPath: process.env.MC_ANTIGRAVITY_LOG_PATH } : {}),
   ...(process.env.MC_ANTIGRAVITY_CONVERSATION_TITLE
     ? { requiredConversationTitle: process.env.MC_ANTIGRAVITY_CONVERSATION_TITLE }
@@ -164,12 +167,16 @@ await app.register(cors, {
 });
 await app.register(websocket);
 
-app.get("/api/health", async () => ({
-  ok: true,
-  service: "minecraft-codex-companion",
-  now: new Date().toISOString(),
-  companions: service.listCompanions().length,
-}));
+app.get("/api/health", async () => {
+  const companions = service.listCompanions();
+  return {
+    ok: true,
+    service: "minecraft-codex-companion",
+    now: new Date().toISOString(),
+    companions: companions.length,
+    connectedCompanions: companions.filter((companion) => companion.connected).length,
+  };
+});
 
 app.get("/api/antigravity/status", async () => antigravityAgent.status());
 app.post<{ Body: { title?: string } }>("/api/antigravity/bind", async (request) => (

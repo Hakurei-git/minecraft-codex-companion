@@ -46,7 +46,7 @@ public interface CompanionActor {
 
     void connectionLost();
 
-    void speak(Minecraft minecraft, String message);
+    void speak(Minecraft minecraft, String message, String deliveryId);
 
     default void control(String action) {
     }

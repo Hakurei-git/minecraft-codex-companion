@@ -8,7 +8,7 @@ const controlUrl = process.env.MC_COMPANION_URL
   ?? "http://127.0.0.1:8765";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mcpServer = path.join(packageRoot, "apps", "control-plane", "dist", "mcp-stdio.js");
-const client = new Client({ name: "minecraft-companion-portable-smoke", version: "0.1.3" });
+const client = new Client({ name: "minecraft-companion-portable-smoke", version: "0.1.5" });
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [mcpServer],

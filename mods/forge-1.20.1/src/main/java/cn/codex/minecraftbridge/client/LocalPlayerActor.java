@@ -65,7 +65,7 @@ public final class LocalPlayerActor implements CompanionActor {
     }
 
     @Override
-    public void speak(Minecraft minecraft, String message) {
+    public void speak(Minecraft minecraft, String message, String deliveryId) {
         if (minecraft.player != null && minecraft.player.connection != null) {
             minecraft.player.connection.sendChat(message);
         }

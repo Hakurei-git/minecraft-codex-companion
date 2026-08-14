@@ -10,6 +10,7 @@ import type {
   BuildPlan,
 } from "@mc/protocol";
 import { bridgeMessageSchema } from "@mc/protocol";
+import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { BackendTaskFailure, type CompanionBackend, type TaskCallbacks } from "./backend.js";
 import { buildContentHash } from "./build-plan-store.js";
@@ -46,9 +47,16 @@ interface PendingControl {
   timer: NodeJS.Timeout;
 }
 
+interface PendingChatDelivery {
+  resolve(): void;
+  reject(error: Error): void;
+  timer: NodeJS.Timeout;
+}
+
 const MAX_DEFERRED_SAFETY_COMMANDS = 64;
 const STALE_CONNECTION_MS = 30_000;
 const CONTROL_ACK_TIMEOUT_MS = 3_000;
+const CHAT_DELIVERY_ACK_TIMEOUT_MS = 8_000;
 const RECALL_ACK_DISTANCE = 8;
 
 export function positionBuildPlanForTask(
@@ -105,6 +113,7 @@ export class WebSocketBridgeBackend implements CompanionBackend {
   readonly #resolveBuildPlan: ((id: string) => import("@mc/protocol").BuildPlan) | undefined;
   readonly #pendingTasks = new Map<string, PendingTask>();
   readonly #pendingControls = new Set<PendingControl>();
+  readonly #pendingChatDeliveries = new Map<string, PendingChatDelivery>();
   readonly #deferredSafetyCommands = new Map<string, BridgeCommand>();
   #snapshot: WorldSnapshot;
   #connected = true;
@@ -144,6 +153,7 @@ export class WebSocketBridgeBackend implements CompanionBackend {
     if (hello.companion.id !== this.id) throw new Error("Bridge companion identity changed during reconnect");
     const previous = this.#socket;
     this.#rejectPendingControls(new Error("Minecraft bridge reconnected before NPC control acknowledgement"));
+    this.#rejectPendingChatDeliveries(new Error("Minecraft bridge reconnected before chat delivery acknowledgement"));
     this.#socket = socket;
     this.#base = hello.companion;
     this.#snapshot = hello.companion.snapshot;
@@ -260,7 +270,36 @@ export class WebSocketBridgeBackend implements CompanionBackend {
   }
 
   async sendChat(message: string): Promise<void> {
-    await this.sendBridgeCommand({ type: "chat", message });
+    if (this.#base.backend !== "forge-1.20.1") {
+      await this.sendBridgeCommand({ type: "chat", message });
+      return;
+    }
+    const deliveryId = randomUUID();
+    await new Promise<void>((resolve, reject) => {
+      const pending: PendingChatDelivery = {
+        resolve: () => {
+          clearTimeout(pending.timer);
+          this.#pendingChatDeliveries.delete(deliveryId);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(pending.timer);
+          this.#pendingChatDeliveries.delete(deliveryId);
+          reject(error);
+        },
+        timer: setTimeout(() => {
+          pending.reject(new BackendTaskFailure(
+            "CHAT_DELIVERY_ACK_TIMEOUT",
+            "Minecraft accepted the bridge command but did not confirm that the reply appeared in game chat",
+            true,
+          ));
+        }, CHAT_DELIVERY_ACK_TIMEOUT_MS),
+      };
+      this.#pendingChatDeliveries.set(deliveryId, pending);
+      this.sendBridgeCommand({ type: "chat", message, deliveryId }).catch((error) => {
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
   }
 
   async stop(disconnect: boolean): Promise<void> {
@@ -324,6 +363,9 @@ export class WebSocketBridgeBackend implements CompanionBackend {
       case "task-result":
         this.#handleResult(message);
         break;
+      case "chat-delivered":
+        this.#pendingChatDeliveries.get(message.deliveryId)?.resolve();
+        break;
       case "heartbeat":
       case "chat":
         break;
@@ -334,6 +376,7 @@ export class WebSocketBridgeBackend implements CompanionBackend {
     if (this.#socket !== source || !this.#connected) return false;
     this.#connected = false;
     this.#rejectPendingControls(new Error(reason));
+    this.#rejectPendingChatDeliveries(new Error(reason));
     return true;
   }
 
@@ -346,6 +389,10 @@ export class WebSocketBridgeBackend implements CompanionBackend {
 
   #rejectPendingControls(error: Error): void {
     for (const pending of [...this.#pendingControls]) pending.reject(error);
+  }
+
+  #rejectPendingChatDeliveries(error: Error): void {
+    for (const pending of [...this.#pendingChatDeliveries.values()]) pending.reject(error);
   }
 
   #live(): boolean {

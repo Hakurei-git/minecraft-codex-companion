@@ -125,9 +125,13 @@ function fillInstances(instances, selected) {
 
 function renderService(status, port) {
   const node = element("service-state");
-  node.classList.toggle("running", Boolean(status?.running));
+  const connected = Number(status?.connectedCompanions || 0);
+  const companions = Number(status?.companions || 0);
+  node.classList.toggle("running", Boolean(status?.running && connected > 0));
   node.querySelector("span").textContent = status?.running
-    ? `服务运行中 · ${status.companions || 0} 个 NPC`
+    ? connected > 0
+      ? `服务已启动 · NPC ${connected}/${companions} 在线`
+      : "服务已启动 · NPC 未连接"
     : status?.error || "服务未启动";
   element("dashboard-url").textContent = `http://127.0.0.1:${port || 8765}/`;
 }

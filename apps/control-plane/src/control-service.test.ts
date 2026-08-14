@@ -26,6 +26,14 @@ class ConcurrentPendingBackend extends SimulatorBackend {
   }
 }
 
+class FailingChatBackend extends SimulatorBackend {
+  override async sendChat(): Promise<void> {
+    const failure = new Error("Minecraft chat delivery acknowledgement timed out") as Error & { code: string };
+    failure.code = "CHAT_DELIVERY_ACK_TIMEOUT";
+    throw failure;
+  }
+}
+
 class RecoveringBackend extends SimulatorBackend {
   readonly resumedIds: string[] = [];
   readonly continuedIds: string[] = [];
@@ -739,5 +747,61 @@ describe("ControlService", () => {
     expect(result.reply).toMatch(/^这是当前绑定人格生成的自然开场。/u);
     expect(result.reply).toContain("待命");
     expect(result.reply).not.toContain("猫娘");
+  });
+
+  it("publishes a body-free diagnostic when an AI decision cannot reach game chat", async () => {
+    const service = new ControlService();
+    service.registerBackend(new FailingChatBackend());
+    const interactionId = service.beginAiDecision({
+      sequence: 2,
+      at: "2026-08-15T00:00:00.000Z",
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "test request body must not be copied into diagnostics",
+    });
+
+    await expect(service.submitAiDecision(interactionId, {
+      type: "chat",
+      reply: "test reply body must not be copied into diagnostics",
+      summary: "test summary body must not be copied into diagnostics",
+    })).rejects.toThrow("acknowledgement timed out");
+
+    expect(service.events.recent(1)[0]).toMatchObject({
+      type: "system",
+      companionId: "codex-sim",
+      message: "智能 AI 决策提交失败",
+      data: {
+        interactionId,
+        decisionType: "chat",
+        code: "CHAT_DELIVERY_ACK_TIMEOUT",
+        committed: true,
+      },
+    });
+    expect(JSON.stringify(service.events.recent(1)[0])).not.toContain("test request body");
+    expect(JSON.stringify(service.events.recent(1)[0])).not.toContain("test reply body");
+    expect(JSON.stringify(service.events.recent(1)[0])).not.toContain("test summary body");
+  });
+
+  it("publishes a body-free diagnostic when an AI decision interaction is stale", async () => {
+    const service = new ControlService();
+
+    await expect(service.submitAiDecision("mc-ai-stale-test", {
+      type: "chat",
+      reply: "this body must not appear in diagnostics",
+      summary: "this summary must not appear in diagnostics",
+    })).rejects.toMatchObject({ code: "AI_DECISION_NOT_PENDING" });
+
+    expect(service.events.recent(1)[0]).toMatchObject({
+      type: "system",
+      companionId: null,
+      message: "智能 AI 决策提交失败",
+      data: {
+        interactionId: "mc-ai-stale-test",
+        code: "AI_DECISION_NOT_PENDING",
+        committed: false,
+      },
+    });
+    expect(JSON.stringify(service.events.recent(1)[0])).not.toContain("this body");
+    expect(JSON.stringify(service.events.recent(1)[0])).not.toContain("this summary");
   });
 });

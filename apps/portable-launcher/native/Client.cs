@@ -303,6 +303,9 @@ namespace MinecraftCodexCompanion
         private readonly List<Control> actionControls = new List<Control>();
 
         private Label payloadStatus;
+        private Label headerTitle;
+        private TableLayoutPanel headerLayout;
+        private TableLayoutPanel headerBrand;
         private ServiceStatusBadge serviceStatus;
         private Label saveStatus;
         private Label operationStatus;
@@ -386,7 +389,7 @@ namespace MinecraftCodexCompanion
             root.Dock = DockStyle.Fill;
             root.RowCount = 3;
             root.ColumnCount = 1;
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72F));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 25F));
             Controls.Add(root);
@@ -414,7 +417,11 @@ namespace MinecraftCodexCompanion
         private Control BuildHeader()
         {
             TableLayoutPanel header = new TableLayoutPanel();
+            headerLayout = header;
             header.Dock = DockStyle.Fill;
+            header.AutoSize = true;
+            header.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            header.MinimumSize = new Size(0, 72);
             header.BackColor = ForestDark;
             header.Padding = new Padding(24, 9, 22, 9);
             header.ColumnCount = 3;
@@ -424,22 +431,33 @@ namespace MinecraftCodexCompanion
             header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94F));
             header.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
-            Panel brand = new Panel();
+            TableLayoutPanel brand = new TableLayoutPanel();
+            headerBrand = brand;
             brand.Dock = DockStyle.Fill;
+            brand.AutoSize = true;
+            brand.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            brand.ColumnCount = 1;
+            brand.RowCount = 2;
+            brand.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            brand.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            brand.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             Label title = new Label();
+            headerTitle = title;
             title.Text = "Minecraft Codex Companion";
             title.ForeColor = Color.White;
             title.Font = new Font("Segoe UI", 14F, FontStyle.Bold);
             title.AutoSize = true;
-            title.Location = new Point(0, 1);
+            title.Anchor = AnchorStyles.Left;
+            title.Margin = new Padding(0, 0, 0, 2);
             payloadStatus = new Label();
             payloadStatus.Text = "正在检查便携运行时";
             payloadStatus.ForeColor = Color.FromArgb(181, 209, 193);
             payloadStatus.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Regular);
             payloadStatus.AutoSize = true;
-            payloadStatus.Location = new Point(1, 31);
-            brand.Controls.Add(title);
-            brand.Controls.Add(payloadStatus);
+            payloadStatus.Anchor = AnchorStyles.Left;
+            payloadStatus.Margin = new Padding(1, 0, 0, 0);
+            brand.Controls.Add(title, 0, 0);
+            brand.Controls.Add(payloadStatus, 0, 1);
             header.Controls.Add(brand, 0, 0);
 
             serviceStatus = new ServiceStatusBadge();
@@ -876,6 +894,24 @@ namespace MinecraftCodexCompanion
                 && statusBottom + 2 <= promptTop;
         }
 
+        internal bool ValidateHeaderLayoutForTest(Size windowSize, float textScale)
+        {
+            Size = windowSize;
+            CreateControl();
+            headerTitle.Font = new Font("Segoe UI", 14F * textScale, FontStyle.Bold);
+            payloadStatus.Font = new Font("Microsoft YaHei UI", 8.5F * textScale, FontStyle.Regular);
+            PerformLayoutTree(this);
+            PerformLayoutTree(this);
+            if (headerLayout == null || headerBrand == null || headerTitle == null || payloadStatus == null) return false;
+
+            return headerBrand.ClientRectangle.Contains(headerTitle.Bounds)
+                && headerBrand.ClientRectangle.Contains(payloadStatus.Bounds)
+                && headerTitle.Bottom <= payloadStatus.Top
+                && headerTitle.Width >= headerTitle.PreferredWidth
+                && payloadStatus.Width >= payloadStatus.PreferredWidth
+                && headerBrand.Bottom <= headerLayout.ClientSize.Height - headerLayout.Padding.Bottom;
+        }
+
         private static void PerformLayoutTree(Control root)
         {
             root.PerformLayout();
@@ -1234,9 +1270,14 @@ namespace MinecraftCodexCompanion
         {
             bool running = JsonValue.Boolean(service, "running", false);
             int companions = JsonValue.Integer(service, "companions", 0);
+            int connected = JsonValue.Integer(service, "connectedCompanions", 0);
             string error = JsonValue.String(service, "error");
-            serviceStatus.Running = running;
-            serviceStatus.StatusText = running ? "服务运行中 · " + companions + " 个 NPC" : String.IsNullOrWhiteSpace(error) ? "服务未启动" : error;
+            serviceStatus.Running = running && connected > 0;
+            serviceStatus.StatusText = running
+                ? connected > 0
+                    ? "服务已启动 · NPC " + connected + "/" + companions + " 在线"
+                    : "服务已启动 · NPC 未连接"
+                : String.IsNullOrWhiteSpace(error) ? "服务未启动" : error;
             connectionAddress.Text = "控制服务：http://127.0.0.1:" + port.Value + "/";
         }
 
@@ -1507,15 +1548,26 @@ namespace MinecraftCodexCompanion
             {
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+                bool header = true;
+                foreach (float scale in new float[] { 1F, 1.25F, 1.5F, 2F })
+                {
+                    using (CompanionClientForm form = new CompanionClientForm("http://127.0.0.1:1", "layout-self-test"))
+                    {
+                        header = header && form.ValidateHeaderLayoutForTest(
+                            new Size((int)(980 * scale), (int)(700 * scale)),
+                            scale
+                        );
+                    }
+                }
                 using (CompanionClientForm form = new CompanionClientForm("http://127.0.0.1:1", "layout-self-test"))
                 {
                     bool minimum = form.ValidateAntigravityLayoutForTest(new Size(980, 700));
                     bool normal = form.ValidateAntigravityLayoutForTest(new Size(1160, 820));
                     if (args.Length >= 2)
                     {
-                        File.WriteAllText(args[1], minimum && normal ? "ok" : "failed", new UTF8Encoding(false));
+                        File.WriteAllText(args[1], header && minimum && normal ? "ok" : "failed", new UTF8Encoding(false));
                     }
-                    return minimum && normal ? 0 : 3;
+                    return header && minimum && normal ? 0 : 3;
                 }
             }
 

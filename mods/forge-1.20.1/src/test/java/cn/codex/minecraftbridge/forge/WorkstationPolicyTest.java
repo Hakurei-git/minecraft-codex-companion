@@ -39,6 +39,13 @@ final class WorkstationPolicyTest {
     }
 
     @Test
+    void relocatesInsteadOfRecursingWhenAnAlcoveNeedsTheToolBeingCrafted() {
+        assertTrue(WorkstationPolicy.shouldRelocateBlockedMiningPlacement(true, false));
+        assertFalse(WorkstationPolicy.shouldRelocateBlockedMiningPlacement(true, true));
+        assertFalse(WorkstationPolicy.shouldRelocateBlockedMiningPlacement(false, false));
+    }
+
+    @Test
     void rejectsEveryCellThatCanCloseAOneBlockMiningTunnel() {
         BlockPos feet = new BlockPos(10, -54, 10);
         BlockPos next = feet.north();

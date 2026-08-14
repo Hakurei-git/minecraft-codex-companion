@@ -11,6 +11,8 @@ param(
     [Parameter(Mandatory = $true, ParameterSetName = "NormalizeOnly")]
     [switch]$NormalizeOnly,
 
+    [switch]$DraftOnly,
+
     [switch]$RespawnIfDead
 )
 
@@ -24,6 +26,9 @@ if ($PSCmdlet.ParameterSetName -eq "Utf8Base64") {
     if ($Message.Length -lt 1 -or $Message.Length -gt 256) {
         throw "Minecraft chat text must contain between 1 and 256 characters"
     }
+}
+if ($NormalizeOnly -and $DraftOnly) {
+    throw "NormalizeOnly and DraftOnly cannot be combined"
 }
 if (-not $NormalizeOnly -and $Message.IndexOfAny([char[]]@("`r", "`n", [char]0)) -ge 0) {
     throw "Minecraft chat text cannot contain control characters"
@@ -80,9 +85,11 @@ public static class MinecraftBackgroundChatPost
 
     public static bool Text(IntPtr hWnd, string value)
     {
-        foreach (char character in value)
+        for (int index = 0; index < value.Length; index++)
         {
-            if (!PostMessage(hWnd, 0x0102, (IntPtr)character, (IntPtr)1)) return false;
+            int codePoint = Char.ConvertToUtf32(value, index);
+            if (Char.IsHighSurrogate(value[index])) index++;
+            if (!PostMessage(hWnd, 0x0109, (IntPtr)codePoint, (IntPtr)1)) return false; // WM_UNICHAR
             System.Threading.Thread.Sleep(1);
         }
         return true;
@@ -304,11 +311,15 @@ try {
         if (-not [MinecraftBackgroundChatPost]::Text($handle, $Message)) {
             throw "Minecraft rejected background chat characters"
         }
-        if (-not [MinecraftBackgroundChatPost]::Key($handle, 0x0D, 0x1C)) { # Enter
-            throw "Minecraft rejected the background Enter key message"
-        }
-        if (-not (Wait-ClientUiState "gameplay" 4000)) {
-            throw "Minecraft chat did not close after the background message was submitted"
+        if (-not $DraftOnly) {
+            if (-not [MinecraftBackgroundChatPost]::Key($handle, 0x0D, 0x1C)) { # Enter
+                throw "Minecraft rejected the background Enter key message"
+            }
+            if (-not (Wait-ClientUiState "gameplay" 4000)) {
+                throw "Minecraft chat did not close after the background message was submitted"
+            }
+        } else {
+            $normalizedUiState = "chat"
         }
     }
 } finally {
@@ -320,14 +331,15 @@ try {
 }
 
 [PSCustomObject]@{
-    Sent = -not $NormalizeOnly
+    Sent = -not $NormalizeOnly -and -not $DraftOnly
+    DraftOnly = [bool]$DraftOnly
     CharacterCount = if ($NormalizeOnly) { 0 } else { $Message.Length }
     MinecraftProcessId = $resolvedMinecraftProcessId
     InitialUiState = $initialUiState
     NormalizedUiState = $normalizedUiState
     ChatOpenAttempts = $chatOpenAttempts
     ChatOpenConfirmed = -not $NormalizeOnly
-    GameplayRestored = $true
+    GameplayRestored = -not $DraftOnly
     Respawned = $respawned
     RestoredWithoutActivation = $wasMinimized
     MinimizedAfterSend = $wasMinimized

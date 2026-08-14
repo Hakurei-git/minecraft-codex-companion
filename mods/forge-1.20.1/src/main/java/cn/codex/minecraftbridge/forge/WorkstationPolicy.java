@@ -37,6 +37,13 @@ final class WorkstationPolicy {
         return !requestedBlockPresent;
     }
 
+    static boolean shouldRelocateBlockedMiningPlacement(
+        boolean requiresCorrectTool,
+        boolean hasCorrectTool
+    ) {
+        return requiresCorrectTool && !hasCorrectTool;
+    }
+
     /**
      * Temporary stations must never occupy the NPC body, the next task target,
      * or a known one-block-wide mining passage. The caller supplies the exact

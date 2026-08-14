@@ -6,9 +6,11 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.PauseScreen;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.client.event.ClientChatEvent;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
@@ -42,17 +44,30 @@ public final class ClientBridgeEvents {
         }
     }
 
+    @SubscribeEvent(priority = EventPriority.LOWEST)
+    public static void onLocalChat(ClientChatEvent event) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player == null) return;
+        String sender = minecraft.player.getGameProfile().getName();
+        String message = event.getMessage();
+        if (!ClientChatForwardingPolicy.shouldForwardLocal(message)) return;
+        CLIENT.onIncomingChat(sender, message);
+    }
+
     @SubscribeEvent
-    public static void onChat(ClientChatReceivedEvent event) {
-        // Command feedback, advancements and other system lines often have no
-        // real sender. Resolving those to the local player made the AI treat
-        // fixture/command output as fresh player instructions and could start
-        // repeated follow, guard or combat tasks. Only genuine player chat is
-        // allowed onto the bridge.
-        if (event.isSystem()) return;
+    public static void onRemoteChat(ClientChatReceivedEvent event) {
+        // Only signed player messages belong here. Local T chat is captured by
+        // ClientChatEvent, so its server echo must not create a second AI turn.
+        if (!(event instanceof ClientChatReceivedEvent.Player) || event.isSystem()) return;
         Minecraft minecraft = Minecraft.getInstance();
         String sender = resolveSender(minecraft, event.getSender());
-        if (!ClientChatForwardingPolicy.shouldForward(false, sender, CLIENT.config().name)) return;
+        String localPlayer = minecraft.player == null ? null : minecraft.player.getGameProfile().getName();
+        if (!ClientChatForwardingPolicy.shouldForwardRemote(
+            sender,
+            localPlayer,
+            CLIENT.config().name,
+            event.getMessage().getString()
+        )) return;
         CLIENT.onIncomingChat(sender, event.getMessage().getString());
     }
 
@@ -61,8 +76,7 @@ public final class ClientBridgeEvents {
             PlayerInfo info = minecraft.getConnection().getPlayerInfo(senderId);
             if (info != null) return info.getProfile().getName();
         }
-        if (minecraft.player != null) return minecraft.player.getGameProfile().getName();
-        return "Player";
+        return null;
     }
 
     private static void keepSingleplayerTasksRunning() {
@@ -90,5 +104,9 @@ public final class ClientBridgeEvents {
 
     public static void armBackgroundPauseLease(long requestedMillis) {
         BACKGROUND_PAUSE_LEASE.arm(System.nanoTime(), requestedMillis);
+    }
+
+    public static void acknowledgeChatDelivery(String deliveryId) {
+        CLIENT.acknowledgeChatDelivery(deliveryId);
     }
 }

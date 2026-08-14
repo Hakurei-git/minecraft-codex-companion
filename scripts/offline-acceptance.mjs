@@ -27,6 +27,7 @@ function sanitizedEnvironment(overrides = {}) {
     "CLAUDE_API_KEY",
     "CODEX_API_KEY",
     "MC_ANTIGRAVITY_HOME",
+    "MC_ANTIGRAVITY_CONFIG_PATH",
     "MC_ANTIGRAVITY_LOG_PATH",
     "MC_BRIDGE_TOKEN",
     "MC_COMPANION_SECRET_HELPER",

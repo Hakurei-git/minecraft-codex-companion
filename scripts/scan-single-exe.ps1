@@ -6,6 +6,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Invoke-NativeCapture([string]$Command, [string[]]$Arguments) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $Command @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return [PSCustomObject]@{ Output = $output; ExitCode = $exitCode }
+}
+
 $projectRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $singleBuildRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "build\single-exe"))
 $expectedExecutable = Join-Path $singleBuildRoot "MinecraftCodexCompanion-Setup.exe"
@@ -101,8 +114,9 @@ foreach ($candidate in @($databaseCandidates | Select-Object -Unique)) {
 }
 if (-not $resolvedDatabase) { throw "Local ClamAV signature database is unavailable." }
 
-$versionOutput = @(& $resolvedClamScan '--version' 2>&1)
-$versionExitCode = $LASTEXITCODE
+$versionResult = Invoke-NativeCapture $resolvedClamScan @('--version')
+$versionOutput = @($versionResult.Output)
+$versionExitCode = $versionResult.ExitCode
 $version = (($versionOutput -join "`n").Trim() `
     -replace [Regex]::Escape($resolvedClamScan), 'clamscan' `
     -replace '(?i)[a-z]:\\users\\[^\\]+', '%USERPROFILE%')
@@ -110,8 +124,9 @@ if ($versionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
     throw "Local ClamAV version check failed."
 }
 
-$scanOutput = @(& $resolvedClamScan "--database=$resolvedDatabase" '--stdout' $ExecutablePath 2>&1)
-$scanExitCode = $LASTEXITCODE
+$scanResult = Invoke-NativeCapture $resolvedClamScan @("--database=$resolvedDatabase", '--stdout', $ExecutablePath)
+$scanOutput = @($scanResult.Output)
+$scanExitCode = $scanResult.ExitCode
 $sanitizedOutput = (($scanOutput -join "`n").Trim() `
     -replace [Regex]::Escape($ExecutablePath), '%SINGLE_EXE%' `
     -replace [Regex]::Escape($resolvedDatabase), '%CLAM_DATABASE%' `

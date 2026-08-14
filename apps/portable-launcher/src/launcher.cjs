@@ -739,7 +739,11 @@ async function serviceStatus(port) {
   try {
     const health = await httpJson(`http://127.0.0.1:${port}/api/health`);
     return health && health.ok && health.service === "minecraft-codex-companion"
-      ? { running: true, companions: Number(health.companions || 0) }
+      ? {
+          running: true,
+          companions: Number(health.companions || 0),
+          connectedCompanions: Number(health.connectedCompanions || 0),
+        }
       : { running: false, error: "端口被其他程序占用" };
   } catch (error) {
     const code = error && error.code;
@@ -779,6 +783,7 @@ async function startService(config, payloadRoot, stateDirectory) {
         MC_COMPANION_STATE_DIR: stateDirectory,
         MC_MCP_URL: `http://127.0.0.1:${config.port}/mcp`,
         MC_ANTIGRAVITY_HOME: path.dirname(config.antigravityConfigPath),
+        MC_ANTIGRAVITY_CONFIG_PATH: config.antigravityConfigPath,
         MC_ANTIGRAVITY_CONVERSATION_TITLE: config.antigravityConversationTitle,
         MC_COMPANION_SECRET_HELPER: paths.secretHelper,
       },

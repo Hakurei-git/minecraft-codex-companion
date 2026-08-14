@@ -17,12 +17,14 @@ import java.net.UnknownHostException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletionException;
 
 public final class BridgeClient {
     private static final Gson GSON = new Gson();
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final int MAX_TERMINAL_OUTBOX = 64;
+    private static final int MAX_CHAT_OUTBOX = 64;
     private static final List<String> CAPABILITIES = List.of(
         "chat", "observe", "move", "follow", "combat", "gather", "craft", "smelt",
         "farm", "storage", "fish", "sleep", "build", "commands", "dragon-care", "multi-bot"
@@ -31,6 +33,7 @@ public final class BridgeClient {
     private final BridgeConfig config;
     private final CompanionActor actor;
     private final BoundedMessageOutbox<JsonObject> terminalOutbox = new BoundedMessageOutbox<>(MAX_TERMINAL_OUTBOX);
+    private final BoundedMessageOutbox<JsonObject> chatOutbox = new BoundedMessageOutbox<>(MAX_CHAT_OUTBOX);
     private volatile BridgeChannel socket;
     private volatile BridgeChannel announcedSocket;
     private volatile boolean connecting;
@@ -87,15 +90,17 @@ public final class BridgeClient {
     }
 
     public void onIncomingChat(String sender, String message) {
-        if (!isConnected()) return;
+        if (sender == null || sender.isBlank() || message == null || message.isBlank()) return;
         String cleaned = message;
         String prefix = "<" + sender + "> ";
         if (cleaned.startsWith(prefix)) cleaned = cleaned.substring(prefix.length());
+        if (cleaned.isBlank()) return;
         JsonObject chat = envelope("chat");
+        chat.addProperty("messageId", UUID.randomUUID().toString());
         chat.addProperty("sender", sender);
         chat.addProperty("message", cleaned);
         chat.addProperty("at", Instant.now().toString());
-        send(chat);
+        sendChat(chat);
     }
 
     private void connect() {
@@ -151,6 +156,7 @@ public final class BridgeClient {
             }
             if (socket != connection || !sessionActive) return;
             announcedSocket = connection;
+            flushChatOutbox(connection);
             flushTerminalOutbox(connection);
         });
     }
@@ -179,7 +185,10 @@ public final class BridgeClient {
                     command.get("taskId").getAsString(),
                     command.has("reason") ? command.get("reason").getAsString() : "任务已取消"
                 );
-                case "chat" -> sendGameChat(command.get("message").getAsString());
+                case "chat" -> sendGameChat(
+                    command.get("message").getAsString(),
+                    command.has("deliveryId") ? command.get("deliveryId").getAsString() : null
+                );
                 case "npc-control" -> actor.control(command.get("action").getAsString());
                 case "live-fixture" -> {
                     LOGGER.info(
@@ -199,8 +208,15 @@ public final class BridgeClient {
         });
     }
 
-    private void sendGameChat(String message) {
-        actor.speak(Minecraft.getInstance(), message);
+    private void sendGameChat(String message, String deliveryId) {
+        actor.speak(Minecraft.getInstance(), message, deliveryId);
+    }
+
+    public void acknowledgeChatDelivery(String deliveryId) {
+        if (deliveryId == null || deliveryId.isBlank()) return;
+        JsonObject acknowledgement = envelope("chat-delivered");
+        acknowledgement.addProperty("deliveryId", deliveryId);
+        send(acknowledgement);
     }
 
     private void disconnectGame() {
@@ -250,8 +266,29 @@ public final class BridgeClient {
     private void send(JsonObject message) {
         BridgeChannel current = socket;
         if (current != null && announcedSocket == current && current.isOpen()) {
-            current.sendText(GSON.toJson(message));
+            current.sendText(GSON.toJson(message)).whenComplete((ignored, error) -> {
+                if (error != null) scheduleReconnect(current);
+            });
         }
+    }
+
+    private void sendChat(JsonObject message) {
+        String messageId = message.get("messageId").getAsString();
+        BridgeChannel current = socket;
+        if (current == null || announcedSocket != current || !current.isOpen()) {
+            chatOutbox.put(messageId, message.deepCopy());
+            return;
+        }
+        current.sendText(GSON.toJson(message)).whenComplete((ignored, error) -> {
+            if (error == null) return;
+            chatOutbox.put(messageId, message.deepCopy());
+            scheduleReconnect(current);
+        });
+    }
+
+    private void flushChatOutbox(BridgeChannel connection) {
+        if (socket != connection || announcedSocket != connection || !connection.isOpen()) return;
+        for (JsonObject message : chatOutbox.drain()) sendChat(message);
     }
 
     private void sendTerminal(JsonObject message, String taskId) {
@@ -336,6 +373,10 @@ public final class BridgeClient {
         if (current instanceof IllegalArgumentException) return "invalid-config";
         if (current instanceof IOException) return "other-io";
         return "other";
+    }
+
+    int pendingChatCount() {
+        return chatOutbox.size();
     }
 
     @FunctionalInterface

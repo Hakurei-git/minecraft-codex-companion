@@ -307,6 +307,35 @@ describe("protocol schemas", () => {
     })).toThrow();
   });
 
+  it("accepts reliable bridge chat IDs while preserving legacy clients", () => {
+    const base = {
+      type: "chat" as const,
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "继续任务",
+      at: "2026-08-15T00:00:00.000Z",
+    };
+    expect(bridgeMessageSchema.parse(base)).not.toHaveProperty("messageId");
+    expect(bridgeMessageSchema.parse({
+      ...base,
+      messageId: "00000000-0000-4000-8000-000000000001",
+    })).toMatchObject({ messageId: "00000000-0000-4000-8000-000000000001" });
+    expect(() => bridgeMessageSchema.parse({ ...base, messageId: "not-a-uuid" })).toThrow();
+  });
+
+  it("accepts Forge chat display acknowledgements only with a delivery UUID", () => {
+    expect(bridgeMessageSchema.parse({
+      type: "chat-delivered",
+      companionId: "codex-forge",
+      deliveryId: "00000000-0000-4000-8000-000000000002",
+    })).toMatchObject({ deliveryId: "00000000-0000-4000-8000-000000000002" });
+    expect(() => bridgeMessageSchema.parse({
+      type: "chat-delivered",
+      companionId: "codex-forge",
+      deliveryId: "not-a-uuid",
+    })).toThrow();
+  });
+
   it("keeps old build tasks compatible while accepting companion-relative placement", () => {
     expect(taskSpecSchema.parse({ kind: "build", planId: "legacy-plan" })).toMatchObject({
       kind: "build",

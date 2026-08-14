@@ -6,7 +6,7 @@ import path from "node:path";
 import { PROTOCOL_VERSION, type BridgeMessage, type WorldSnapshot } from "@mc/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BridgeManager, ChatRelayGuard } from "./bridge-manager.js";
+import { BridgeManager, ChatRelayGuard, RecentChatIdGuard } from "./bridge-manager.js";
 import { ControlService } from "./control-service.js";
 
 const TOKEN = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -200,6 +200,32 @@ describe("BridgeManager", () => {
 
     const companion = await recall;
     expect(companion.snapshot).toMatchObject({ sequence: 3, ownerDistance: 1.5 });
+  });
+
+  it("does not report Forge chat delivery until the client confirms it was displayed", async () => {
+    const service = new ControlService();
+    const socket = await connect(new BridgeManager({ service, token: TOKEN }));
+    socket.send(JSON.stringify(hello()));
+    await waitFor(() => service.listCompanions().length === 1);
+
+    const commandPromise = nextJson(socket);
+    let settled = false;
+    const delivery = service.sendChat("codex-forge", "鍙嶉噸鍔?T 杩炴帴閫氳繃", "test").then(() => {
+      settled = true;
+    });
+    const command = await commandPromise;
+    expect(command).toMatchObject({ type: "chat", message: "鍙嶉噸鍔?T 杩炴帴閫氳繃" });
+    expect(command.deliveryId).toMatch(/^[0-9a-f-]{36}$/u);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(settled).toBe(false);
+
+    socket.send(JSON.stringify({
+      type: "chat-delivered",
+      companionId: "codex-forge",
+      deliveryId: command.deliveryId,
+    }));
+    await delivery;
+    expect(settled).toBe(true);
   });
 
   it("preserves a structured Forge task failure code", async () => {
@@ -613,5 +639,21 @@ describe("ChatRelayGuard", () => {
     expect(guard.shouldForward("Codex", "I am following", ["Codex", "Worker-1"])).toBe(false);
     now += 1_001;
     expect(guard.shouldForward("PlayerOne", "@codex follow me", ["Codex", "Worker-1"])).toBe(true);
+  });
+});
+
+describe("RecentChatIdGuard", () => {
+  it("deduplicates retries per companion and evicts only the oldest IDs", () => {
+    const guard = new RecentChatIdGuard({ capacityPerCompanion: 2 });
+    const first = "00000000-0000-4000-8000-000000000001";
+    const second = "00000000-0000-4000-8000-000000000002";
+    const third = "00000000-0000-4000-8000-000000000003";
+
+    expect(guard.shouldForward("companion-a", first)).toBe(true);
+    expect(guard.shouldForward("companion-a", first)).toBe(false);
+    expect(guard.shouldForward("companion-b", first)).toBe(true);
+    expect(guard.shouldForward("companion-a", second)).toBe(true);
+    expect(guard.shouldForward("companion-a", third)).toBe(true);
+    expect(guard.shouldForward("companion-a", first)).toBe(true);
   });
 });

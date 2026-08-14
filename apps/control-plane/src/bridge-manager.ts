@@ -16,6 +16,40 @@ export interface ChatRelayGuardOptions {
   now?: () => number;
 }
 
+export interface RecentChatIdGuardOptions {
+  capacityPerCompanion?: number;
+}
+
+/** Deduplicates reliable client retries without coupling different NPCs. */
+export class RecentChatIdGuard {
+  readonly #capacityPerCompanion: number;
+  readonly #recent = new Map<string, Map<string, true>>();
+
+  constructor(options: RecentChatIdGuardOptions = {}) {
+    this.#capacityPerCompanion = options.capacityPerCompanion ?? 256;
+    if (!Number.isInteger(this.#capacityPerCompanion) || this.#capacityPerCompanion < 1) {
+      throw new Error("capacityPerCompanion must be a positive integer");
+    }
+  }
+
+  shouldForward(companionId: string, messageId?: string): boolean {
+    if (!messageId) return true;
+    let ids = this.#recent.get(companionId);
+    if (!ids) {
+      ids = new Map<string, true>();
+      this.#recent.set(companionId, ids);
+    }
+    if (ids.has(messageId)) return false;
+    ids.set(messageId, true);
+    while (ids.size > this.#capacityPerCompanion) {
+      const oldest = ids.keys().next().value as string | undefined;
+      if (!oldest) break;
+      ids.delete(oldest);
+    }
+    return true;
+  }
+}
+
 /** Prevents one server chat line from becoming several AI turns. */
 export class ChatRelayGuard {
   readonly #ttlMs: number;
@@ -61,6 +95,7 @@ export class BridgeManager {
   readonly #onChat: BridgeManagerOptions["onChat"];
   readonly #onDiagnostic: BridgeManagerOptions["onDiagnostic"];
   readonly #chatGuard = new ChatRelayGuard();
+  readonly #chatIdGuard = new RecentChatIdGuard();
   readonly #companionNames = new Map<string, string>();
   readonly #backends = new Map<string, WebSocketBridgeBackend>();
 
@@ -113,7 +148,8 @@ export class BridgeManager {
         }
         backend.handle(message);
         if (message.type === "chat") {
-          const forwarded = this.#chatGuard.shouldForward(
+          const freshId = this.#chatIdGuard.shouldForward(message.companionId, message.messageId);
+          const forwarded = freshId && this.#chatGuard.shouldForward(
             message.sender,
             message.message,
             this.#companionNames.values(),

@@ -821,7 +821,19 @@ export const bridgeHelloSchema = z.object({
 export const bridgeMessageSchema = z.discriminatedUnion("type", [
   bridgeHelloSchema,
   z.object({ type: z.literal("snapshot"), companionId: z.string(), snapshot: worldSnapshotSchema }),
-  z.object({ type: z.literal("chat"), companionId: z.string(), sender: z.string(), message: z.string(), at: z.string().datetime() }),
+  z.object({
+    type: z.literal("chat-delivered"),
+    companionId: z.string(),
+    deliveryId: z.string().uuid(),
+  }),
+  z.object({
+    type: z.literal("chat"),
+    companionId: z.string(),
+    messageId: z.string().uuid().optional(),
+    sender: z.string(),
+    message: z.string(),
+    at: z.string().datetime(),
+  }),
   z.object({
     type: z.literal("task-progress"),
     companionId: z.string(),
@@ -1055,7 +1067,7 @@ export type LiveFixtureBridgeCommand = { type: "live-fixture" } & LiveFixtureReq
 export type BridgeCommand =
   | { type: "run-task"; task: TaskRecord; buildPlan?: BuildPlan }
   | { type: "cancel-task"; taskId: string; reason: string }
-  | { type: "chat"; message: string }
+  | { type: "chat"; message: string; deliveryId?: string }
   | { type: "npc-control"; action: CompanionAction }
   | { type: "emergency-stop"; disconnect: boolean }
   | LiveFixtureBridgeCommand;

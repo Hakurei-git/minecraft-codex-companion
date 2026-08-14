@@ -145,9 +145,14 @@ public final class CodexNetwork {
     }
 
     public static void sendSpeech(ServerPlayer player, String message) {
+        sendSpeech(player, message, null);
+    }
+
+    public static void sendSpeech(ServerPlayer player, String message, String deliveryId) {
         JsonObject payload = new JsonObject();
         payload.addProperty("name", CONFIG.name);
         payload.addProperty("message", message.substring(0, Math.min(256, message.length())));
+        if (deliveryId != null && !deliveryId.isBlank()) payload.addProperty("deliveryId", deliveryId);
         send(player, "speech", payload);
     }
 
@@ -189,7 +194,11 @@ public final class CodexNetwork {
             case "stop" -> {
                 if (npc != null) npc.tasks().emergencyStop("紧急停止");
             }
-            case "speak" -> sendSpeech(player, payload.get("message").getAsString());
+            case "speak" -> sendSpeech(
+                player,
+                payload.get("message").getAsString(),
+                payload.has("deliveryId") ? payload.get("deliveryId").getAsString() : null
+            );
             case "live-fixture" -> runLiveFixture(player, npc, payload);
             case "recall" -> {
                 npc = npc == null ? NpcManager.ensure(player) : NpcManager.recall(player, npc);

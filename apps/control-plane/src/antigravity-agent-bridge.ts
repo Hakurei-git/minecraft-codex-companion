@@ -1,8 +1,10 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { ChatMessage, ChatSettings } from "@mc/protocol";
 import { redactSensitiveText } from "./skill-security.js";
@@ -16,6 +18,18 @@ const DEFAULT_LOCATION_FAILURE_BACKOFF_MS = 30 * 1_000;
 const DEFAULT_CONVERSATION_TITLE = "Execute Minecraft Woodcutting Task";
 const DEFAULT_MAX_CONVERSATION_TURNS = 80;
 const DEFAULT_MAX_CONVERSATION_PROMPT_CHARACTERS = 120_000;
+const MINECRAFT_MCP_BINDING_VERSION = 1;
+const MINECRAFT_MCP_SERVER_NAME = "minecraft_codex_companion";
+const REQUIRED_MINECRAFT_MCP_TOOLS = new Set(["mc_chat", "mc_submit_ai_decision"]);
+const OUTSIDE_PROJECT_ID = "outside-of-project";
+const RUNTIME_PROJECT_VERSION = 1;
+const RUNTIME_PROJECT_NAME = "Minecraft Companion Runtime";
+const RUNTIME_PROJECT_DIRECTORY = "antigravity-workspace";
+const RUNTIME_PROJECT_STATE_FILE = "antigravity-project.json";
+const RUNTIME_PROJECT_FILE_POLICY = "AGENT_SETTING_POLICY_DENY";
+const RUNTIME_PROJECT_INTERNET_POLICY = "AGENT_SETTING_POLICY_DENY";
+const RUNTIME_PROJECT_AUTO_EXECUTION = "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER";
+const RUNTIME_PROJECT_PERMISSION_PRESET = "AGENT_PERMISSION_PRESET_TURBO";
 const ROTATED_TITLE_SUFFIX = / \[MC-(\d+)\]$/u;
 const LOCATION_UNSUPPORTED_PATTERN = /user\s+location\s+is\s+not\s+supported|location[^\r\n]{0,80}not\s+supported/iu;
 const ANTIGRAVITY_RECOVERY_MESSAGE = /^\s*(?:(?:恢复|重连|解除)(?:一下)?(?:反重力|antigravity)(?:会话)?|(?:反重力|antigravity)(?:会话)?(?:恢复|重连)|(?:recover|reconnect|reset)\s+antigravity|antigravity\s+(?:recover|reconnect|reset))\s*[。！!]*\s*$/iu;
@@ -64,6 +78,29 @@ interface StoredSession {
   generation?: number;
   turnCount?: number;
   promptCharacters?: number;
+  mcpConfigFingerprint?: string;
+  mcpBindingVersion?: number;
+}
+
+interface StoredRuntimeProject {
+  version: 1;
+  projectId: string;
+  createdAt: string;
+}
+
+interface AntigravityProject {
+  id?: string;
+  archived?: boolean;
+  isWorkspaceOnly?: boolean;
+  projectResources?: {
+    resources?: Array<{ folderUri?: string }>;
+  };
+  settings?: {
+    fileAccessPolicy?: string;
+    internetPolicy?: string;
+    autoExecutionPolicy?: string;
+    permissionPreset?: string;
+  };
 }
 
 interface AgentApiResult {
@@ -81,10 +118,24 @@ interface AgentApiResult {
   error?: string;
 }
 
+interface AntigravityMcpServerState {
+  spec?: { serverName?: string };
+  status?: string;
+  tools?: Array<{ name?: string }>;
+  toolErrors?: string[];
+}
+
 type AgentApiRunner = (
   args: string[],
   environment: NodeJS.ProcessEnv,
 ) => Promise<AgentApiResult>;
+
+type ConnectApiRunner = (
+  endpoint: AntigravityEndpoint,
+  method: string,
+  payload: object,
+  timeoutSeconds: number,
+) => Promise<string>;
 
 export interface AntigravityAgentBridgeStatus {
   available: boolean;
@@ -98,10 +149,14 @@ export interface AntigravityAgentBridgeStatus {
 export interface AntigravityAgentBridgeOptions {
   stateDirectory: string;
   antigravityHome?: string;
+  antigravityConfigPath?: string;
   antigravityLogPath?: string;
   environment?: NodeJS.ProcessEnv;
   runAgentApi?: AgentApiRunner;
+  runConnectApi?: ConnectApiRunner;
   waitForIdle?: () => Promise<void>;
+  ensureMcpReady?: () => Promise<void>;
+  ensureRuntimeProject?: () => Promise<string>;
   requiredConversationTitle?: string;
   maxConversationTurns?: number;
   maxConversationPromptCharacters?: number;
@@ -113,6 +168,17 @@ function boundedPositiveInteger(value: number | undefined, fallback: number, max
   return Number.isFinite(value) && Number(value) > 0
     ? Math.min(maximum, Math.max(1, Math.trunc(Number(value))))
     : fallback;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => (
+      `${JSON.stringify(key)}:${canonicalJson(record[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function rotatedConversationTitle(baseTitle: string, generation: number): string {
@@ -340,11 +406,17 @@ function promptFor(
 export class AntigravityAgentBridge {
   readonly #stateDirectory: string;
   readonly #home: string;
+  readonly #configPath: string;
   readonly #logPath: string;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #statePath: string;
+  readonly #runtimeProjectStatePath: string;
+  readonly #runtimeProjectDirectory: string;
   readonly #runner: AgentApiRunner;
+  readonly #connectRunner: ConnectApiRunner | undefined;
   readonly #waitForIdleOverride: (() => Promise<void>) | undefined;
+  readonly #ensureMcpReadyOverride: (() => Promise<void>) | undefined;
+  readonly #ensureRuntimeProjectOverride: (() => Promise<string>) | undefined;
   readonly #requiredConversationTitle: string;
   readonly #maxConversationTurns: number;
   readonly #maxConversationPromptCharacters: number;
@@ -353,6 +425,7 @@ export class AntigravityAgentBridge {
   #queue: Promise<void> = Promise.resolve();
   #automaticRetryBlockedUntil = 0;
   #automaticRetryBlockCode: AntigravityAutoTriggerError["code"] | null = null;
+  #readyMcpConfigFingerprint: string | null = null;
 
   constructor(options: AntigravityAgentBridgeOptions) {
     this.#stateDirectory = path.resolve(options.stateDirectory);
@@ -362,6 +435,11 @@ export class AntigravityAgentBridge {
         ?? this.#environment.MC_ANTIGRAVITY_HOME
         ?? path.join(os.homedir(), ".gemini", "antigravity"),
     );
+    this.#configPath = path.resolve(
+      options.antigravityConfigPath
+        ?? this.#environment.MC_ANTIGRAVITY_CONFIG_PATH
+        ?? path.join(this.#home, "mcp_config.json"),
+    );
     const roaming = this.#environment.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
     this.#logPath = path.resolve(
       options.antigravityLogPath
@@ -369,8 +447,13 @@ export class AntigravityAgentBridge {
         ?? path.join(roaming, "Antigravity", "logs", "main.log"),
     );
     this.#statePath = path.join(this.#stateDirectory, "antigravity-session.json");
+    this.#runtimeProjectStatePath = path.join(this.#stateDirectory, RUNTIME_PROJECT_STATE_FILE);
+    this.#runtimeProjectDirectory = path.join(this.#stateDirectory, RUNTIME_PROJECT_DIRECTORY);
     this.#runner = options.runAgentApi ?? ((args, environment) => this.#runAgentApi(args, environment));
+    this.#connectRunner = options.runConnectApi;
     this.#waitForIdleOverride = options.waitForIdle;
+    this.#ensureMcpReadyOverride = options.ensureMcpReady;
+    this.#ensureRuntimeProjectOverride = options.ensureRuntimeProject;
     this.#requiredConversationTitle = (
       options.requiredConversationTitle
         ?? this.#environment.MC_ANTIGRAVITY_CONVERSATION_TITLE
@@ -417,11 +500,28 @@ export class AntigravityAgentBridge {
         const endpoint = await this.#endpoint();
         const session = await this.#resolveSession(endpoint, false);
         const prompt = promptFor(message, settings, context);
+        const mcpConfigFingerprint = await this.#mcpConfigFingerprint();
+        let runtimeProjectId = session.projectId;
+        if (mcpConfigFingerprint !== null) {
+          await this.#ensureMinecraftMcpReady(endpoint, mcpConfigFingerprint);
+          runtimeProjectId = await this.#ensureRuntimeProject(endpoint);
+        }
         // agentapi confirms acceptance before the model/tool turn finishes.
         // Waiting on both sides prevents overlapping turns in the one bound chat.
         await this.#waitForConversationIdle(endpoint, session.conversationId);
-        if (this.#conversationLimitReached(session, prompt.length)) {
-          await this.#startRotatedConversation(endpoint, session, prompt);
+        if (
+          (mcpConfigFingerprint !== null && session.mcpConfigFingerprint !== mcpConfigFingerprint)
+          || (mcpConfigFingerprint !== null && session.mcpBindingVersion !== MINECRAFT_MCP_BINDING_VERSION)
+          || (mcpConfigFingerprint !== null && session.projectId !== runtimeProjectId)
+          || this.#conversationLimitReached(session, prompt.length)
+        ) {
+          await this.#startRotatedConversation(
+            endpoint,
+            session,
+            prompt,
+            mcpConfigFingerprint,
+            runtimeProjectId,
+          );
         } else {
           const result = await this.#runner([
             "send-message",
@@ -434,7 +534,7 @@ export class AntigravityAgentBridge {
             throw new Error("反重力没有确认接收 Minecraft 消息");
           }
           await this.#waitForConversationIdle(endpoint, session.conversationId);
-          await this.#saveSessionUsage(session, prompt.length);
+          await this.#saveSessionUsage(session, prompt.length, mcpConfigFingerprint);
         }
         this.#clearAutomaticRetryBlock();
       } catch (caught) {
@@ -464,7 +564,11 @@ export class AntigravityAgentBridge {
       || characters + promptCharacters > this.#maxConversationPromptCharacters;
   }
 
-  async #saveSessionUsage(session: StoredSession, promptCharacters: number): Promise<void> {
+  async #saveSessionUsage(
+    session: StoredSession,
+    promptCharacters: number,
+    mcpConfigFingerprint: string | null,
+  ): Promise<void> {
     await this.#saveSession(
       session.conversationId,
       session.projectId,
@@ -473,6 +577,8 @@ export class AntigravityAgentBridge {
         generation: Number(session.generation ?? 1),
         turnCount: Number(session.turnCount ?? 0) + 1,
         promptCharacters: Number(session.promptCharacters ?? 0) + promptCharacters,
+        mcpConfigFingerprint,
+        ...(session.mcpBindingVersion ? { mcpBindingVersion: session.mcpBindingVersion } : {}),
       },
     );
   }
@@ -481,6 +587,8 @@ export class AntigravityAgentBridge {
     endpoint: AntigravityEndpoint,
     session: StoredSession,
     prompt: string,
+    mcpConfigFingerprint: string | null = null,
+    targetProjectId: string = session.projectId,
   ): Promise<StoredSession> {
     const generation = Math.max(1, Number(session.generation ?? 1)) + 1;
     const title = rotatedConversationTitle(this.#requiredConversationTitle, generation);
@@ -488,18 +596,23 @@ export class AntigravityAgentBridge {
       "new-conversation",
       `--title=${title}`,
       prompt,
-    ], this.#agentEnvironment(endpoint, session.projectId));
+    ], this.#agentEnvironment(endpoint, targetProjectId));
     if (result.error) throw new Error(result.error);
     const conversationId = conversationIdFromResult(result);
     if (!conversationId || conversationId === session.conversationId) {
       throw new Error("反重力没有返回新会话 ID，已保留当前会话");
     }
-    const projectId = await this.#conversationProject(endpoint, conversationId, session.projectId);
+    const projectId = await this.#conversationProject(endpoint, conversationId, targetProjectId);
+    if (targetProjectId !== OUTSIDE_PROJECT_ID && projectId !== targetProjectId) {
+      throw new Error("反重力新会话没有挂载 Minecraft Companion 隔离工作区");
+    }
     await this.#waitForConversationIdle(endpoint, conversationId);
     return this.#saveSession(conversationId, projectId, title, {
       generation,
       turnCount: 1,
       promptCharacters: prompt.length,
+      mcpConfigFingerprint,
+      ...(mcpConfigFingerprint !== null ? { mcpBindingVersion: MINECRAFT_MCP_BINDING_VERSION } : {}),
     });
   }
 
@@ -543,6 +656,8 @@ export class AntigravityAgentBridge {
             generation: Number(stored.generation ?? managedConversationGeneration(stored.conversationTitle, this.#requiredConversationTitle) ?? 1),
             turnCount: Number(stored.turnCount ?? 0),
             promptCharacters: Number(stored.promptCharacters ?? 0),
+            mcpConfigFingerprint: stored.mcpConfigFingerprint ?? null,
+            ...(stored.mcpBindingVersion ? { mcpBindingVersion: stored.mcpBindingVersion } : {}),
           },
         );
         this.#clearAutomaticRetryBlock();
@@ -587,7 +702,12 @@ export class AntigravityAgentBridge {
       conversationId,
       projectId,
       matching[0]?.title ?? title,
-      { generation: highestGeneration ?? 1, turnCount: 0, promptCharacters: 0 },
+      {
+        generation: highestGeneration ?? 1,
+        turnCount: 0,
+        promptCharacters: 0,
+        mcpConfigFingerprint: await this.#mcpConfigFingerprint(),
+      },
     );
     this.#clearAutomaticRetryBlock();
     return {
@@ -674,6 +794,161 @@ export class AntigravityAgentBridge {
     this.#automaticRetryBlockCode = null;
   }
 
+  async #ensureMinecraftMcpReady(
+    endpoint: AntigravityEndpoint,
+    configFingerprint: string,
+  ): Promise<void> {
+    if (this.#readyMcpConfigFingerprint === configFingerprint) return;
+    if (this.#ensureMcpReadyOverride) {
+      await this.#ensureMcpReadyOverride();
+      this.#readyMcpConfigFingerprint = configFingerprint;
+      return;
+    }
+
+    const enable = () => this.#connectRequest(endpoint, "ToggleMcpServer", {
+      serverName: MINECRAFT_MCP_SERVER_NAME,
+      enabled: true,
+    }, 30);
+    try {
+      await enable();
+    } catch {
+      await this.#connectRequest(endpoint, "RefreshMcpServers", {}, 30);
+      await enable();
+    }
+
+    if (!await this.#waitForMinecraftMcpReady(endpoint, 10_000)) {
+      await this.#connectRequest(endpoint, "RefreshMcpServers", {}, 30);
+      await enable();
+      if (!await this.#waitForMinecraftMcpReady(endpoint, 20_000)) {
+        throw new Error("反重力 Minecraft MCP 未在规定时间内就绪");
+      }
+    }
+    this.#readyMcpConfigFingerprint = configFingerprint;
+  }
+
+  async #ensureRuntimeProject(endpoint: AntigravityEndpoint): Promise<string> {
+    if (this.#ensureRuntimeProjectOverride) {
+      const projectId = (await this.#ensureRuntimeProjectOverride()).trim();
+      if (!this.#validProjectId(projectId)) throw new Error("反重力隔离工作区返回了无效项目 ID");
+      return projectId;
+    }
+
+    await mkdir(this.#runtimeProjectDirectory, { recursive: true });
+    const folderUri = pathToFileURL(this.#runtimeProjectDirectory).href;
+    const stored = await this.#readStoredRuntimeProject();
+    if (stored && await this.#runtimeProjectIsValid(endpoint, stored.projectId, folderUri)) {
+      return stored.projectId;
+    }
+
+    const projectId = randomUUID();
+    await this.#connectRequest(endpoint, "CreateProject", {
+      project: {
+        id: projectId,
+        name: RUNTIME_PROJECT_NAME,
+        projectResources: { resources: [{ folderUri }] },
+        settings: {
+          fileAccessPolicy: RUNTIME_PROJECT_FILE_POLICY,
+          internetPolicy: RUNTIME_PROJECT_INTERNET_POLICY,
+          sandboxMode: true,
+          autoExecutionPolicy: RUNTIME_PROJECT_AUTO_EXECUTION,
+          artifactReviewMode: "ARTIFACT_REVIEW_MODE_AUTO",
+          enablePermissionedGithub: false,
+          permissionPreset: RUNTIME_PROJECT_PERMISSION_PRESET,
+        },
+        isWorkspaceOnly: true,
+        archived: false,
+      },
+    }, 15);
+    if (!await this.#runtimeProjectIsValid(endpoint, projectId, folderUri)) {
+      throw new Error("反重力没有确认 Minecraft Companion 隔离工作区");
+    }
+    await this.#saveRuntimeProject(projectId);
+    return projectId;
+  }
+
+  async #runtimeProjectIsValid(
+    endpoint: AntigravityEndpoint,
+    projectId: string,
+    folderUri: string,
+  ): Promise<boolean> {
+    if (!this.#validProjectId(projectId)) return false;
+    try {
+      const raw = await this.#connectRequest(endpoint, "ReadProject", { id: projectId }, 10);
+      const parsed = raw ? JSON.parse(raw) as {
+        project?: AntigravityProject;
+        notFoundOnDisk?: boolean;
+      } : {};
+      const project = parsed.project;
+      const resources = project?.projectResources?.resources ?? [];
+      return !parsed.notFoundOnDisk
+        && project?.id === projectId
+        && project.isWorkspaceOnly === true
+        && project.archived !== true
+        && resources.length === 1
+        && resources[0]?.folderUri === folderUri
+        && project.settings?.fileAccessPolicy === RUNTIME_PROJECT_FILE_POLICY
+        && project.settings?.internetPolicy === RUNTIME_PROJECT_INTERNET_POLICY
+        && project.settings?.autoExecutionPolicy === RUNTIME_PROJECT_AUTO_EXECUTION
+        && project.settings?.permissionPreset === RUNTIME_PROJECT_PERMISSION_PRESET;
+    } catch {
+      return false;
+    }
+  }
+
+  #validProjectId(projectId: string): boolean {
+    return projectId !== OUTSIDE_PROJECT_ID
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(projectId);
+  }
+
+  async #readStoredRuntimeProject(): Promise<StoredRuntimeProject | null> {
+    try {
+      const parsed = JSON.parse(await readFile(this.#runtimeProjectStatePath, "utf8")) as Partial<StoredRuntimeProject>;
+      if (
+        parsed.version === RUNTIME_PROJECT_VERSION
+        && typeof parsed.projectId === "string"
+        && this.#validProjectId(parsed.projectId)
+        && typeof parsed.createdAt === "string"
+      ) return parsed as StoredRuntimeProject;
+    } catch {
+      // Invalid local metadata is replaced with a fresh isolated project.
+    }
+    return null;
+  }
+
+  async #saveRuntimeProject(projectId: string): Promise<void> {
+    const stored: StoredRuntimeProject = {
+      version: RUNTIME_PROJECT_VERSION,
+      projectId,
+      createdAt: new Date().toISOString(),
+    };
+    await mkdir(this.#stateDirectory, { recursive: true });
+    const temporary = `${this.#runtimeProjectStatePath}.${process.pid}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
+    await rename(temporary, this.#runtimeProjectStatePath);
+  }
+
+  async #waitForMinecraftMcpReady(
+    endpoint: AntigravityEndpoint,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      const raw = await this.#connectRequest(endpoint, "GetMcpServerStates", {}, 10);
+      const parsed = raw ? JSON.parse(raw) as { states?: AntigravityMcpServerState[] } : {};
+      const state = parsed.states?.find((candidate) => (
+        candidate.spec?.serverName === MINECRAFT_MCP_SERVER_NAME
+      ));
+      const tools = new Set((state?.tools ?? []).map((tool) => tool.name).filter(Boolean));
+      const hasRequiredTools = [...REQUIRED_MINECRAFT_MCP_TOOLS].every((tool) => tools.has(tool));
+      const hasToolErrors = (state?.toolErrors ?? []).some((error) => Boolean(error?.trim()));
+      if (state?.status === "MCP_SERVER_STATUS_READY" && hasRequiredTools && !hasToolErrors) {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    } while (Date.now() < deadline);
+    return false;
+  }
+
   async #endpoint(): Promise<AntigravityEndpoint> {
     const log = await readFile(this.#logPath, "utf8").catch(() => {
       throw new Error("未发现正在运行的反重力，请先启动反重力");
@@ -750,6 +1025,7 @@ export class AntigravityAgentBridge {
     payload: object,
     timeoutSeconds: number,
   ): Promise<string> {
+    if (this.#connectRunner) return this.#connectRunner(endpoint, method, payload, timeoutSeconds);
     const body = JSON.stringify(payload);
     const response = await new Promise<string>((resolve, reject) => {
       let wallClockTimeout: NodeJS.Timeout | undefined;
@@ -816,6 +1092,8 @@ export class AntigravityAgentBridge {
             generation: Number(stored.generation ?? managedConversationGeneration(stored.conversationTitle, this.#requiredConversationTitle) ?? 1),
             turnCount: Number(stored.turnCount ?? 0),
             promptCharacters: Number(stored.promptCharacters ?? 0),
+            mcpConfigFingerprint: stored.mcpConfigFingerprint ?? null,
+            ...(stored.mcpBindingVersion ? { mcpBindingVersion: stored.mcpBindingVersion } : {}),
           });
         }
         return stored;
@@ -881,6 +1159,14 @@ export class AntigravityAgentBridge {
         && (parsed.promptCharacters === undefined || (
           Number.isInteger(parsed.promptCharacters) && parsed.promptCharacters >= 0
         ))
+        && (parsed.mcpConfigFingerprint === undefined || (
+          typeof parsed.mcpConfigFingerprint === "string"
+          && /^[0-9a-f]{64}$/u.test(parsed.mcpConfigFingerprint)
+        ))
+        && (parsed.mcpBindingVersion === undefined || (
+          Number.isInteger(parsed.mcpBindingVersion)
+          && Number(parsed.mcpBindingVersion) >= 1
+        ))
         && typeof parsed.boundAt === "string"
       ) return parsed as StoredSession;
     } catch {
@@ -893,7 +1179,13 @@ export class AntigravityAgentBridge {
     conversationId: string,
     projectId: string,
     conversationTitle?: string,
-    usage: { generation?: number; turnCount?: number; promptCharacters?: number } = {},
+    usage: {
+      generation?: number;
+      turnCount?: number;
+      promptCharacters?: number;
+      mcpConfigFingerprint?: string | null;
+      mcpBindingVersion?: number;
+    } = {},
   ): Promise<StoredSession> {
     const session: StoredSession = {
       version: SESSION_VERSION,
@@ -904,12 +1196,29 @@ export class AntigravityAgentBridge {
       generation: Math.max(1, Math.trunc(Number(usage.generation ?? 1))),
       turnCount: Math.max(0, Math.trunc(Number(usage.turnCount ?? 0))),
       promptCharacters: Math.max(0, Math.trunc(Number(usage.promptCharacters ?? 0))),
+      ...(usage.mcpConfigFingerprint ? { mcpConfigFingerprint: usage.mcpConfigFingerprint } : {}),
+      ...(usage.mcpBindingVersion
+        ? { mcpBindingVersion: Math.max(1, Math.trunc(usage.mcpBindingVersion)) }
+        : {}),
     };
     await mkdir(this.#stateDirectory, { recursive: true });
     const temporary = `${this.#statePath}.${process.pid}.tmp`;
     await writeFile(temporary, `${JSON.stringify(session, null, 2)}\n`, "utf8");
     await rename(temporary, this.#statePath);
     return session;
+  }
+
+  async #mcpConfigFingerprint(): Promise<string | null> {
+    try {
+      const parsed = JSON.parse(await readFile(this.#configPath, "utf8")) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      const entry = parsed.mcpServers?.minecraft_codex_companion;
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      return createHash("sha256").update(canonicalJson(entry), "utf8").digest("hex");
+    } catch {
+      return null;
+    }
   }
 
   async #agentApiExecutable(): Promise<string> {

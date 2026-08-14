@@ -65,7 +65,7 @@ public static class MinecraftBackgroundInput
         uint flags
     );
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "PostMessageW")]
     public static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
 
     public static void Key(IntPtr hWnd, int key)
@@ -345,12 +345,10 @@ try {
         Click-Normalized 0.50 0.515
         Start-Sleep -Seconds 3
 
-        # The search box is drawn near 13% of the GLFW client height. Minecraft
-        # accepts background WM_CHAR reliably for ASCII, but non-ASCII world
-        # names are corrupted on some GLFW/Windows combinations. Clear the
-        # search in both cases; for non-ASCII names select the most-recent row
-        # and let the exact bridge worldId check below fail closed if it is not
-        # the requested world.
+        # The search box is drawn near 13% of the GLFW client height. Post
+        # Unicode WM_CHAR messages so localized world-folder names can be
+        # selected without the foreground keyboard or clipboard. The bridge's
+        # exact worldId check below still fails closed if selection drifts.
         if ($null -ne $targetWorldId) {
             Click-Normalized 0.50 0.13
             Start-Sleep -Milliseconds 250
@@ -362,9 +360,7 @@ try {
                 [MinecraftBackgroundInput]::Key($handle, 0x08)
             }
             Start-Sleep -Milliseconds 250
-            if ($targetWorldId -cmatch '^[\x20-\x7e]+$') {
-                [MinecraftBackgroundInput]::Text($handle, $targetWorldId)
-            }
+            [MinecraftBackgroundInput]::Text($handle, $targetWorldId)
             Start-Sleep -Seconds 1
         }
 

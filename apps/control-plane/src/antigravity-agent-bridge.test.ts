@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
@@ -361,6 +362,233 @@ Local: https://127.0.0.1:57422/
       connected: true,
       conversationId: ROTATED_CONVERSATION_ID,
       conversationTitle: "Execute Minecraft Woodcutting Task [MC-2]",
+    });
+  });
+
+  it("rotates a fingerprinted legacy binding once after the Minecraft MCP executor becomes ready", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-mcp-refresh-"));
+    const stateDirectory = path.join(root, "state");
+    const home = path.join(root, "antigravity");
+    const logPath = path.join(root, "main.log");
+    await mkdir(home, { recursive: true });
+    await mkdir(stateDirectory, { recursive: true });
+    const mcpEntry = {
+      command: "node",
+      args: ["mcp-stdio.js"],
+      env: { MC_COMPANION_URL: "http://127.0.0.1:8765" },
+    };
+    await writeFile(path.join(home, "mcp_config.json"), `${JSON.stringify({
+      mcpServers: {
+        minecraft_codex_companion: mcpEntry,
+      },
+    })}\n`, "utf8");
+    const mcpConfigFingerprint = createHash("sha256").update(JSON.stringify({
+      args: mcpEntry.args,
+      command: mcpEntry.command,
+      env: mcpEntry.env,
+    }), "utf8").digest("hex");
+    await writeFile(logPath, `
+Starting app (v2.8.0) with dynamic port... Spawning: language_server.exe --csrf_token 22222222-2222-2222-2222-222222222222
+Local: https://127.0.0.1:57422/
+`, "utf8");
+    await writeFile(path.join(stateDirectory, "antigravity-session.json"), `${JSON.stringify({
+      version: 1,
+      conversationId: CONVERSATION_ID,
+      projectId: "outside-of-project",
+      conversationTitle: "Execute Minecraft Woodcutting Task",
+      boundAt: "2026-08-09T00:00:00.000Z",
+      generation: 1,
+      turnCount: 12,
+      promptCharacters: 4_000,
+      mcpConfigFingerprint,
+    })}\n`, "utf8");
+    const runtimeProjectId = "33333333-3333-4333-8333-333333333333";
+    const runner = vi.fn(async (args: string[], environment: NodeJS.ProcessEnv) => {
+      if (args[0] === "get-conversation-metadata") {
+        return { response: { conversationMetadata: {
+          conversationId: args[1]!,
+          metadata: {
+            projectId: args[1] === ROTATED_CONVERSATION_ID
+              ? environment.ANTIGRAVITY_PROJECT_ID ?? "outside-of-project"
+              : "outside-of-project",
+          },
+        } } };
+      }
+      if (args[0] === "new-conversation") {
+        return { response: { newConversation: { conversationId: ROTATED_CONVERSATION_ID } } };
+      }
+      return { response: { sendMessage: { recipientId: ROTATED_CONVERSATION_ID } } };
+    });
+    const ensureMcpReady = vi.fn(async () => undefined);
+    const ensureRuntimeProject = vi.fn(async () => runtimeProjectId);
+    const bridge = new AntigravityAgentBridge({
+      stateDirectory,
+      antigravityHome: home,
+      antigravityLogPath: logPath,
+      runAgentApi: runner,
+      waitForIdle: async () => undefined,
+      ensureMcpReady,
+      ensureRuntimeProject,
+    });
+    const persona = { mode: "inherit" as const, displayName: "", personality: "", speakingStyle: "", memoryNotes: "" };
+    const message = {
+      sequence: 1,
+      at: new Date().toISOString(),
+      companionId: "codex-forge",
+      sender: "PlayerOne",
+      message: "refresh the local Minecraft MCP",
+    };
+
+    await bridge.trigger(message, persona);
+    await bridge.trigger({ ...message, sequence: 2, message: "reuse the refreshed conversation" }, persona);
+
+    const operations = runner.mock.calls.map((call) => (call[0] as string[])[0])
+      .filter((operation) => operation === "new-conversation" || operation === "send-message");
+    expect(operations).toEqual(["new-conversation", "send-message"]);
+    expect(ensureMcpReady).toHaveBeenCalledTimes(1);
+    expect(ensureRuntimeProject).toHaveBeenCalledTimes(2);
+    const newConversationCall = runner.mock.calls.find((call) => call[0][0] === "new-conversation");
+    expect(newConversationCall?.[1].ANTIGRAVITY_PROJECT_ID).toBe(runtimeProjectId);
+    const stored = JSON.parse(await readFile(
+      path.join(stateDirectory, "antigravity-session.json"),
+      "utf8",
+    )) as Record<string, unknown>;
+    expect(stored).toMatchObject({
+      conversationId: ROTATED_CONVERSATION_ID,
+      projectId: runtimeProjectId,
+      generation: 2,
+      turnCount: 2,
+      mcpBindingVersion: 1,
+    });
+    expect(stored.mcpConfigFingerprint).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  it("creates and reuses a file-and-network-isolated project before rotating an outside-workspace session", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-project-"));
+    const stateDirectory = path.join(root, "state");
+    const home = path.join(root, "antigravity");
+    const logPath = path.join(root, "main.log");
+    await mkdir(home, { recursive: true });
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(path.join(home, "mcp_config.json"), `${JSON.stringify({
+      mcpServers: {
+        minecraft_codex_companion: {
+          command: "node",
+          args: ["mcp-stdio.js"],
+          env: { MC_COMPANION_URL: "http://127.0.0.1:8765" },
+        },
+      },
+    })}\n`, "utf8");
+    await writeFile(logPath, `
+Starting app (v2.8.0) with dynamic port... Spawning: language_server.exe --csrf_token 22222222-2222-2222-2222-222222222222
+Local: https://127.0.0.1:57422/
+`, "utf8");
+    await writeFile(path.join(stateDirectory, "antigravity-session.json"), `${JSON.stringify({
+      version: 1,
+      conversationId: CONVERSATION_ID,
+      projectId: "outside-of-project",
+      conversationTitle: "Execute Minecraft Woodcutting Task",
+      boundAt: "2026-08-09T00:00:00.000Z",
+      generation: 1,
+      turnCount: 1,
+      promptCharacters: 100,
+      mcpBindingVersion: 1,
+    })}\n`, "utf8");
+
+    let createdProject: Record<string, unknown> | null = null;
+    const connectRunner = vi.fn(async (
+      _endpoint: unknown,
+      method: string,
+      payload: object,
+    ) => {
+      if (method === "CreateProject") {
+        createdProject = (payload as { project?: Record<string, unknown> }).project ?? null;
+        return "{}";
+      }
+      if (method === "ReadProject") {
+        return createdProject
+          ? JSON.stringify({ project: createdProject })
+          : JSON.stringify({ notFoundOnDisk: true });
+      }
+      throw new Error(`unexpected local method ${method}`);
+    });
+    const runner = vi.fn(async (args: string[], environment: NodeJS.ProcessEnv) => {
+      if (args[0] === "get-conversation-metadata") {
+        return { response: { conversationMetadata: {
+          conversationId: args[1]!,
+          metadata: {
+            projectId: args[1] === ROTATED_CONVERSATION_ID
+              ? environment.ANTIGRAVITY_PROJECT_ID ?? "outside-of-project"
+              : "outside-of-project",
+          },
+        } } };
+      }
+      if (args[0] === "new-conversation") {
+        return { response: { newConversation: { conversationId: ROTATED_CONVERSATION_ID } } };
+      }
+      return { response: { sendMessage: { recipientId: ROTATED_CONVERSATION_ID } } };
+    });
+    const bridge = new AntigravityAgentBridge({
+      stateDirectory,
+      antigravityHome: home,
+      antigravityLogPath: logPath,
+      runAgentApi: runner,
+      runConnectApi: connectRunner,
+      waitForIdle: async () => undefined,
+      ensureMcpReady: async () => undefined,
+    });
+    const persona = { mode: "inherit" as const, displayName: "", personality: "", speakingStyle: "", memoryNotes: "" };
+    const message = {
+      sequence: 1,
+      at: new Date().toISOString(),
+      companionId: "codex-forge",
+      sender: "PlayerOne",
+      message: "use the isolated Minecraft project",
+    };
+
+    await bridge.trigger(message, persona);
+    await bridge.trigger({ ...message, sequence: 2, message: "reuse the isolated project" }, persona);
+
+    expect(createdProject).not.toBeNull();
+    const project = createdProject as unknown as {
+      id: string;
+      name: string;
+      isWorkspaceOnly: boolean;
+      archived: boolean;
+      projectResources: { resources: Array<{ folderUri: string }> };
+      settings: Record<string, unknown>;
+    };
+    expect(project.id).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(project.name).toBe("Minecraft Companion Runtime");
+    expect(project.isWorkspaceOnly).toBe(true);
+    expect(project.archived).toBe(false);
+    expect(project.projectResources.resources).toHaveLength(1);
+    expect(project.projectResources.resources[0]?.folderUri).toMatch(/^file:\/\//u);
+    expect(project.settings).toMatchObject({
+      fileAccessPolicy: "AGENT_SETTING_POLICY_DENY",
+      internetPolicy: "AGENT_SETTING_POLICY_DENY",
+      sandboxMode: true,
+      autoExecutionPolicy: "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER",
+      enablePermissionedGithub: false,
+      permissionPreset: "AGENT_PERMISSION_PRESET_TURBO",
+    });
+    expect(connectRunner.mock.calls.filter((call) => call[1] === "CreateProject")).toHaveLength(1);
+    const projectState = JSON.parse(await readFile(
+      path.join(stateDirectory, "antigravity-project.json"),
+      "utf8",
+    )) as Record<string, unknown>;
+    expect(projectState).toMatchObject({ version: 1, projectId: project.id });
+    expect(projectState).not.toHaveProperty("folderUri");
+    const session = JSON.parse(await readFile(
+      path.join(stateDirectory, "antigravity-session.json"),
+      "utf8",
+    )) as Record<string, unknown>;
+    expect(session).toMatchObject({
+      conversationId: ROTATED_CONVERSATION_ID,
+      projectId: project.id,
+      generation: 2,
+      turnCount: 2,
+      mcpBindingVersion: 1,
     });
   });
 

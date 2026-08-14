@@ -9,6 +9,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Invoke-NativeCapture([string]$Command, [string[]]$Arguments) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $Command @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return [PSCustomObject]@{ Output = $output; ExitCode = $exitCode }
+}
+
 $projectRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 
 function Get-AbsoluteInputPath([string]$Value, [string]$BasePath) {
@@ -223,8 +236,9 @@ if ($SkipDefender -or $AllowUnavailableScanner) {
                         sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
                     }
                 })
-                $versionOutput = @(& $resolvedClamScanPath '--version' 2>&1)
-                $versionExitCode = $LASTEXITCODE
+                $versionResult = Invoke-NativeCapture $resolvedClamScanPath @('--version')
+                $versionOutput = @($versionResult.Output)
+                $versionExitCode = $versionResult.ExitCode
                 $clamVersion = (($versionOutput -join "`n").Trim() `
                     -replace [Regex]::Escape($resolvedClamDatabaseRoot), '%CLAM_DATABASE%' `
                     -replace [Regex]::Escape($resolvedClamScanPath), 'clamscan' `
@@ -254,8 +268,14 @@ if ($SkipDefender -or $AllowUnavailableScanner) {
             if (-not $scanFailure) {
                 $targetReports = @()
                 foreach ($scanTarget in $scanTargets) {
-                    $scanOutput = @(& $resolvedClamScanPath "--database=$resolvedClamDatabaseRoot" '--recursive=yes' '--stdout' $scanTarget 2>&1)
-                    $scanExitCode = $LASTEXITCODE
+                    $scanResult = Invoke-NativeCapture $resolvedClamScanPath @(
+                        "--database=$resolvedClamDatabaseRoot",
+                        '--recursive=yes',
+                        '--stdout',
+                        $scanTarget
+                    )
+                    $scanOutput = @($scanResult.Output)
+                    $scanExitCode = $scanResult.ExitCode
                     $sanitizedOutput = (($scanOutput -join "`n").Trim() `
                         -replace [Regex]::Escape($ArtifactRoot), '%ARTIFACT_ROOT%' `
                         -replace [Regex]::Escape($archivePath), '%ARCHIVE%' `

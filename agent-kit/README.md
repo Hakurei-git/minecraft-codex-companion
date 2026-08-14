@@ -11,7 +11,7 @@ Two editions are published:
 | Edition | Intended user | Standalone |
 | --- | --- | --- |
 | `MinecraftCodexCompanion-Setup.exe` | Windows users who want an install-and-run application | Yes. It contains the local service, setup UI, and Forge installation resources. |
-| `MinecraftCodexCompanion-AgentKit-v0.1.3.zip` | Users who want Codex, Claude, Antigravity, or another MCP-capable AI to control the NPC | No. It connects to the local service installed by the EXE on the same PC. |
+| `MinecraftCodexCompanion-AgentKit-v0.1.5.zip` | Users who want Codex, Claude, Antigravity, or another MCP-capable AI to control the NPC | No. It connects to the local service installed by the EXE on the same PC. |
 
 The Skill teaches the AI how to observe, plan, enforce safety, submit work, and recover failures. MCP is the tool channel that actually reads Minecraft state and performs actions. A Skill without MCP is documentation only. MCP without the Skill can work, but complex planning, delivery, and recovery are more reliable when both are installed.
 

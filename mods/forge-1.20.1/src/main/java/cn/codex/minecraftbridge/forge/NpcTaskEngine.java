@@ -12761,9 +12761,23 @@ public final class NpcTaskEngine {
         if (work.ticks - work.lastActionTick < 8) return false;
         BlockState state = npc.level().getBlockState(placement);
         int toolSlot = bestToolSlot(state);
-        if (state.requiresCorrectToolForDrops()
-            && (toolSlot < 0 || !npc.inventory().getStackInSlot(toolSlot).isCorrectToolForDrops(state))) {
-            prepareGatherTool(work, state, work.deepMiningItemId);
+        boolean hasCorrectTool = toolSlot >= 0
+            && npc.inventory().getStackInSlot(toolSlot).isCorrectToolForDrops(state);
+        if (WorkstationPolicy.shouldRelocateBlockedMiningPlacement(
+            state.requiresCorrectToolForDrops(),
+            hasCorrectTool
+        )) {
+            // Crafting a pickaxe may itself require the workstation we are
+            // currently trying to place. Recursing into tool preparation here
+            // re-enters ensureWorkstation synchronously and can overflow the
+            // server thread. Try another already-open alcove instead; if none
+            // exists, the task fails normally and remains retryable.
+            work.skippedWorkstationTargets.add(placement.immutable());
+            work.pendingWorkstationPlacement = null;
+            work.stalledTicks = 0;
+            work.lastDistance = -1.0D;
+            progress(work, activeProgress(work),
+                "当前工作站凹槽需要尚未具备的工具，正在改找可直接放置的位置");
             return false;
         }
         if (toolSlot >= 0) equipMainHand(toolSlot);

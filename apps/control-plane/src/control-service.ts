@@ -335,6 +335,16 @@ export class ControlService {
     this.#pruneAiDecisions();
     const pending = this.#pendingAiDecisions.get(interactionId);
     if (!pending) {
+      this.events.publish({
+        type: "system",
+        companionId: null,
+        message: "智能 AI 决策提交失败",
+        data: {
+          interactionId,
+          code: "AI_DECISION_NOT_PENDING",
+          committed: false,
+        },
+      });
       throw new ControlError({
         code: "AI_DECISION_NOT_PENDING",
         message: "这条旧的智能请求已经完成、超时或因上游错误失效，不能再次执行",
@@ -344,6 +354,16 @@ export class ControlService {
       });
     }
     if (pending.submitting) {
+      this.events.publish({
+        type: "system",
+        companionId: pending.companionId,
+        message: "智能 AI 决策提交失败",
+        data: {
+          interactionId,
+          code: "AI_DECISION_DUPLICATE",
+          committed: false,
+        },
+      });
       throw new ControlError({
         code: "AI_DECISION_DUPLICATE",
         message: "该智能规划决策正在提交，不能重复执行",
@@ -379,6 +399,21 @@ export class ControlService {
     } catch (caught) {
       if (committed) this.#pendingAiDecisions.delete(interactionId);
       else pending.submitting = false;
+      const error = caught instanceof Error ? caught : new Error(String(caught));
+      const code = caught instanceof ControlError || "code" in error
+        ? String((error as Error & { code?: string }).code ?? "CONTROL_ERROR")
+        : "CONTROL_ERROR";
+      this.events.publish({
+        type: "system",
+        companionId: pending.companionId,
+        message: "智能 AI 决策提交失败",
+        data: {
+          interactionId,
+          decisionType: decision.type,
+          code,
+          committed,
+        },
+      });
       throw caught;
     }
   }

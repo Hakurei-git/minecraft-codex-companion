@@ -105,9 +105,10 @@ public final class ForgeNpcActor implements CompanionActor {
     }
 
     @Override
-    public void speak(Minecraft minecraft, String message) {
+    public void speak(Minecraft minecraft, String message, String deliveryId) {
         JsonObject payload = new JsonObject();
         payload.addProperty("message", message);
+        if (deliveryId != null && !deliveryId.isBlank()) payload.addProperty("deliveryId", deliveryId);
         CodexNetwork.sendToServer("speak", payload);
     }
 
@@ -165,6 +166,9 @@ public final class ForgeNpcActor implements CompanionActor {
                         CodexNpcEntity.class,
                         minecraft.player.getBoundingBox().inflate(128)
                     ).forEach(CodexNpcEntity::triggerSpeechAnimation);
+                }
+                if (payload.has("deliveryId")) {
+                    ClientBridgeEvents.acknowledgeChatDelivery(payload.get("deliveryId").getAsString());
                 }
             }
             default -> {
