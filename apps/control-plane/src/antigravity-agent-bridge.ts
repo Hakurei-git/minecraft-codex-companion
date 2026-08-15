@@ -12,6 +12,7 @@ import { redactSensitiveText } from "./skill-security.js";
 const execFile = promisify(execFileCallback);
 const SESSION_VERSION = 1;
 const AGENT_API_TIMEOUT_MS = 15_000;
+const CONNECT_MESSAGE_TIMEOUT_SECONDS = 15;
 const CONVERSATION_IDLE_TIMEOUT_SECONDS = 60;
 const RECOVERY_IDLE_TIMEOUT_SECONDS = 10;
 const DEFAULT_LOCATION_FAILURE_BACKOFF_MS = 30 * 1_000;
@@ -30,6 +31,7 @@ const RUNTIME_PROJECT_FILE_POLICY = "AGENT_SETTING_POLICY_DENY";
 const RUNTIME_PROJECT_INTERNET_POLICY = "AGENT_SETTING_POLICY_DENY";
 const RUNTIME_PROJECT_AUTO_EXECUTION = "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER";
 const RUNTIME_PROJECT_PERMISSION_PRESET = "AGENT_PERMISSION_PRESET_TURBO";
+const ROTATED_CONVERSATION_BOOTSTRAP = "Start a new Minecraft Companion session. Wait for the next message before taking any action.";
 const ROTATED_TITLE_SUFFIX = / \[MC-(\d+)\]$/u;
 const LOCATION_UNSUPPORTED_PATTERN = /user\s+location\s+is\s+not\s+supported|location[^\r\n]{0,80}not\s+supported/iu;
 const ANTIGRAVITY_RECOVERY_MESSAGE = /^\s*(?:(?:恢复|重连|解除)(?:一下)?(?:反重力|antigravity)(?:会话)?|(?:反重力|antigravity)(?:会话)?(?:恢复|重连)|(?:recover|reconnect|reset)\s+antigravity|antigravity\s+(?:recover|reconnect|reset))\s*[。！!]*\s*$/iu;
@@ -414,6 +416,7 @@ export class AntigravityAgentBridge {
   readonly #runtimeProjectDirectory: string;
   readonly #runner: AgentApiRunner;
   readonly #connectRunner: ConnectApiRunner | undefined;
+  readonly #useUtf8ConnectMessages: boolean;
   readonly #waitForIdleOverride: (() => Promise<void>) | undefined;
   readonly #ensureMcpReadyOverride: (() => Promise<void>) | undefined;
   readonly #ensureRuntimeProjectOverride: (() => Promise<string>) | undefined;
@@ -451,6 +454,9 @@ export class AntigravityAgentBridge {
     this.#runtimeProjectDirectory = path.join(this.#stateDirectory, RUNTIME_PROJECT_DIRECTORY);
     this.#runner = options.runAgentApi ?? ((args, environment) => this.#runAgentApi(args, environment));
     this.#connectRunner = options.runConnectApi;
+    // Injected agentapi-only runners keep legacy unit fixtures deterministic.
+    // Production and explicit Connect fixtures use JSON so Windows cannot rewrite Unicode arguments.
+    this.#useUtf8ConnectMessages = options.runConnectApi !== undefined || options.runAgentApi === undefined;
     this.#waitForIdleOverride = options.waitForIdle;
     this.#ensureMcpReadyOverride = options.ensureMcpReady;
     this.#ensureRuntimeProjectOverride = options.ensureRuntimeProject;
@@ -506,7 +512,7 @@ export class AntigravityAgentBridge {
           await this.#ensureMinecraftMcpReady(endpoint, mcpConfigFingerprint);
           runtimeProjectId = await this.#ensureRuntimeProject(endpoint);
         }
-        // agentapi confirms acceptance before the model/tool turn finishes.
+        // The local sender confirms acceptance before the model/tool turn finishes.
         // Waiting on both sides prevents overlapping turns in the one bound chat.
         await this.#waitForConversationIdle(endpoint, session.conversationId);
         if (
@@ -523,16 +529,7 @@ export class AntigravityAgentBridge {
             runtimeProjectId,
           );
         } else {
-          const result = await this.#runner([
-            "send-message",
-            "--title=Minecraft 实时陪玩消息",
-            session.conversationId,
-            prompt,
-          ], this.#agentEnvironment(endpoint, session.projectId));
-          if (result.error) throw new Error(result.error);
-          if (result.response?.sendMessage?.recipientId !== session.conversationId) {
-            throw new Error("反重力没有确认接收 Minecraft 消息");
-          }
+          await this.#sendMessage(endpoint, session, prompt);
           await this.#waitForConversationIdle(endpoint, session.conversationId);
           await this.#saveSessionUsage(session, prompt.length, mcpConfigFingerprint);
         }
@@ -592,10 +589,11 @@ export class AntigravityAgentBridge {
   ): Promise<StoredSession> {
     const generation = Math.max(1, Number(session.generation ?? 1)) + 1;
     const title = rotatedConversationTitle(this.#requiredConversationTitle, generation);
+    const initialPrompt = this.#useUtf8ConnectMessages ? ROTATED_CONVERSATION_BOOTSTRAP : prompt;
     const result = await this.#runner([
       "new-conversation",
       `--title=${title}`,
-      prompt,
+      initialPrompt,
     ], this.#agentEnvironment(endpoint, targetProjectId));
     if (result.error) throw new Error(result.error);
     const conversationId = conversationIdFromResult(result);
@@ -607,6 +605,13 @@ export class AntigravityAgentBridge {
       throw new Error("反重力新会话没有挂载 Minecraft Companion 隔离工作区");
     }
     await this.#waitForConversationIdle(endpoint, conversationId);
+    if (this.#useUtf8ConnectMessages) {
+      await this.#sendMessage(endpoint, {
+        conversationId,
+        projectId,
+      }, prompt);
+      await this.#waitForConversationIdle(endpoint, conversationId);
+    }
     return this.#saveSession(conversationId, projectId, title, {
       generation,
       turnCount: 1,
@@ -614,6 +619,32 @@ export class AntigravityAgentBridge {
       mcpConfigFingerprint,
       ...(mcpConfigFingerprint !== null ? { mcpBindingVersion: MINECRAFT_MCP_BINDING_VERSION } : {}),
     });
+  }
+
+  async #sendMessage(
+    endpoint: AntigravityEndpoint,
+    session: Pick<StoredSession, "conversationId" | "projectId">,
+    prompt: string,
+  ): Promise<void> {
+    if (this.#useUtf8ConnectMessages) {
+      await this.#connectRequest(endpoint, "SendAgentMessage", {
+        content: prompt,
+        recipient: session.conversationId,
+        displayTitle: "Minecraft 实时陪玩消息",
+      }, CONNECT_MESSAGE_TIMEOUT_SECONDS);
+      return;
+    }
+
+    const result = await this.#runner([
+      "send-message",
+      "--title=Minecraft 实时陪玩消息",
+      session.conversationId,
+      prompt,
+    ], this.#agentEnvironment(endpoint, session.projectId));
+    if (result.error) throw new Error(result.error);
+    if (result.response?.sendMessage?.recipientId !== session.conversationId) {
+      throw new Error("反重力没有确认接收 Minecraft 消息");
+    }
   }
 
   async bindLatestConversation(): Promise<AntigravityAgentBridgeStatus> {

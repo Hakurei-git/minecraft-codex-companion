@@ -975,6 +975,24 @@ async function testMcp(config, payloadRoot, stateDirectory) {
   return parsed;
 }
 
+async function bindConfiguredAntigravity(config, requestJson = httpJson, force = false) {
+  if (!force && config.chatTarget !== "antigravity-mcp") {
+    return { required: false, connected: false, skipped: true };
+  }
+  const status = await requestJson(`http://127.0.0.1:${config.port}/api/antigravity/bind`, {
+    method: "POST",
+    body: { title: config.antigravityConversationTitle },
+    timeout: 20_000,
+  });
+  if (!status?.connected) throw new Error("反重力会话绑定后未确认连接");
+  return {
+    required: true,
+    connected: true,
+    conversationTitle: status.conversationTitle || config.antigravityConversationTitle,
+    personaMode: normalizePersona(config.persona).mode,
+  };
+}
+
 async function picker(payloadRoot, kind, currentPath) {
   const pickerPath = path.join(payloadRoot, "runtime", "MinecraftCodexPicker.exe");
   if (!fs.existsSync(pickerPath)) throw new Error("便携包缺少原生路径选择器");
@@ -1171,11 +1189,7 @@ async function handleApi(request, response, context, pathname) {
   }
   if (pathname === "/api/antigravity/bind") {
     await startService(config, context.payloadRoot, context.stateDirectory);
-    const result = await httpJson(`http://127.0.0.1:${config.port}/api/antigravity/bind`, {
-      method: "POST",
-      body: { title: config.antigravityConversationTitle },
-      timeout: 20_000,
-    });
+    const result = await bindConfiguredAntigravity(config, httpJson, true);
     addEvent(context, "success", `已按标题精确绑定反重力会话“${config.antigravityConversationTitle}”`);
     return sendJson(response, 200, result);
   }
@@ -1193,8 +1207,12 @@ async function handleApi(request, response, context, pathname) {
     const result = await withOperation(context, "一键准备并启动", async () => {
       const installation = await installOrUpdate(config, context.payloadRoot, context.stateDirectory);
       const service = await startService(config, context.payloadRoot, context.stateDirectory);
+      const antigravity = await bindConfiguredAntigravity(config);
+      if (antigravity.connected) {
+        addEvent(context, "success", `已恢复反重力会话“${antigravity.conversationTitle}”`);
+      }
       const launcher = launchGame(config);
-      return { installation, service, launcher };
+      return { installation, service, antigravity, launcher };
     });
     return sendJson(response, 200, result);
   }
@@ -1305,6 +1323,7 @@ async function main() {
 }
 
 module.exports = {
+  bindConfiguredAntigravity,
   companionPrompt,
   configureBridge,
   createApiContext,

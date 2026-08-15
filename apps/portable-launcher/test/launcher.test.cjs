@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
+  bindConfiguredAntigravity,
   companionPrompt,
   configureBridge,
   defaultConfig,
@@ -56,6 +57,58 @@ test("defaults are derived from the target environment", () => {
   assert.equal(config.persona.mode, "inherit");
   assert.equal(config.npcSkinMode, "default");
   assert.equal(config.antigravityConversationTitle, "Execute Minecraft Woodcutting Task");
+});
+
+test("one-click preparation binds the configured Antigravity conversation without replacing inherited persona", async () => {
+  const calls = [];
+  const config = normalizeConfig({
+    port: 8765,
+    chatTarget: "antigravity-mcp",
+    antigravityConversationTitle: "Existing Local Persona",
+    persona: { mode: "inherit" },
+  });
+  const result = await bindConfiguredAntigravity(config, async (url, options) => {
+    calls.push({ url, options });
+    return { connected: true, conversationTitle: "Existing Local Persona [MC-4]" };
+  });
+
+  assert.deepEqual(calls, [{
+    url: "http://127.0.0.1:8765/api/antigravity/bind",
+    options: {
+      method: "POST",
+      body: { title: "Existing Local Persona" },
+      timeout: 20_000,
+    },
+  }]);
+  assert.deepEqual(result, {
+    required: true,
+    connected: true,
+    conversationTitle: "Existing Local Persona [MC-4]",
+    personaMode: "inherit",
+  });
+});
+
+test("one-click preparation leaves non-Antigravity chat targets untouched", async () => {
+  let called = false;
+  const result = await bindConfiguredAntigravity(normalizeConfig({
+    chatTarget: "active-provider",
+  }), async () => {
+    called = true;
+    return {};
+  });
+
+  assert.equal(called, false);
+  assert.deepEqual(result, { required: false, connected: false, skipped: true });
+
+  const forced = await bindConfiguredAntigravity(normalizeConfig({
+    chatTarget: "active-provider",
+    antigravityConversationTitle: "Manual Binding",
+  }), async () => {
+    called = true;
+    return { connected: true, conversationTitle: "Manual Binding" };
+  }, true);
+  assert.equal(called, true);
+  assert.equal(forced.connected, true);
 });
 
 test("portable defaults discover HMCL, Minecraft, and Antigravity from bounded user locations", async (t) => {
