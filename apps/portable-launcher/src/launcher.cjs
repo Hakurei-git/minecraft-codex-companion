@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const http = require("node:http");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { TextDecoder } = require("node:util");
@@ -13,6 +14,9 @@ const { installClone, updateClone } = require("./instance-manager.cjs");
 const APP_NAME = "Minecraft Codex Companion";
 const DEFAULT_PORT = 8765;
 const DEFAULT_COMPANION_NAME = "Codex";
+const SERVICE_PROTOCOL_VERSION = 2;
+const SERVICE_PORT_SEARCH_LIMIT = 32;
+const REQUIRED_FORGE_BRIDGE_VERSION = "0.2.3";
 const MAX_BODY_BYTES = 1024 * 1024;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const CONFIG_KEYS = new Set([
@@ -505,6 +509,44 @@ async function getOrCreateBridgeToken(stateDirectory) {
   return token;
 }
 
+async function getOrCreateInstallationId(stateDirectory) {
+  const installationPath = path.join(stateDirectory, "installation-id.txt");
+  try {
+    const existing = (await fsp.readFile(installationPath, "utf8")).trim();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(existing)) {
+      return existing.toLowerCase();
+    }
+  } catch (error) {
+    if (!error || error.code !== "ENOENT") throw error;
+  }
+  const installationId = crypto.randomUUID();
+  await fsp.mkdir(stateDirectory, { recursive: true });
+  await fsp.writeFile(installationPath, `${installationId}\n`, { encoding: "utf8", mode: 0o600 });
+  return installationId;
+}
+
+function bridgeTokenFingerprint(token) {
+  return crypto.createHash("sha256").update(token, "utf8").digest("hex").slice(0, 16);
+}
+
+function payloadBuildId(payloadRoot) {
+  const manifestPath = path.join(payloadRoot, "portable-manifest.json");
+  return crypto.createHash("sha256").update(fs.readFileSync(manifestPath)).digest("hex");
+}
+
+async function expectedServiceIdentity(payloadRoot, stateDirectory) {
+  const [installationId, token] = await Promise.all([
+    getOrCreateInstallationId(stateDirectory),
+    getOrCreateBridgeToken(stateDirectory),
+  ]);
+  return {
+    serviceProtocolVersion: SERVICE_PROTOCOL_VERSION,
+    installationId,
+    buildId: payloadBuildId(payloadRoot),
+    bridgeTokenFingerprint: bridgeTokenFingerprint(token),
+  };
+}
+
 function findSingleFile(directory, matcher, label) {
   if (!fs.existsSync(directory)) throw new Error(`${label}目录不存在，便携包可能不完整`);
   const candidates = fs.readdirSync(directory)
@@ -628,7 +670,7 @@ async function configureBridge(config, stateDirectory) {
   return configPath;
 }
 
-async function configureChat(config, stateDirectory) {
+async function configureChat(config, stateDirectory, expectedIdentity = null) {
   const configPath = path.join(stateDirectory, "chat-settings.json");
   const draft = {
     freeChatEnabled: config.freeChatEnabled,
@@ -639,8 +681,8 @@ async function configureChat(config, stateDirectory) {
     tokenBudget: config.tokenBudget,
     persona: normalizePersona(config.persona),
   };
-  const status = await serviceStatus(config.port);
-  if (status.running) {
+  const status = expectedIdentity ? await serviceStatus(config.port, expectedIdentity) : { running: false };
+  if (status.running && status.identityVerified) {
     await httpJson(`http://127.0.0.1:${config.port}/api/chat/settings`, {
       method: "PUT",
       body: draft,
@@ -735,38 +777,192 @@ function httpJson(url, options = {}) {
   });
 }
 
-async function serviceStatus(port) {
+async function probeService(port) {
   try {
     const health = await httpJson(`http://127.0.0.1:${port}/api/health`);
-    return health && health.ok && health.service === "minecraft-codex-companion"
-      ? {
-          running: true,
-          companions: Number(health.companions || 0),
-          connectedCompanions: Number(health.connectedCompanions || 0),
-        }
-      : { running: false, error: "端口被其他程序占用" };
+    if (health && health.ok && health.service === "minecraft-codex-companion") {
+      return { occupied: true, health };
+    }
+    return { occupied: true, error: "端口被其他程序占用" };
   } catch (error) {
-    const code = error && error.code;
-    if (["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"].includes(code)) return { running: false };
-    return { running: false, error: error instanceof Error ? error.message : String(error) };
+    if (error && error.code === "ECONNREFUSED") return { occupied: false };
+    return { occupied: true, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-async function waitForService(port, attempts = 40) {
+function classifyServiceHealth(health, expectedIdentity = null) {
+  const minecraftBridge = health?.minecraftBridge && typeof health.minecraftBridge === "object"
+    ? health.minecraftBridge
+    : null;
+  const base = {
+    running: false,
+    occupied: true,
+    serviceDetected: true,
+    identityVerified: false,
+    companions: Number(health?.companions || 0),
+    connectedCompanions: Number(health?.connectedCompanions || 0),
+    processId: Number.isInteger(health?.processId) ? health.processId : null,
+    processInstanceId: typeof health?.processInstanceId === "string" ? health.processInstanceId : null,
+    minecraftBridge,
+  };
+  if (!expectedIdentity) return { ...base, running: true };
+  const installationMatches = health?.installationId === expectedIdentity.installationId;
+  const identityVerified = health?.serviceProtocolVersion === expectedIdentity.serviceProtocolVersion
+    && installationMatches
+    && health?.buildId === expectedIdentity.buildId
+    && health?.bridgeTokenFingerprint === expectedIdentity.bridgeTokenFingerprint;
+  if (identityVerified) return { ...base, running: true, identityVerified: true, owned: true };
+  const legacy = !health?.installationId || !health?.bridgeTokenFingerprint || !health?.buildId;
+  return {
+    ...base,
+    owned: installationMatches,
+    legacy,
+    error: legacy
+      ? "检测到无法验证身份的旧控制服务"
+      : installationMatches
+        ? "检测到同一安装的旧版本控制服务"
+        : "端口属于另一个 Minecraft Codex Companion 安装",
+  };
+}
+
+function classifyMinecraftBridge(service, requiredVersion = REQUIRED_FORGE_BRIDGE_VERSION) {
+  const bridge = service?.minecraftBridge && typeof service.minecraftBridge === "object"
+    ? service.minecraftBridge
+    : {};
+  const connections = Array.isArray(bridge.connections) ? bridge.connections : [];
+  const currentConnections = connections.filter((connection) => (
+    connection
+      && connection.connected === true
+      && connection.backend === "forge-1.20.1"
+      && connection.bridgeVersion === requiredVersion
+  ));
+  const latest = (key) => {
+    const values = currentConnections
+      .map((connection) => connection[key])
+      .filter((value) => typeof value === "string")
+      .sort();
+    return values.length > 0 ? values[values.length - 1] : null;
+  };
+  return {
+    requiredVersion,
+    reportedVersions: Array.isArray(bridge.bridgeVersions)
+      ? bridge.bridgeVersions.filter((version) => typeof version === "string")
+      : [],
+    connected: currentConnections.length > 0,
+    connectedCompanions: currentConnections.length,
+    tRoundTripVerified: currentConnections.some((connection) => connection.tRoundTripVerified === true),
+    lastIncomingChatAt: latest("lastIncomingChatAt"),
+    lastDeliveredChatAt: latest("lastDeliveredChatAt"),
+    lastRoundTripAt: latest("lastRoundTripAt"),
+  };
+}
+
+async function serviceStatus(port, expectedIdentity = null) {
+  const probe = await probeService(port);
+  if (!probe.occupied) return { running: false, occupied: false };
+  if (!probe.health) return { running: false, occupied: true, error: probe.error || "端口被其他程序占用" };
+  return classifyServiceHealth(probe.health, expectedIdentity);
+}
+
+async function waitForService(port, expectedIdentity, expectedProcessId, attempts = 40) {
   for (let index = 0; index < attempts; index += 1) {
-    const status = await serviceStatus(port);
-    if (status.running) return status;
+    const status = await serviceStatus(port, expectedIdentity);
+    if (status.running && (!expectedProcessId || status.processId === expectedProcessId)) return status;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error("控制服务未能在 10 秒内启动，请检查运行日志");
 }
 
+function canBindLoopbackPort(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", () => resolve(false));
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => server.close(() => resolve(true)));
+  });
+}
+
+async function findAvailableLoopbackPort(preferredPort, limit = SERVICE_PORT_SEARCH_LIMIT) {
+  for (let offset = 1; offset <= limit; offset += 1) {
+    const candidate = preferredPort + offset <= 65535 ? preferredPort + offset : 10240 + offset - 1;
+    if (await canBindLoopbackPort(candidate)) return candidate;
+  }
+  throw new Error(`未能在端口 ${preferredPort} 附近找到可用的本机端口`);
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && error.code === "EPERM");
+  }
+}
+
+function recordedServiceIsManaged(metadata, payloadRoot, stateDirectory) {
+  if (!metadata || !Number.isInteger(metadata.pid) || !Number.isInteger(metadata.port)
+      || typeof metadata.serverScript !== "string" || path.basename(metadata.serverScript).toLowerCase() !== "server.js") {
+    return false;
+  }
+  const script = path.resolve(metadata.serverScript);
+  const installedReleases = path.join(stateDirectory, "Application", "releases");
+  return isPathInside(payloadRoot, script) || isPathInside(installedReleases, script);
+}
+
+async function stopService(stateDirectory, payloadRoot = resolvePayloadRoot()) {
+  const metadataPath = path.join(stateDirectory, "control-process.json");
+  const metadata = await readJsonIfPresent(metadataPath, null);
+  if (!recordedServiceIsManaged(metadata, payloadRoot, stateDirectory)) {
+    return { stopped: false, message: "No verified portable control-service process is recorded" };
+  }
+  if (!processExists(metadata.pid)) {
+    await fsp.rm(metadataPath, { force: true });
+    return { stopped: false, message: "The recorded service process has already exited" };
+  }
+  const probe = await probeService(metadata.port);
+  if (!probe.health || (Number.isInteger(probe.health.processId) && probe.health.processId !== metadata.pid)) {
+    return { stopped: false, message: "Recorded process ownership could not be verified" };
+  }
+  process.kill(metadata.pid, "SIGTERM");
+  for (let attempt = 0; attempt < 50 && processExists(metadata.pid); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (processExists(metadata.pid)) throw new Error("已验证的旧控制服务未能在 5 秒内退出");
+  await fsp.rm(metadataPath, { force: true });
+  return { stopped: true, port: metadata.port, pid: metadata.pid };
+}
+
 async function startService(config, payloadRoot, stateDirectory) {
-  const existing = await serviceStatus(config.port);
-  if (existing.running) return { ...existing, alreadyRunning: true };
-  if (existing.error) throw new Error(existing.error);
   const paths = assertPayload(payloadRoot);
-  await configureChat(config, stateDirectory);
+  const identity = await expectedServiceIdentity(payloadRoot, stateDirectory);
+  const metadataPath = path.join(stateDirectory, "control-process.json");
+  const metadata = await readJsonIfPresent(metadataPath, null);
+  let existing = await serviceStatus(config.port, identity);
+  const recordedIsCurrent = existing.running && metadata?.port === config.port && metadata?.pid === existing.processId;
+  if (metadata && !recordedIsCurrent) {
+    await stopService(stateDirectory, payloadRoot);
+    existing = await serviceStatus(config.port, identity);
+  }
+  if (existing.running) {
+    await configureChat(config, stateDirectory, identity);
+    if (!recordedIsCurrent && Number.isInteger(existing.processId)) {
+      await writeJsonAtomic(metadataPath, {
+        pid: existing.processId,
+        serverScript: paths.controlServer,
+        port: config.port,
+        installationId: identity.installationId,
+        buildId: identity.buildId,
+        processInstanceId: existing.processInstanceId,
+        startedAt: new Date().toISOString(),
+      });
+    }
+    return { ...existing, alreadyRunning: true, port: config.port };
+  }
+  if (existing.occupied) {
+    config.port = await findAvailableLoopbackPort(config.port);
+    await saveConfig(stateDirectory, config);
+  }
+
   await fsp.mkdir(path.join(stateDirectory, "logs"), { recursive: true });
   const logPath = path.join(stateDirectory, "logs", "control.log");
   const logHandle = fs.openSync(logPath, "a");
@@ -786,6 +982,8 @@ async function startService(config, payloadRoot, stateDirectory) {
         MC_ANTIGRAVITY_CONFIG_PATH: config.antigravityConfigPath,
         MC_ANTIGRAVITY_CONVERSATION_TITLE: config.antigravityConversationTitle,
         MC_COMPANION_SECRET_HELPER: paths.secretHelper,
+        MC_COMPANION_INSTALLATION_ID: identity.installationId,
+        MC_COMPANION_BUILD_ID: identity.buildId,
       },
     });
     await new Promise((resolve, reject) => {
@@ -797,37 +995,18 @@ async function startService(config, payloadRoot, stateDirectory) {
   } finally {
     fs.closeSync(logHandle);
   }
-  await writeJsonAtomic(path.join(stateDirectory, "control-process.json"), {
+  const started = await waitForService(config.port, identity, child.pid);
+  await writeJsonAtomic(metadataPath, {
     pid: child.pid,
     serverScript: paths.controlServer,
     port: config.port,
+    installationId: identity.installationId,
+    buildId: identity.buildId,
+    processInstanceId: started.processInstanceId,
     startedAt: new Date().toISOString(),
   });
-  return { ...(await waitForService(config.port)), pid: child.pid, logPath };
-}
-
-function processExists(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return Boolean(error && error.code === "EPERM");
-  }
-}
-async function stopService(stateDirectory) {
-  const metadataPath = path.join(stateDirectory, "control-process.json");
-  const metadata = await readJsonIfPresent(metadataPath, null);
-  if (!metadata || !Number.isInteger(metadata.pid) || !Number.isInteger(metadata.port)) {
-    return { stopped: false, message: "No portable control-service process is recorded" };
-  }
-  const status = await serviceStatus(metadata.port);
-  if (!processExists(metadata.pid) || !status.running) {
-    await fsp.rm(metadataPath, { force: true });
-    return { stopped: false, message: "The recorded service process has already exited" };
-  }
-  process.kill(metadata.pid, "SIGTERM");
-  await fsp.rm(metadataPath, { force: true });
-  return { stopped: true };
+  await configureChat(config, stateDirectory, identity);
+  return { ...started, pid: child.pid, port: config.port, logPath };
 }
 function splitArguments(commandLine) {
   const args = [];
@@ -926,39 +1105,51 @@ function mergeAntigravityPermissions(existing) {
   };
 }
 
-async function installAntigravity(config, payloadRoot) {
-  const paths = assertPayload(payloadRoot);
+async function installAntigravity(config, payloadRoot, resolvePaths = assertPayload) {
+  const paths = resolvePaths(payloadRoot);
   const configPath = config.antigravityConfigPath;
   const permissionConfigPath = resolveAntigravityPermissionConfigPath(configPath);
   let existing = {};
   let backupPath = null;
   if (fs.existsSync(configPath)) {
     existing = await readJsonIfPresent(configPath, {});
-    const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
-    backupPath = `${configPath}.${stamp}.bak`;
-    await fsp.copyFile(configPath, backupPath);
   }
   const merged = mergeAntigravityConfig(existing, {
     command: paths.node,
     args: [paths.mcpStdio],
     env: { MC_COMPANION_URL: `http://127.0.0.1:${config.port}` },
   });
-  await writeJsonAtomic(configPath, merged);
+  const configChanged = JSON.stringify(existing) !== JSON.stringify(merged);
+  if (configChanged) {
+    if (fs.existsSync(configPath)) {
+      const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+      backupPath = `${configPath}.${stamp}.bak`;
+      await fsp.copyFile(configPath, backupPath);
+    }
+    await writeJsonAtomic(configPath, merged);
+  }
   let permissionBackupPath = null;
+  let permissionsChanged = false;
   if (permissionConfigPath) {
     const existingPermissions = await readJsonIfPresent(permissionConfigPath, {});
-    if (fs.existsSync(permissionConfigPath)) {
-      const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
-      permissionBackupPath = `${permissionConfigPath}.${stamp}.bak`;
-      await fsp.copyFile(permissionConfigPath, permissionBackupPath);
+    const mergedPermissions = mergeAntigravityPermissions(existingPermissions);
+    permissionsChanged = JSON.stringify(existingPermissions) !== JSON.stringify(mergedPermissions);
+    if (permissionsChanged) {
+      if (fs.existsSync(permissionConfigPath)) {
+        const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+        permissionBackupPath = `${permissionConfigPath}.${stamp}.bak`;
+        await fsp.copyFile(permissionConfigPath, permissionBackupPath);
+      }
+      await writeJsonAtomic(permissionConfigPath, mergedPermissions);
     }
-    await writeJsonAtomic(permissionConfigPath, mergeAntigravityPermissions(existingPermissions));
   }
   return {
     installed: true,
     configPath,
+    configChanged,
     backupCreated: Boolean(backupPath),
     permissionsConfigured: Boolean(permissionConfigPath),
+    permissionsChanged,
     permissionBackupCreated: Boolean(permissionBackupPath),
   };
 }
@@ -991,6 +1182,70 @@ async function bindConfiguredAntigravity(config, requestJson = httpJson, force =
     conversationTitle: status.conversationTitle || config.antigravityConversationTitle,
     personaMode: normalizePersona(config.persona).mode,
   };
+}
+
+async function withBridgeStartupLock(stateDirectory, action) {
+  const lockDirectory = path.join(stateDirectory, "bridge-startup.lock");
+  const ownerPath = path.join(lockDirectory, "owner.json");
+  const token = crypto.randomUUID();
+  await fsp.mkdir(stateDirectory, { recursive: true });
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    try {
+      await fsp.mkdir(lockDirectory);
+      await writeJsonAtomic(ownerPath, { pid: process.pid, token, createdAt: new Date().toISOString() });
+      try {
+        return await action();
+      } finally {
+        const owner = await readJsonIfPresent(ownerPath, null);
+        if (owner?.token === token) await fsp.rm(lockDirectory, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if (!error || error.code !== "EEXIST") throw error;
+      const owner = await readJsonIfPresent(ownerPath, null);
+      const stat = await fsp.stat(lockDirectory).catch(() => null);
+      const stale = owner?.pid
+        ? !processExists(owner.pid)
+        : Boolean(stat && Date.now() - stat.mtimeMs > 30_000);
+      if (stale) {
+        await fsp.rm(lockDirectory, { recursive: true, force: true });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw new Error("另一个 Companion 启动进程长时间占用桥接协调锁");
+}
+
+async function reconcileRuntimeBridgeUnlocked(config, payloadRoot, stateDirectory) {
+  const service = await startService(config, payloadRoot, stateDirectory);
+  const bridgeConfigPath = await configureBridge(config, stateDirectory);
+  const antigravityInstallation = config.chatTarget === "antigravity-mcp"
+    ? await installAntigravity(config, payloadRoot)
+    : { installed: false, skipped: true };
+  const antigravity = await bindConfiguredAntigravity(config);
+  return { service, bridgeConfigPath, antigravityInstallation, antigravity, port: config.port };
+}
+
+async function reconcileRuntimeBridge(config, payloadRoot, stateDirectory) {
+  return withBridgeStartupLock(
+    stateDirectory,
+    () => reconcileRuntimeBridgeUnlocked(config, payloadRoot, stateDirectory),
+  );
+}
+
+async function runtimeBridgeHealthy(config, payloadRoot, stateDirectory, requestJson = httpJson) {
+  const identity = await expectedServiceIdentity(payloadRoot, stateDirectory);
+  const service = await serviceStatus(config.port, identity);
+  if (!service.running || !service.identityVerified) return false;
+  if (config.chatTarget !== "antigravity-mcp") return true;
+  try {
+    const antigravity = await requestJson(`http://127.0.0.1:${config.port}/api/antigravity/status`, {
+      timeout: 2_000,
+    });
+    return antigravity?.connected === true;
+  } catch {
+    return false;
+  }
 }
 
 async function picker(payloadRoot, kind, currentPath) {
@@ -1042,7 +1297,19 @@ function openUrl(url) {
 function createApiContext(options = {}) {
   const payloadRoot = options.payloadRoot || resolvePayloadRoot();
   const stateDirectory = options.stateDirectory || resolveStateDirectory();
-  return { payloadRoot, stateDirectory, operation: null, events: [] };
+  return {
+    payloadRoot,
+    stateDirectory,
+    operation: null,
+    events: [],
+    closing: false,
+    autoBridgePaused: false,
+    autoBridge: { state: "idle", attempt: 0, error: null },
+    autoBridgePromise: null,
+    autoBridgeMonitorMs: options.autoBridgeMonitorMs || 5_000,
+    reconcileBridge: options.reconcileBridge || reconcileRuntimeBridge,
+    bridgeHealthy: options.bridgeHealthy || runtimeBridgeHealthy,
+  };
 }
 
 function addEvent(context, level, message) {
@@ -1050,10 +1317,136 @@ function addEvent(context, level, message) {
   if (context.events.length > 80) context.events.shift();
 }
 
+function waitUnref(milliseconds) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, milliseconds);
+    timer.unref();
+  });
+}
+
+async function waitForAutomaticBridge(context, milliseconds) {
+  const deadline = Date.now() + milliseconds;
+  while (!context.closing && !context.autoBridgePaused && Date.now() < deadline) {
+    await waitUnref(Math.min(250, Math.max(1, deadline - Date.now())));
+  }
+}
+
+function beginAutomaticBridge(context) {
+  if (context.closing || context.autoBridgePaused || context.autoBridgePromise) return context.autoBridgePromise;
+  context.autoBridge = { state: "starting", attempt: 0, error: null };
+  context.autoBridgePromise = (async () => {
+    let attempt = 0;
+    let lastError = "";
+    let healthyConfig = null;
+    while (!context.closing && !context.autoBridgePaused) {
+      if (context.operation) {
+        await waitUnref(500);
+        continue;
+      }
+      const saved = await loadConfig(context.stateDirectory);
+      let config;
+      try {
+        config = validateRuntimeConfig(saved);
+      } catch (error) {
+        context.autoBridge = {
+          state: "setup-required",
+          attempt,
+          error: error instanceof Error ? error.message : String(error),
+        };
+        healthyConfig = null;
+        await waitForAutomaticBridge(context, 1_000);
+        continue;
+      }
+
+      const configFingerprint = JSON.stringify(config);
+      if (healthyConfig === configFingerprint) {
+        try {
+          if (await context.bridgeHealthy(config, context.payloadRoot, context.stateDirectory)) {
+            context.autoBridge = {
+              ...context.autoBridge,
+              state: "ready",
+              error: null,
+              port: config.port,
+            };
+            await waitForAutomaticBridge(context, context.autoBridgeMonitorMs);
+            continue;
+          }
+        } catch {
+          // Reconciliation below owns diagnostics and retry policy.
+        }
+        healthyConfig = null;
+      }
+
+      attempt += 1;
+      context.operation = "自动连接 Minecraft 与反重力";
+      context.autoBridge = { state: "connecting", attempt, error: null };
+      try {
+        const result = await context.reconcileBridge(config, context.payloadRoot, context.stateDirectory);
+        healthyConfig = JSON.stringify(config);
+        context.autoBridge = {
+          state: "ready",
+          attempt,
+          error: null,
+          port: result.port,
+          antigravityConnected: Boolean(result.antigravity.connected),
+        };
+        addEvent(context, "success", `自动桥接已就绪，控制服务端口 ${result.port}`);
+        lastError = "";
+      } catch (error) {
+        healthyConfig = null;
+        const message = error instanceof Error ? error.message : String(error);
+        context.autoBridge = { state: "retrying", attempt, error: message };
+        if (message !== lastError) addEvent(context, "warning", `自动桥接等待重试：${message}`);
+        lastError = message;
+      } finally {
+        if (context.operation === "自动连接 Minecraft 与反重力") context.operation = null;
+      }
+      const delay = healthyConfig === null
+        ? Math.min(15_000, 1_000 * (2 ** Math.min(attempt, 4)))
+        : context.autoBridgeMonitorMs;
+      await waitForAutomaticBridge(context, delay);
+    }
+    return null;
+  })().finally(() => {
+    context.autoBridgePromise = null;
+  });
+  return context.autoBridgePromise;
+}
+
+async function pauseAutomaticBridge(context) {
+  context.autoBridgePaused = true;
+  const pending = context.autoBridgePromise;
+  if (pending) await pending.catch(() => undefined);
+}
+
+function resumeAutomaticBridge(context) {
+  context.autoBridgePaused = false;
+  return beginAutomaticBridge(context);
+}
+
 async function bootstrap(context) {
   const config = await loadConfig(context.stateDirectory);
   let payload = { valid: true };
   try { assertPayload(context.payloadRoot); } catch (error) { payload = { valid: false, error: error.message }; }
+  let service = { running: false, occupied: false };
+  if (payload.valid) {
+    try {
+      const identity = await expectedServiceIdentity(context.payloadRoot, context.stateDirectory);
+      service = await serviceStatus(validatePort(config.port || DEFAULT_PORT), identity);
+    } catch (error) {
+      service = { running: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  let antigravity = { connected: false };
+  if (service.running && config.chatTarget === "antigravity-mcp") {
+    try {
+      antigravity = await httpJson(`http://127.0.0.1:${config.port}/api/antigravity/status`, { timeout: 1500 });
+    } catch (error) {
+      antigravity = { connected: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  const minecraftBridge = classifyMinecraftBridge(service);
+  const serviceVerified = Boolean(service.running && service.identityVerified);
   return {
     appName: APP_NAME,
     config,
@@ -1061,7 +1454,16 @@ async function bootstrap(context) {
     skin: { customAvailable: fs.existsSync(importedSkinPath(context.stateDirectory)) },
     payload,
     instances: await listInstances(config.minecraftRoot),
-    service: await serviceStatus(validatePort(config.port || DEFAULT_PORT)),
+    service,
+    readiness: {
+      serviceVerified,
+      minecraftConnected: serviceVerified && minecraftBridge.connected,
+      antigravityBound: config.chatTarget !== "antigravity-mcp" || Boolean(antigravity.connected),
+      tRoundTripVerified: serviceVerified && minecraftBridge.tRoundTripVerified,
+      minecraftBridge,
+    },
+    antigravity,
+    autoBridge: context.autoBridge,
     prompt: companionPrompt(),
     operation: context.operation,
     events: context.events,
@@ -1115,6 +1517,15 @@ async function withOperation(context, name, action) {
   }
 }
 
+async function withAutomaticBridgeSuspended(context, name, action) {
+  await pauseAutomaticBridge(context);
+  try {
+    return await withOperation(context, name, action);
+  } finally {
+    if (!context.closing) void resumeAutomaticBridge(context);
+  }
+}
+
 async function handleApi(request, response, context, pathname) {
   if (request.method === "GET" && pathname === "/api/bootstrap") return sendJson(response, 200, await bootstrap(context));
   if (request.method === "GET" && pathname === "/api/skin-preview") {
@@ -1155,16 +1566,19 @@ async function handleApi(request, response, context, pathname) {
     const markerPath = path.join(config.minecraftRoot, "versions", config.targetVersion, "CODEX-CLONE.json");
     if (fs.existsSync(markerPath)) await configureBridge(config, context.stateDirectory);
     addEvent(context, "success", "配置已保存到本机状态目录");
+    void resumeAutomaticBridge(context);
     return sendJson(response, 200, { config, instances: await listInstances(config.minecraftRoot) });
   }
   if (pathname === "/api/service/stop") {
-    const result = await withOperation(context, "停止控制服务", () => stopService(context.stateDirectory));
+    await pauseAutomaticBridge(context);
+    const result = await withOperation(context, "停止控制服务", () => stopService(context.stateDirectory, context.payloadRoot));
     return sendJson(response, 200, result);
   }
   const saved = await loadConfig(context.stateDirectory);
   if (pathname === "/api/dashboard/open") {
     const port = validatePort(saved.port);
-    const status = await serviceStatus(port);
+    const identity = await expectedServiceIdentity(context.payloadRoot, context.stateDirectory);
+    const status = await serviceStatus(port, identity);
     if (!status.running) throw new Error("请先启动控制服务");
     openUrl(`http://127.0.0.1:${port}/`);
     return sendJson(response, 200, { opened: true });
@@ -1175,7 +1589,11 @@ async function handleApi(request, response, context, pathname) {
     return sendJson(response, 200, result);
   }
   if (pathname === "/api/service/start") {
-    const result = await withOperation(context, "启动控制服务", () => startService(config, context.payloadRoot, context.stateDirectory));
+    const result = await withAutomaticBridgeSuspended(
+      context,
+      "启动并同步桥接",
+      () => reconcileRuntimeBridge(config, context.payloadRoot, context.stateDirectory),
+    );
     return sendJson(response, 200, result);
   }
   if (pathname === "/api/launcher/start") return sendJson(response, 200, launchGame(config));
@@ -1188,31 +1606,39 @@ async function handleApi(request, response, context, pathname) {
     return sendJson(response, 200, result);
   }
   if (pathname === "/api/antigravity/bind") {
-    await startService(config, context.payloadRoot, context.stateDirectory);
-    const result = await bindConfiguredAntigravity(config, httpJson, true);
+    const runtime = await withAutomaticBridgeSuspended(
+      context,
+      "连接并绑定反重力",
+      () => reconcileRuntimeBridge(config, context.payloadRoot, context.stateDirectory),
+    );
+    const result = config.chatTarget === "antigravity-mcp"
+      ? runtime.antigravity
+      : await bindConfiguredAntigravity(config, httpJson, true);
     addEvent(context, "success", `已按标题精确绑定反重力会话“${config.antigravityConversationTitle}”`);
     return sendJson(response, 200, result);
   }
   if (pathname === "/api/antigravity/recover") {
-    await startService(config, context.payloadRoot, context.stateDirectory);
-    const result = await httpJson(`http://127.0.0.1:${config.port}/api/antigravity/recover`, {
-      method: "POST",
-      body: {},
-      timeout: 30_000,
+    const result = await withAutomaticBridgeSuspended(context, "恢复反重力会话", async () => {
+      await reconcileRuntimeBridge(config, context.payloadRoot, context.stateDirectory);
+      return httpJson(`http://127.0.0.1:${config.port}/api/antigravity/recover`, {
+        method: "POST",
+        body: {},
+        timeout: 30_000,
+      });
     });
     addEvent(context, "success", "已解除绑定反重力会话的假忙状态");
     return sendJson(response, 200, result);
   }
   if (pathname === "/api/prepare") {
-    const result = await withOperation(context, "一键准备并启动", async () => {
+    const result = await withAutomaticBridgeSuspended(context, "一键准备并启动", async () => {
       const installation = await installOrUpdate(config, context.payloadRoot, context.stateDirectory);
-      const service = await startService(config, context.payloadRoot, context.stateDirectory);
-      const antigravity = await bindConfiguredAntigravity(config);
+      const runtime = await reconcileRuntimeBridge(config, context.payloadRoot, context.stateDirectory);
+      const { service, antigravity } = runtime;
       if (antigravity.connected) {
         addEvent(context, "success", `已恢复反重力会话“${antigravity.conversationTitle}”`);
       }
       const launcher = launchGame(config);
-      return { installation, service, antigravity, launcher };
+      return { installation, ...runtime, launcher };
     });
     return sendJson(response, 200, result);
   }
@@ -1267,6 +1693,8 @@ function createServer(options = {}) {
     }
   });
   context.closeApp = () => {
+    context.closing = true;
+    context.autoBridgePaused = true;
     setTimeout(() => server.close(() => process.exit(0)), 80).unref();
   };
   return { server, sessionToken, context };
@@ -1304,6 +1732,7 @@ async function main() {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
+  void beginAutomaticBridge(context);
   const address = server.address();
   const endpoint = `http://127.0.0.1:${address.port}`;
   const url = `${endpoint}/?session=${sessionToken}`;
@@ -1323,7 +1752,11 @@ async function main() {
 }
 
 module.exports = {
+  beginAutomaticBridge,
   bindConfiguredAntigravity,
+  bridgeTokenFingerprint,
+  classifyMinecraftBridge,
+  classifyServiceHealth,
   companionPrompt,
   configureBridge,
   createApiContext,
@@ -1332,6 +1765,8 @@ module.exports = {
   discoverAntigravityConfigPath,
   discoverHmclLauncherPath,
   discoverMinecraftRoot,
+  findAvailableLoopbackPort,
+  getOrCreateInstallationId,
   installAntigravity,
   isPathInside,
   listInstances,
@@ -1343,6 +1778,8 @@ module.exports = {
   resolveAntigravityPermissionConfigPath,
   resolvePayloadRoot,
   resolveStateDirectory,
+  recordedServiceIsManaged,
+  runtimeBridgeHealthy,
   saveConfig,
   splitArguments,
   validateRuntimeConfig,
@@ -1350,6 +1787,7 @@ module.exports = {
   validateCompanionName,
   validateNpcSkin,
   validateVersionName,
+  withBridgeStartupLock,
 };
 
 if (require.main === module) {

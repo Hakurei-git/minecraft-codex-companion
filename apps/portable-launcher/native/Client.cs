@@ -964,7 +964,10 @@ namespace MinecraftCodexCompanion
             payloadStatus.Text = valid ? "便携运行时完整 · 原生客户端" : JsonValue.String(payload, "error");
             stateDirectory.Text = "状态目录：" + JsonValue.String(data, "stateDirectory");
             promptBox.Text = JsonValue.String(data, "prompt");
-            UpdateService(JsonValue.Object(data, "service"));
+            UpdateService(
+                JsonValue.Object(data, "service"),
+                JsonValue.Object(data, "readiness")
+            );
             RenderEvents(JsonValue.Array(data, "events"));
             string operation = JsonValue.String(data, "operation");
             if (!busy) operationStatus.Text = String.IsNullOrWhiteSpace(operation) ? "就绪" : operation;
@@ -1266,19 +1269,56 @@ namespace MinecraftCodexCompanion
             }
         }
 
-        private void UpdateService(Dictionary<string, object> service)
+        private void UpdateService(
+            Dictionary<string, object> service,
+            Dictionary<string, object> readiness
+        )
         {
             bool running = JsonValue.Boolean(service, "running", false);
-            int companions = JsonValue.Integer(service, "companions", 0);
-            int connected = JsonValue.Integer(service, "connectedCompanions", 0);
+            bool serviceVerified = JsonValue.Boolean(readiness, "serviceVerified", false);
+            bool minecraftConnected = JsonValue.Boolean(readiness, "minecraftConnected", false);
+            bool antigravityBound = JsonValue.Boolean(readiness, "antigravityBound", false);
+            bool tRoundTripVerified = JsonValue.Boolean(readiness, "tRoundTripVerified", false);
             string error = JsonValue.String(service, "error");
-            serviceStatus.Running = running && connected > 0;
+            bool complete = serviceVerified && minecraftConnected && antigravityBound && tRoundTripVerified;
+            serviceStatus.Running = complete;
             serviceStatus.StatusText = running
-                ? connected > 0
-                    ? "服务已启动 · NPC " + connected + "/" + companions + " 在线"
-                    : "服务已启动 · NPC 未连接"
-                : String.IsNullOrWhiteSpace(error) ? "服务未启动" : error;
+                ? "服务" + StatusMark(serviceVerified)
+                    + " MC" + StatusMark(minecraftConnected)
+                    + " 反重力" + StatusMark(antigravityBound)
+                    + " T" + (tRoundTripVerified ? "✓" : "待验")
+                : String.IsNullOrWhiteSpace(error) ? "服务未启动" : "服务身份未通过";
+
+            Dictionary<string, object> bridge = JsonValue.Object(readiness, "minecraftBridge");
+            string requiredVersion = JsonValue.String(bridge, "requiredVersion");
+            List<string> reportedVersions = new List<string>();
+            foreach (object value in JsonValue.Array(bridge, "reportedVersions"))
+            {
+                string version = Convert.ToString(value);
+                if (!String.IsNullOrWhiteSpace(version)) reportedVersions.Add(version);
+            }
+            string versionDetail = reportedVersions.Count == 0
+                ? "未检测到模组版本"
+                : "已连接模组 " + String.Join(", ", reportedVersions.ToArray());
+            hints.SetToolTip(
+                serviceStatus,
+                "服务身份：" + StateText(serviceVerified)
+                    + "\r\nMinecraft：" + StateText(minecraftConnected)
+                    + (String.IsNullOrWhiteSpace(requiredVersion) ? String.Empty : "（需要 " + requiredVersion + "；" + versionDetail + "）")
+                    + "\r\n反重力会话：" + StateText(antigravityBound)
+                    + "\r\n本次进程 T 往返：" + StateText(tRoundTripVerified)
+            );
             connectionAddress.Text = "控制服务：http://127.0.0.1:" + port.Value + "/";
+        }
+
+        private static string StatusMark(bool value)
+        {
+            return value ? "✓" : "×";
+        }
+
+        private static string StateText(bool value)
+        {
+            return value ? "已验证" : "未验证";
         }
 
         private void RenderEvents(object[] events)

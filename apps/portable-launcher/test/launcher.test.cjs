@@ -7,13 +7,20 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
+  beginAutomaticBridge,
   bindConfiguredAntigravity,
+  bridgeTokenFingerprint,
+  classifyMinecraftBridge,
+  classifyServiceHealth,
   companionPrompt,
   configureBridge,
+  createApiContext,
   defaultConfig,
   discoverAntigravityConfigPath,
   discoverHmclLauncherPath,
   discoverMinecraftRoot,
+  getOrCreateInstallationId,
+  installAntigravity,
   isPathInside,
   listInstances,
   loadConfig,
@@ -22,6 +29,7 @@ const {
   normalizeConfig,
   normalizePersona,
   resolveAntigravityPermissionConfigPath,
+  recordedServiceIsManaged,
   saveConfig,
   splitArguments,
   validateCompanionName,
@@ -29,6 +37,7 @@ const {
   validateRuntimeConfig,
   validateAntigravityConversationTitle,
   validateVersionName,
+  withBridgeStartupLock,
 } = require("../src/launcher.cjs");
 const { installClone, parseJavaTasklist, updateClone } = require("../src/instance-manager.cjs");
 
@@ -43,6 +52,14 @@ async function fixture() {
 
 async function removeFixture(root) {
   await fsp.rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
+}
+
+async function waitFor(check, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for launcher state");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 test("defaults are derived from the target environment", () => {
@@ -174,6 +191,188 @@ test("normalization ignores secrets and unknown fields", () => {
     { actionMode: "smart", tokenBudget: 4096 },
   );
   assert.equal(normalizeConfig({ actionMode: "hybrid" }).actionMode, "smart");
+});
+
+test("service identity rejects every legacy or mismatched control service", () => {
+  const expected = {
+    serviceProtocolVersion: 2,
+    installationId: "11111111-1111-4111-8111-111111111111",
+    buildId: "build-current",
+    bridgeTokenFingerprint: "0123456789abcdef",
+  };
+  const exact = {
+    ok: true,
+    service: "minecraft-codex-companion",
+    ...expected,
+    processId: 42,
+    processInstanceId: "22222222-2222-4222-8222-222222222222",
+    companions: 1,
+    connectedCompanions: 1,
+  };
+
+  assert.equal(classifyServiceHealth(exact, expected).running, true);
+  assert.equal(classifyServiceHealth(exact, expected).identityVerified, true);
+  assert.equal(classifyServiceHealth({ companions: 1, connectedCompanions: 1 }, expected).running, false);
+  assert.equal(classifyServiceHealth({ ...exact, buildId: "build-old" }, expected).running, false);
+  assert.equal(classifyServiceHealth({ ...exact, installationId: "33333333-3333-4333-8333-333333333333" }, expected).running, false);
+  assert.equal(classifyServiceHealth({ ...exact, bridgeTokenFingerprint: "fedcba9876543210" }, expected).running, false);
+});
+
+test("Minecraft readiness requires the packaged bridge version and a real T delivery acknowledgement", () => {
+  const connection = {
+    companionId: "codex-forge",
+    backend: "forge-1.20.1",
+    bridgeVersion: "0.2.3",
+    connected: true,
+    tRoundTripVerified: true,
+    lastIncomingChatAt: "2026-08-15T01:00:00.000Z",
+    lastDeliveredChatAt: "2026-08-15T01:00:01.000Z",
+    lastRoundTripAt: "2026-08-15T01:00:01.000Z",
+  };
+  const current = classifyMinecraftBridge({
+    minecraftBridge: { bridgeVersions: ["0.2.3"], connections: [connection] },
+  });
+  assert.equal(current.connected, true);
+  assert.equal(current.tRoundTripVerified, true);
+  assert.equal(current.lastRoundTripAt, "2026-08-15T01:00:01.000Z");
+
+  const old = classifyMinecraftBridge({
+    minecraftBridge: {
+      bridgeVersions: ["0.2.2"],
+      connections: [{ ...connection, bridgeVersion: "0.2.2" }],
+    },
+  });
+  assert.equal(old.connected, false);
+  assert.equal(old.tRoundTripVerified, false);
+
+  const unacknowledged = classifyMinecraftBridge({
+    minecraftBridge: {
+      bridgeVersions: ["0.2.3"],
+      connections: [{ ...connection, tRoundTripVerified: false }],
+    },
+  });
+  assert.equal(unacknowledged.connected, true);
+  assert.equal(unacknowledged.tRoundTripVerified, false);
+});
+
+test("installation identity persists while health exposes only a token fingerprint", async (t) => {
+  const files = await fixture();
+  t.after(() => removeFixture(files.root));
+  const state = path.join(files.root, "state");
+
+  const first = await getOrCreateInstallationId(state);
+  const second = await getOrCreateInstallationId(state);
+  const token = "0123456789abcdef0123456789abcdef";
+
+  assert.equal(second, first);
+  assert.match(first, /^[0-9a-f-]{36}$/u);
+  assert.match(bridgeTokenFingerprint(token), /^[0-9a-f]{16}$/u);
+  assert.notEqual(bridgeTokenFingerprint(token), token);
+});
+
+test("recorded service ownership is limited to the payload or installed release directory", async (t) => {
+  const files = await fixture();
+  t.after(() => removeFixture(files.root));
+  const state = path.join(files.root, "state");
+  const payload = path.join(files.root, "payload");
+  const inPayload = path.join(payload, "apps", "control-plane", "dist", "server.js");
+  const inRelease = path.join(state, "Application", "releases", "release-id", "apps", "control-plane", "dist", "server.js");
+  const outside = path.join(files.root, "unrelated", "server.js");
+  const metadata = (serverScript) => ({ pid: 123, port: 8765, serverScript });
+
+  assert.equal(recordedServiceIsManaged(metadata(inPayload), payload, state), true);
+  assert.equal(recordedServiceIsManaged(metadata(inRelease), payload, state), true);
+  assert.equal(recordedServiceIsManaged(metadata(outside), payload, state), false);
+  assert.equal(recordedServiceIsManaged({ pid: 123, port: 8765, serverScript: "other.js" }, payload, state), false);
+});
+
+test("bridge startup lock serializes concurrent EXE startup reconciliation", async (t) => {
+  const files = await fixture();
+  t.after(() => removeFixture(files.root));
+  const state = path.join(files.root, "state");
+  let active = 0;
+  let maximum = 0;
+  let completed = 0;
+
+  await Promise.all([0, 1, 2].map(() => withBridgeStartupLock(state, async () => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    active -= 1;
+    completed += 1;
+  })));
+
+  assert.equal(maximum, 1);
+  assert.equal(completed, 3);
+  assert.equal(fs.existsSync(path.join(state, "bridge-startup.lock")), false);
+});
+
+test("automatic bridge survives setup-required state and monitors without duplicate reconciliation", async (t) => {
+  const files = await fixture();
+  const state = path.join(files.root, "state");
+  t.after(() => removeFixture(files.root));
+  let reconciliations = 0;
+  let healthChecks = 0;
+  const context = createApiContext({
+    payloadRoot: files.root,
+    stateDirectory: state,
+    autoBridgeMonitorMs: 25,
+    reconcileBridge: async (config) => {
+      reconciliations += 1;
+      return {
+        port: config.port,
+        service: { running: true, identityVerified: true },
+        antigravity: { connected: true },
+      };
+    },
+    bridgeHealthy: async () => {
+      healthChecks += 1;
+      return true;
+    },
+  });
+  const automatic = beginAutomaticBridge(context);
+  await waitFor(() => context.autoBridge.state === "setup-required");
+
+  await saveConfig(state, {
+    launcherPath: files.launcherPath,
+    minecraftRoot: files.minecraftRoot,
+    sourceVersion: "Forge-1.20.1",
+    targetVersion: "Forge-1.20.1-Codex",
+    playerName: "LocalPlayer",
+    companionName: "Companion",
+    port: 18765,
+    chatTarget: "active-provider",
+    antigravityConfigPath: path.join(files.root, "antigravity.json"),
+    antigravityConversationTitle: "Existing Conversation",
+  });
+  await waitFor(() => context.autoBridge.state === "ready" && healthChecks > 0, 3_000);
+  assert.equal(reconciliations, 1);
+  assert.ok(healthChecks > 0);
+
+  context.autoBridgePaused = true;
+  await automatic;
+  assert.equal(context.autoBridgePromise, null);
+});
+
+test("Antigravity MCP installation is idempotent and does not create repeat backups", async (t) => {
+  const files = await fixture();
+  t.after(() => removeFixture(files.root));
+  const configPath = path.join(files.root, "agent", "mcp_config.json");
+  const config = normalizeConfig({
+    port: 18765,
+    antigravityConfigPath: configPath,
+  });
+  const payloadRoot = path.resolve(__dirname, "../../..");
+  const fixturePaths = () => ({ node: "runtime-node.exe", mcpStdio: "mcp-stdio.js" });
+
+  const first = await installAntigravity(config, payloadRoot, fixturePaths);
+  const second = await installAntigravity(config, payloadRoot, fixturePaths);
+
+  assert.equal(first.configChanged, true);
+  assert.equal(first.backupCreated, false);
+  assert.equal(second.configChanged, false);
+  assert.equal(second.backupCreated, false);
+  assert.deepEqual((await fsp.readdir(path.dirname(configPath))).filter((name) => name.endsWith(".bak")), []);
 });
 
 test("persona normalization keeps bounded public fields only", () => {

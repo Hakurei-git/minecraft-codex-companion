@@ -18,8 +18,12 @@ import java.util.UUID;
 
 @Mod.EventBusSubscriber(modid = MinecraftCodexBridge.MOD_ID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class ClientBridgeEvents {
-    private static final BridgeClient CLIENT = new BridgeClient(BridgeConfig.load(), ForgeNpcActor::new);
+    private static final int CONFIG_RELOAD_INTERVAL_TICKS = 20;
+    private static final BridgeConfig CONFIG = BridgeConfig.load();
+    private static final BridgeClient CLIENT = new BridgeClient(CONFIG, ForgeNpcActor::new);
+    private static final BridgeConfigWatcher CONFIG_WATCHER = new BridgeConfigWatcher(BridgeConfig.path());
     private static final BackgroundPauseLease BACKGROUND_PAUSE_LEASE = new BackgroundPauseLease();
+    private static int configReloadTicks;
 
     private ClientBridgeEvents() {
     }
@@ -39,6 +43,10 @@ public final class ClientBridgeEvents {
     @SubscribeEvent
     public static void onTick(TickEvent.ClientTickEvent event) {
         if (event.phase == TickEvent.Phase.END) {
+            if (++configReloadTicks >= CONFIG_RELOAD_INTERVAL_TICKS) {
+                configReloadTicks = 0;
+                CONFIG_WATCHER.changedConfiguration(CLIENT.config()).ifPresent(CLIENT::applyConfig);
+            }
             keepSingleplayerTasksRunning();
             CLIENT.tick();
         }

@@ -47,6 +47,7 @@ function hello(token = TOKEN) {
       backend: "forge-1.20.1" as const,
       gameVersion: "1.20.1",
       loader: "Forge 47.4.21",
+      bridgeVersion: "0.2.3",
       capabilities: ["chat", "observe", "move", "follow", "combat", "gather", "farm", "storage"] as const,
       snapshot: snapshot(),
     },
@@ -226,6 +227,72 @@ describe("BridgeManager", () => {
     }));
     await delivery;
     expect(settled).toBe(true);
+  });
+
+  it("verifies a T round trip only after one connection receives chat and acknowledges its reply", async () => {
+    const service = new ControlService();
+    const manager = new BridgeManager({
+      service,
+      token: TOKEN,
+      onChat: async (message) => {
+        await service.sendChat(message.companionId, "bridge telemetry reply", "test");
+        return true;
+      },
+    });
+    const socket = await connect(manager);
+    socket.send(JSON.stringify(hello()));
+    await waitFor(() => service.listCompanions().length === 1);
+
+    expect(manager.readiness()).toMatchObject({
+      connectedCompanions: 1,
+      bridgeVersions: ["0.2.3"],
+      tRoundTripVerified: false,
+    });
+
+    const commandPromise = nextJson(socket);
+    socket.send(JSON.stringify({
+      type: "chat",
+      companionId: "codex-forge",
+      messageId: "11111111-1111-4111-8111-111111111111",
+      sender: "PlayerOne",
+      message: "private T telemetry fixture",
+      at: new Date().toISOString(),
+    } satisfies BridgeMessage));
+    const command = await commandPromise;
+    expect(command).toMatchObject({ type: "chat", message: "bridge telemetry reply" });
+    expect(manager.readiness()).toMatchObject({
+      tRoundTripVerified: false,
+      connections: [{ incomingChatCount: 1, deliveredChatCount: 0 }],
+    });
+
+    socket.send(JSON.stringify({
+      type: "chat-delivered",
+      companionId: "codex-forge",
+      deliveryId: command.deliveryId,
+    }));
+    await waitFor(() => manager.readiness().tRoundTripVerified);
+    const verified = manager.readiness();
+    expect(verified).toMatchObject({
+      tRoundTripVerified: true,
+      connections: [{
+        incomingChatCount: 1,
+        deliveredChatCount: 1,
+        roundTripCount: 1,
+        tRoundTripVerified: true,
+      }],
+    });
+    expect(JSON.stringify(verified)).not.toContain("private T telemetry fixture");
+    expect(JSON.stringify(verified)).not.toContain("bridge telemetry reply");
+
+    const replacement = await connect(manager);
+    replacement.send(JSON.stringify(hello()));
+    await waitFor(() => !manager.readiness().tRoundTripVerified);
+    expect(manager.readiness()).toMatchObject({
+      connectedCompanions: 1,
+      bridgeVersions: ["0.2.3"],
+      tRoundTripVerified: false,
+      connections: [{ incomingChatCount: 0, deliveredChatCount: 0, roundTripCount: 0 }],
+    });
   });
 
   it("preserves a structured Forge task failure code", async () => {

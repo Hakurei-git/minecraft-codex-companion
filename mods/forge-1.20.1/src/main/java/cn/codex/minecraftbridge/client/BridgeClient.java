@@ -36,8 +36,9 @@ public final class BridgeClient {
     private final BoundedMessageOutbox<JsonObject> chatOutbox = new BoundedMessageOutbox<>(MAX_CHAT_OUTBOX);
     private volatile BridgeChannel socket;
     private volatile BridgeChannel announcedSocket;
-    private volatile boolean connecting;
+    private volatile long connectingGeneration = -1;
     private volatile boolean sessionActive;
+    private volatile long configurationGeneration;
     private volatile long connectionAttempts;
     private volatile String lastConnectionFailureCategory = "none";
     private long ticks;
@@ -55,6 +56,24 @@ public final class BridgeClient {
 
     public BridgeConfig config() {
         return config;
+    }
+
+    void applyConfig(BridgeConfig updated) {
+        if (updated == null || !updated.isReady() || config.sameValues(updated)) return;
+        boolean reconnect = config.connectionSettingsDiffer(updated);
+        config.applyFrom(updated);
+        if (!reconnect) return;
+
+        configurationGeneration++;
+        connectingGeneration = -1;
+        reconnectAfterTick = ticks;
+        BridgeChannel current = socket;
+        socket = null;
+        announcedSocket = null;
+        if (current != null) {
+            actor.connectionLost();
+            current.sendClose(1000, "bridge configuration changed");
+        }
     }
 
     public void onLogin() {
@@ -78,7 +97,8 @@ public final class BridgeClient {
         if (minecraft.player == null || minecraft.level == null) return;
         actor.tick(minecraft);
         if (!actor.ready(minecraft)) return;
-        if (sessionActive && !isConnected() && !connecting && config.autoReconnect && config.isReady() && ticks >= reconnectAfterTick) connect();
+        if (sessionActive && !isConnected() && connectingGeneration < 0
+            && config.autoReconnect && config.isReady() && ticks >= reconnectAfterTick) connect();
         if (!isConnected()) return;
         if (ticks % config.snapshotIntervalTicks == 0) sendSnapshot(minecraft);
         if (ticks - lastHeartbeatTick >= 100) {
@@ -104,26 +124,32 @@ public final class BridgeClient {
     }
 
     private void connect() {
-        connecting = true;
+        long generation = configurationGeneration;
+        connectingGeneration = generation;
         connectionAttempts++;
-        connectWithBlockingLoopback();
+        connectWithBlockingLoopback(generation, config.serverUrl);
     }
 
-    private void connectWithBlockingLoopback() {
+    private void connectWithBlockingLoopback(long generation, String serverUrl) {
         try {
             LoopbackWebSocketClient.connect(
-                URI.create(config.serverUrl),
+                URI.create(serverUrl),
                 Duration.ofSeconds(5),
-                new BlockingListener()
+                new BlockingListener(generation)
             ).whenComplete((connected, error) -> {
-                connecting = false;
+                if (connectingGeneration == generation) connectingGeneration = -1;
+                if (generation != configurationGeneration) {
+                    if (connected != null) connected.sendClose(1000, "stale bridge configuration");
+                    return;
+                }
                 if (error != null) {
                     lastConnectionFailureCategory = connectionFailureCategory(error);
                     scheduleReconnect(null);
                 }
             });
         } catch (RuntimeException error) {
-            connecting = false;
+            if (connectingGeneration == generation) connectingGeneration = -1;
+            if (generation != configurationGeneration) return;
             lastConnectionFailureCategory = connectionFailureCategory(error);
             scheduleReconnect(null);
         }
@@ -143,6 +169,7 @@ public final class BridgeClient {
         companion.addProperty("backend", config.backend());
         companion.addProperty("gameVersion", config.gameVersion());
         companion.addProperty("loader", config.loader());
+        companion.addProperty("bridgeVersion", bridgeVersion());
         JsonArray capabilities = new JsonArray();
         CAPABILITIES.forEach(capabilities::add);
         companion.add("capabilities", capabilities);
@@ -159,6 +186,11 @@ public final class BridgeClient {
             flushChatOutbox(connection);
             flushTerminalOutbox(connection);
         });
+    }
+
+    private static String bridgeVersion() {
+        String version = BridgeClient.class.getPackage().getImplementationVersion();
+        return version == null || version.isBlank() ? "development" : version;
     }
 
     private void sendSnapshot(Minecraft minecraft) {
@@ -321,14 +353,20 @@ public final class BridgeClient {
     }
 
     private final class BlockingListener implements LoopbackWebSocketClient.Listener {
+        private final long generation;
+
+        private BlockingListener(long generation) {
+            this.generation = generation;
+        }
+
         @Override
         public void onOpen(BridgeChannel channel) {
-            handleOpen(channel);
+            handleOpen(channel, generation);
         }
 
         @Override
         public void onText(BridgeChannel channel, String message) {
-            if (socket != channel || !sessionActive) return;
+            if (generation != configurationGeneration || socket != channel || !sessionActive) return;
             try {
                 handleCommand(channel, message);
             } catch (RuntimeException ignored) {
@@ -337,22 +375,22 @@ public final class BridgeClient {
 
         @Override
         public void onClose(BridgeChannel channel, int statusCode, String reason) {
-            if (socket != channel) return;
+            if (generation != configurationGeneration || socket != channel) return;
             actor.connectionLost();
             scheduleReconnect(channel);
         }
 
         @Override
         public void onError(BridgeChannel channel, Throwable error) {
-            if (socket != channel) return;
+            if (generation != configurationGeneration || socket != channel) return;
             actor.connectionLost();
             scheduleReconnect(channel);
         }
     }
 
-    private void handleOpen(BridgeChannel connection) {
-        if (!sessionActive) {
-            connection.sendClose(1000, "session closed");
+    private void handleOpen(BridgeChannel connection, long generation) {
+        if (!sessionActive || generation != configurationGeneration) {
+            connection.sendClose(1000, generation == configurationGeneration ? "session closed" : "stale bridge configuration");
             return;
         }
         socket = connection;

@@ -61,7 +61,7 @@ Report your health, hunger, equipment, and current task.
 
 - Minecraft chat and action requests do not require an `@` prefix when free chat is enabled.
 - Codex and Claude-compatible API profiles are configured in the local Dashboard. API keys stay on this PC.
-- Antigravity uses the local MCP endpoint and a bound existing conversation. The companion reuses that conversation until its local rotation limit instead of opening a new conversation for every message.
+- Antigravity uses the local MCP endpoint and one exactly titled existing conversation. The companion keeps the same conversation across messages and restarts, and rotates only when Antigravity explicitly reports that its real context capacity is exhausted. Optional local limits apply only when the user configures them.
 - All player-visible chat, progress, failures, and final answers must be sent through `mc_chat`.
 
 ### Smart AI and deterministic mode

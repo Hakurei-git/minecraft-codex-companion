@@ -1,7 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 import type { BridgeMessage } from "@mc/protocol";
 import WebSocket from "ws";
-import { WebSocketBridgeBackend } from "./bridge-backend.js";
+import {
+  WebSocketBridgeBackend,
+  type MinecraftBridgeConnectionReadiness,
+} from "./bridge-backend.js";
 import type { ControlService } from "./control-service.js";
 
 export interface BridgeManagerOptions {
@@ -18,6 +21,13 @@ export interface ChatRelayGuardOptions {
 
 export interface RecentChatIdGuardOptions {
   capacityPerCompanion?: number;
+}
+
+export interface MinecraftBridgeReadiness {
+  connectedCompanions: number;
+  bridgeVersions: string[];
+  tRoundTripVerified: boolean;
+  connections: MinecraftBridgeConnectionReadiness[];
 }
 
 /** Deduplicates reliable client retries without coupling different NPCs. */
@@ -106,6 +116,19 @@ export class BridgeManager {
     this.#onDiagnostic = options.onDiagnostic;
   }
 
+  readiness(): MinecraftBridgeReadiness {
+    const connections = [...this.#backends.values()].map((backend) => backend.bridgeReadiness());
+    const connected = connections.filter((connection) => connection.connected);
+    return {
+      connectedCompanions: connected.length,
+      bridgeVersions: [...new Set(connected
+        .map((connection) => connection.bridgeVersion)
+        .filter((version): version is string => version !== null))].sort(),
+      tRoundTripVerified: connected.some((connection) => connection.tRoundTripVerified),
+      connections,
+    };
+  }
+
   attach(socket: WebSocket): void {
     let backend: WebSocketBridgeBackend | null = null;
     let authenticated = false;
@@ -154,6 +177,7 @@ export class BridgeManager {
             message.message,
             this.#companionNames.values(),
           );
+          if (forwarded) backend.recordIncomingChat();
           this.#service.events.publish({
             type: "chat",
             companionId: message.companionId,

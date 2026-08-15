@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
@@ -22,7 +23,12 @@ import { asHttpClientError } from "./http-error.js";
 import { liveFixturesEnabled, registerLiveFixtureRoute } from "./live-fixture-route.js";
 import { createMinecraftMcpServer } from "./mcp-server.js";
 import { ProviderAwareCodexClient } from "./provider-aware-codex.js";
-import { loadOrCreateBridgeToken, resolveStateDirectory } from "./runtime-config.js";
+import {
+  bridgeTokenFingerprint,
+  loadOrCreateBridgeToken,
+  loadOrCreateInstallationId,
+  resolveStateDirectory,
+} from "./runtime-config.js";
 import { WindowsDpapiSecretProtector } from "./secret-protector.js";
 import { SimulatorBackend } from "./simulator-backend.js";
 import { redactSensitiveData, redactSensitiveText } from "./skill-security.js";
@@ -32,6 +38,12 @@ const projectRoot = path.resolve(currentDir, "../../..");
 const port = Number(process.env.PORT ?? 8765);
 const stateDirectory = resolveStateDirectory();
 const bridgeToken = await loadOrCreateBridgeToken(stateDirectory);
+const installationId = await loadOrCreateInstallationId(stateDirectory);
+const processInstanceId = randomUUID();
+const serviceBuildId = /^[a-z0-9._-]{1,128}$/iu.test(process.env.MC_COMPANION_BUILD_ID ?? "")
+  ? process.env.MC_COMPANION_BUILD_ID!
+  : "development";
+const SERVICE_PROTOCOL_VERSION = 2;
 const mcpUrl = process.env.MC_MCP_URL ?? `http://127.0.0.1:${port}/mcp`;
 const app = Fastify({
   logger: {
@@ -169,12 +181,21 @@ await app.register(websocket);
 
 app.get("/api/health", async () => {
   const companions = service.listCompanions();
+  const minecraftBridge = bridgeManager.readiness();
   return {
     ok: true,
     service: "minecraft-codex-companion",
+    serviceProtocolVersion: SERVICE_PROTOCOL_VERSION,
+    installationId,
+    buildId: serviceBuildId,
+    processInstanceId,
+    processId: process.pid,
+    port,
+    bridgeTokenFingerprint: bridgeTokenFingerprint(bridgeToken),
     now: new Date().toISOString(),
     companions: companions.length,
     connectedCompanions: companions.filter((companion) => companion.connected).length,
+    minecraftBridge,
   };
 });
 

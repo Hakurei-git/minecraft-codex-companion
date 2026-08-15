@@ -28,6 +28,23 @@ final class BridgeClientChatOutboxTest {
         assertEquals(64, client.pendingChatCount());
     }
 
+    @Test
+    void appliesAHotReloadedConfigurationToTheSharedActorConfig() {
+        BridgeClient client = client();
+        BridgeConfig updated = new BridgeConfig();
+        updated.serverUrl = "ws://127.0.0.1:8766/bridge";
+        updated.token = "bbbbbbbbbbbbbbbb";
+        updated.name = "Reloaded Companion";
+        updated.observeRadius = 64;
+
+        client.applyConfig(updated);
+
+        assertEquals("ws://127.0.0.1:8766/bridge", client.config().serverUrl);
+        assertEquals("bbbbbbbbbbbbbbbb", client.config().token);
+        assertEquals("Reloaded Companion", client.config().name);
+        assertEquals(64, client.config().observeRadius);
+    }
+
     private static BridgeClient client() {
         return new BridgeClient(new BridgeConfig(), (progress, result, config) -> new CompanionActor() {
             @Override

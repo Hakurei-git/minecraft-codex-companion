@@ -1,12 +1,17 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1, 10000)]
-    [int]$ExpectedTestCount = 425
+    [int]$ExpectedTestCount = 431
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
-$gradleCache = Join-Path $projectRoot "runtime\gradle-home\caches"
+$gradleHome = if ($env:GRADLE_USER_HOME) {
+    [IO.Path]::GetFullPath($env:GRADLE_USER_HOME)
+} else {
+    Join-Path $projectRoot "runtime\gradle-home"
+}
+$gradleCache = Join-Path $gradleHome "caches"
 $forgeCache = Join-Path $gradleCache "forge_gradle"
 $moduleCache = Join-Path $gradleCache "modules-2\files-2.1"
 $runnerSource = Join-Path $PSScriptRoot "forge-in-process-test\InProcessJUnitRunner.java"

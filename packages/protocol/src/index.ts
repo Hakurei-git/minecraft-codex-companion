@@ -631,6 +631,7 @@ export const companionSchema = z.object({
   backend: backendKindSchema,
   gameVersion: z.string().min(1),
   loader: z.string().min(1),
+  bridgeVersion: z.string().min(1).max(64).optional(),
   connected: z.boolean(),
   capabilities: z.array(capabilitySchema),
   leaseOwner: z.string().nullable(),

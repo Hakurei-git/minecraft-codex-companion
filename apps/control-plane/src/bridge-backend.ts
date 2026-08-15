@@ -48,9 +48,27 @@ interface PendingControl {
 }
 
 interface PendingChatDelivery {
+  incomingChatSequence: number;
   resolve(): void;
   reject(error: Error): void;
   timer: NodeJS.Timeout;
+}
+
+export interface MinecraftBridgeConnectionReadiness {
+  companionId: string;
+  companionName: string;
+  backend: BridgeHello["companion"]["backend"];
+  bridgeVersion: string | null;
+  connected: boolean;
+  connectedAt: string;
+  lastSeenAt: string;
+  incomingChatCount: number;
+  lastIncomingChatAt: string | null;
+  deliveredChatCount: number;
+  lastDeliveredChatAt: string | null;
+  roundTripCount: number;
+  lastRoundTripAt: string | null;
+  tRoundTripVerified: boolean;
 }
 
 const MAX_DEFERRED_SAFETY_COMMANDS = 64;
@@ -118,6 +136,14 @@ export class WebSocketBridgeBackend implements CompanionBackend {
   #snapshot: WorldSnapshot;
   #connected = true;
   #lastSeenAt = Date.now();
+  #connectedAt = Date.now();
+  #incomingChatCount = 0;
+  #lastIncomingChatAt: number | null = null;
+  #deliveredChatCount = 0;
+  #lastDeliveredChatAt: number | null = null;
+  #verifiedIncomingChatSequence = 0;
+  #roundTripCount = 0;
+  #lastRoundTripAt: number | null = null;
 
   constructor(
     socket: WebSocket,
@@ -158,7 +184,7 @@ export class WebSocketBridgeBackend implements CompanionBackend {
     this.#base = hello.companion;
     this.#snapshot = hello.companion.snapshot;
     this.#connected = true;
-    this.#lastSeenAt = Date.now();
+    this.#resetConnectionReadiness();
     if (previous !== socket && previous.readyState === WebSocket.OPEN) {
       previous.close(1000, "replaced by reconnect");
     }
@@ -182,6 +208,31 @@ export class WebSocketBridgeBackend implements CompanionBackend {
 
   isCurrentConnection(socket: WebSocket): boolean {
     return this.#socket === socket && this.#connected;
+  }
+
+  recordIncomingChat(): void {
+    if (!this.#live()) return;
+    this.#incomingChatCount += 1;
+    this.#lastIncomingChatAt = Date.now();
+  }
+
+  bridgeReadiness(): MinecraftBridgeConnectionReadiness {
+    return {
+      companionId: this.id,
+      companionName: this.#base.name,
+      backend: this.#base.backend,
+      bridgeVersion: this.#base.bridgeVersion ?? null,
+      connected: this.#live(),
+      connectedAt: new Date(this.#connectedAt).toISOString(),
+      lastSeenAt: new Date(this.#lastSeenAt).toISOString(),
+      incomingChatCount: this.#incomingChatCount,
+      lastIncomingChatAt: this.#isoOrNull(this.#lastIncomingChatAt),
+      deliveredChatCount: this.#deliveredChatCount,
+      lastDeliveredChatAt: this.#isoOrNull(this.#lastDeliveredChatAt),
+      roundTripCount: this.#roundTripCount,
+      lastRoundTripAt: this.#isoOrNull(this.#lastRoundTripAt),
+      tRoundTripVerified: this.#roundTripCount > 0,
+    };
   }
 
   async runTask(task: TaskRecord, callbacks: TaskCallbacks, signal: AbortSignal): Promise<string> {
@@ -275,11 +326,14 @@ export class WebSocketBridgeBackend implements CompanionBackend {
       return;
     }
     const deliveryId = randomUUID();
+    const incomingChatSequence = this.#incomingChatCount;
     await new Promise<void>((resolve, reject) => {
       const pending: PendingChatDelivery = {
+        incomingChatSequence,
         resolve: () => {
           clearTimeout(pending.timer);
           this.#pendingChatDeliveries.delete(deliveryId);
+          this.#recordChatDelivery(pending.incomingChatSequence);
           resolve();
         },
         reject: (error) => {
@@ -393,6 +447,33 @@ export class WebSocketBridgeBackend implements CompanionBackend {
 
   #rejectPendingChatDeliveries(error: Error): void {
     for (const pending of [...this.#pendingChatDeliveries.values()]) pending.reject(error);
+  }
+
+  #recordChatDelivery(incomingChatSequence: number): void {
+    const now = Date.now();
+    this.#deliveredChatCount += 1;
+    this.#lastDeliveredChatAt = now;
+    if (incomingChatSequence <= this.#verifiedIncomingChatSequence) return;
+    this.#verifiedIncomingChatSequence = incomingChatSequence;
+    this.#roundTripCount += 1;
+    this.#lastRoundTripAt = now;
+  }
+
+  #resetConnectionReadiness(): void {
+    const now = Date.now();
+    this.#connectedAt = now;
+    this.#lastSeenAt = now;
+    this.#incomingChatCount = 0;
+    this.#lastIncomingChatAt = null;
+    this.#deliveredChatCount = 0;
+    this.#lastDeliveredChatAt = null;
+    this.#verifiedIncomingChatSequence = 0;
+    this.#roundTripCount = 0;
+    this.#lastRoundTripAt = null;
+  }
+
+  #isoOrNull(value: number | null): string | null {
+    return value === null ? null : new Date(value).toISOString();
   }
 
   #live(): boolean {

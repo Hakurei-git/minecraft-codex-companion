@@ -44,7 +44,7 @@
 GitHub Releases 提供两种下载：
 
 - **[Windows 安装程序 EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**：普通用户使用的完整版本，不需要安装 Node.js 或手工构建模组。
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.6)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.7)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
 
 安装器不会内置或迁移账号、API Key、反重力会话、Minecraft 存档和本机路径。
 
@@ -174,7 +174,7 @@ $env:MC_BRIDGE_TOKEN = "至少16字符的自定义令牌"
 - `persona.mode = "inherit"` 是默认值，沿用当前 AI 服务或 Agent 已有的人格。反重力本身已经设好人格时直接使用这一项即可，无需在 Minecraft 项目里重复配置；MCP 只增加游戏上下文和操作能力，不会清除或替换反重力的人格。
 - `persona.mode = "custom"` 用于增加 Minecraft 专属人格覆盖，可填写 `displayName`、`personality`、`speakingStyle` 和 `memoryNotes`。这些内容叠加在基础人格之上，而不是清除基础人格。
 
-便携客户端会按任务列表中的完整标题精确绑定反重力对话，并保存稳定会话 ID 后通过本机 Agent API 自动触发它；无需手工保持 `mc_list_chat_messages` 轮询，也不会因打开其他对话而改变绑定。反重力原有的人格和上下文会继续沿用。普通消息会复用当前会话；本地只累计轮数和提示字符数，达到默认 80 轮或 120000 个提示字符后才调用 `new-conversation` 创建一个带 `[MC-2]`、`[MC-3]` 序号的新会话，随后继续复用新会话，重启后也会优先恢复它，不会每条消息创建窗口。所有玩家可见内容仍由 Agent 调用 `mc_chat` 发进游戏；长任务分配后 Agent 会尽快结束本轮，任务继续在游戏侧运行，控制服务会主动发送完成、失败或取消结果，从而避免反重力界面的 `Working…` 超时中断游戏动作。若会话异常假忙，可在便携客户端执行“恢复反重力会话”，也可直接在 Minecraft 的 `T` 聊天输入“恢复反重力”或“重连反重力”。上游网络或地区错误会进行 30 秒可见退避，期间每条消息都会收到状态提示；退避到期后的下一条消息会自动重新试探，不会再静默失联 10 分钟。`mc_list_chat_messages` 仅保留给手动 MCP 工作流使用。
+便携客户端会按任务列表中的完整标题精确绑定反重力对话，并保存稳定会话 ID 后通过本机 Agent API 自动触发它；无需手工保持 `mc_list_chat_messages` 轮询，也不会因打开其他对话而改变绑定。反重力原有的人格和上下文会继续沿用。普通消息与程序重启始终复用当前会话；默认不按本地估算的轮数或字符数提前换会话，只有反重力明确报告上下文容量已满时才调用 `new-conversation` 创建一个带 `[MC-2]`、`[MC-3]` 序号的新会话并重试当前消息。高级用户可通过 `MC_ANTIGRAVITY_MAX_TURNS` 或 `MC_ANTIGRAVITY_MAX_PROMPT_CHARACTERS` 显式设置更早的本地轮换上限。所有玩家可见内容仍由 Agent 调用 `mc_chat` 发进游戏；长任务分配后 Agent 会尽快结束本轮，任务继续在游戏侧运行，控制服务会主动发送完成、失败或取消结果，从而避免反重力界面的 `Working…` 超时中断游戏动作。若会话异常假忙，可在便携客户端执行“恢复反重力会话”，也可直接在 Minecraft 的 `T` 聊天输入“恢复反重力”或“重连反重力”。上游网络或地区错误会进行 30 秒可见退避，期间每条消息都会收到状态提示；退避到期后的下一条消息会自动重新试探，不会再静默失联 10 分钟。`mc_list_chat_messages` 仅保留给手动 MCP 工作流使用。
 
 ## HMCL 安全克隆
 

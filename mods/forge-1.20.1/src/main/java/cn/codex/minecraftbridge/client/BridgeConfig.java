@@ -12,6 +12,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 public final class BridgeConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -39,19 +41,27 @@ public final class BridgeConfig {
 
     public static BridgeConfig load() {
         Path path = path();
-        if (Files.isRegularFile(path)) {
-            try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
-                BridgeConfig loaded = GSON.fromJson(reader, BridgeConfig.class);
-                if (loaded != null) {
-                    loaded.normalize();
-                    return loaded;
-                }
-            } catch (IOException | RuntimeException ignored) {
-            }
-        }
+        Optional<BridgeConfig> loaded = read(path, false);
+        if (loaded.isPresent()) return loaded.get();
         BridgeConfig created = new BridgeConfig();
         created.save();
         return created;
+    }
+
+    static Optional<BridgeConfig> readReady(Path path) {
+        return read(path, true);
+    }
+
+    private static Optional<BridgeConfig> read(Path path, boolean requireReady) {
+        if (!Files.isRegularFile(path)) return Optional.empty();
+        try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            BridgeConfig loaded = GSON.fromJson(reader, BridgeConfig.class);
+            if (loaded == null) return Optional.empty();
+            loaded.normalize();
+            return !requireReady || loaded.isReady() ? Optional.of(loaded) : Optional.empty();
+        } catch (IOException | RuntimeException ignored) {
+            return Optional.empty();
+        }
     }
 
     public void save() {
@@ -68,6 +78,59 @@ public final class BridgeConfig {
 
     public boolean isReady() {
         return isLoopbackBridgeUrl(serverUrl) && token != null && token.length() >= 16;
+    }
+
+    boolean sameValues(BridgeConfig other) {
+        return other != null
+            && Objects.equals(serverUrl, other.serverUrl)
+            && Objects.equals(token, other.token)
+            && Objects.equals(companionId, other.companionId)
+            && Objects.equals(name, other.name)
+            && Objects.equals(ownerName, other.ownerName)
+            && autoReconnect == other.autoReconnect
+            && snapshotIntervalTicks == other.snapshotIntervalTicks
+            && observeRadius == other.observeRadius
+            && allowPvp == other.allowPvp
+            && allowBreakingContainers == other.allowBreakingContainers
+            && Objects.equals(hostileEntityAllowlist, other.hostileEntityAllowlist)
+            && npcAutoSpawn == other.npcAutoSpawn
+            && npcRecallDistance == other.npcRecallDistance
+            && npcRecoveryTicks == other.npcRecoveryTicks
+            && npcFoodReserveCount == other.npcFoodReserveCount
+            && Objects.equals(npcMaterialMode, other.npcMaterialMode)
+            && Objects.equals(npcSkinPath, other.npcSkinPath)
+            && keepSingleplayerRunningInBackground == other.keepSingleplayerRunningInBackground;
+    }
+
+    boolean connectionSettingsDiffer(BridgeConfig other) {
+        return other == null
+            || !Objects.equals(serverUrl, other.serverUrl)
+            || !Objects.equals(token, other.token)
+            || !Objects.equals(companionId, other.companionId)
+            || !Objects.equals(name, other.name)
+            || !Objects.equals(ownerName, other.ownerName);
+    }
+
+    void applyFrom(BridgeConfig source) {
+        source.normalize();
+        serverUrl = source.serverUrl;
+        token = source.token;
+        companionId = source.companionId;
+        name = source.name;
+        ownerName = source.ownerName;
+        autoReconnect = source.autoReconnect;
+        snapshotIntervalTicks = source.snapshotIntervalTicks;
+        observeRadius = source.observeRadius;
+        allowPvp = source.allowPvp;
+        allowBreakingContainers = source.allowBreakingContainers;
+        hostileEntityAllowlist = new ArrayList<>(source.hostileEntityAllowlist);
+        npcAutoSpawn = source.npcAutoSpawn;
+        npcRecallDistance = source.npcRecallDistance;
+        npcRecoveryTicks = source.npcRecoveryTicks;
+        npcFoodReserveCount = source.npcFoodReserveCount;
+        npcMaterialMode = source.npcMaterialMode;
+        npcSkinPath = source.npcSkinPath;
+        keepSingleplayerRunningInBackground = source.keepSingleplayerRunningInBackground;
     }
 
     static boolean isLoopbackBridgeUrl(String value) {
@@ -115,7 +178,7 @@ public final class BridgeConfig {
         if (ownerName == null) ownerName = "";
     }
 
-    private static Path path() {
+    static Path path() {
         return Path.of("config").resolve(FILE_NAME);
     }
 

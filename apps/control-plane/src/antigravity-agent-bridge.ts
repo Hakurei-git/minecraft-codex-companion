@@ -17,8 +17,6 @@ const CONVERSATION_IDLE_TIMEOUT_SECONDS = 60;
 const RECOVERY_IDLE_TIMEOUT_SECONDS = 10;
 const DEFAULT_LOCATION_FAILURE_BACKOFF_MS = 30 * 1_000;
 const DEFAULT_CONVERSATION_TITLE = "Execute Minecraft Woodcutting Task";
-const DEFAULT_MAX_CONVERSATION_TURNS = 80;
-const DEFAULT_MAX_CONVERSATION_PROMPT_CHARACTERS = 120_000;
 const MINECRAFT_MCP_BINDING_VERSION = 1;
 const MINECRAFT_MCP_SERVER_NAME = "minecraft_codex_companion";
 const REQUIRED_MINECRAFT_MCP_TOOLS = new Set(["mc_chat", "mc_submit_ai_decision"]);
@@ -34,6 +32,7 @@ const RUNTIME_PROJECT_PERMISSION_PRESET = "AGENT_PERMISSION_PRESET_TURBO";
 const ROTATED_CONVERSATION_BOOTSTRAP = "Start a new Minecraft Companion session. Wait for the next message before taking any action.";
 const ROTATED_TITLE_SUFFIX = / \[MC-(\d+)\]$/u;
 const LOCATION_UNSUPPORTED_PATTERN = /user\s+location\s+is\s+not\s+supported|location[^\r\n]{0,80}not\s+supported/iu;
+const CONVERSATION_CAPACITY_PATTERN = /(?:maximum|max)\s+(?:context|input|prompt)[^\r\n]{0,80}(?:length|token)|(?:context|conversation|prompt)[^\r\n]{0,80}(?:too\s+long|length\s+(?:has\s+)?exceeded|limit\s+(?:has\s+)?exceeded|window\s+(?:is\s+)?full)|too\s+many\s+(?:input\s+)?tokens|(?:上下文|会话|提示)[^\r\n]{0,40}(?:过长|已满|容量已满|超出.{0,12}(?:限制|上限))/iu;
 const ANTIGRAVITY_RECOVERY_MESSAGE = /^\s*(?:(?:恢复|重连|解除)(?:一下)?(?:反重力|antigravity)(?:会话)?|(?:反重力|antigravity)(?:会话)?(?:恢复|重连)|(?:recover|reconnect|reset)\s+antigravity|antigravity\s+(?:recover|reconnect|reset))\s*[。！!]*\s*$/iu;
 
 export function isAntigravityRecoveryMessage(message: string): boolean {
@@ -170,6 +169,25 @@ function boundedPositiveInteger(value: number | undefined, fallback: number, max
   return Number.isFinite(value) && Number(value) > 0
     ? Math.min(maximum, Math.max(1, Math.trunc(Number(value))))
     : fallback;
+}
+
+function optionalPositiveInteger(value: number | undefined, maximum: number): number | null {
+  return Number.isFinite(value) && Number(value) > 0
+    ? Math.min(maximum, Math.max(1, Math.trunc(Number(value))))
+    : null;
+}
+
+class AntigravityConversationCapacityError extends Error {
+  constructor() {
+    super("反重力报告当前会话已达到上下文容量上限");
+    this.name = "AntigravityConversationCapacityError";
+  }
+}
+
+function isConversationCapacityFailure(caught: unknown): boolean {
+  if (caught instanceof AntigravityConversationCapacityError) return true;
+  const message = caught instanceof Error ? caught.message : String(caught);
+  return CONVERSATION_CAPACITY_PATTERN.test(message);
 }
 
 function canonicalJson(value: unknown): string {
@@ -421,8 +439,8 @@ export class AntigravityAgentBridge {
   readonly #ensureMcpReadyOverride: (() => Promise<void>) | undefined;
   readonly #ensureRuntimeProjectOverride: (() => Promise<string>) | undefined;
   readonly #requiredConversationTitle: string;
-  readonly #maxConversationTurns: number;
-  readonly #maxConversationPromptCharacters: number;
+  readonly #maxConversationTurns: number | null;
+  readonly #maxConversationPromptCharacters: number | null;
   readonly #locationFailureBackoffMs: number;
   readonly #now: () => number;
   #queue: Promise<void> = Promise.resolve();
@@ -465,14 +483,12 @@ export class AntigravityAgentBridge {
         ?? this.#environment.MC_ANTIGRAVITY_CONVERSATION_TITLE
         ?? DEFAULT_CONVERSATION_TITLE
     ).trim();
-    this.#maxConversationTurns = boundedPositiveInteger(
+    this.#maxConversationTurns = optionalPositiveInteger(
       options.maxConversationTurns ?? Number(this.#environment.MC_ANTIGRAVITY_MAX_TURNS),
-      DEFAULT_MAX_CONVERSATION_TURNS,
       10_000,
     );
-    this.#maxConversationPromptCharacters = boundedPositiveInteger(
+    this.#maxConversationPromptCharacters = optionalPositiveInteger(
       options.maxConversationPromptCharacters ?? Number(this.#environment.MC_ANTIGRAVITY_MAX_PROMPT_CHARACTERS),
-      DEFAULT_MAX_CONVERSATION_PROMPT_CHARACTERS,
       10_000_000,
     );
     this.#locationFailureBackoffMs = boundedPositiveInteger(
@@ -507,31 +523,44 @@ export class AntigravityAgentBridge {
         const session = await this.#resolveSession(endpoint, false);
         const prompt = promptFor(message, settings, context);
         const mcpConfigFingerprint = await this.#mcpConfigFingerprint();
-        let runtimeProjectId = session.projectId;
         if (mcpConfigFingerprint !== null) {
           await this.#ensureMinecraftMcpReady(endpoint, mcpConfigFingerprint);
-          runtimeProjectId = await this.#ensureRuntimeProject(endpoint);
         }
         // The local sender confirms acceptance before the model/tool turn finishes.
         // Waiting on both sides prevents overlapping turns in the one bound chat.
         await this.#waitForConversationIdle(endpoint, session.conversationId);
-        if (
-          (mcpConfigFingerprint !== null && session.mcpConfigFingerprint !== mcpConfigFingerprint)
-          || (mcpConfigFingerprint !== null && session.mcpBindingVersion !== MINECRAFT_MCP_BINDING_VERSION)
-          || (mcpConfigFingerprint !== null && session.projectId !== runtimeProjectId)
-          || this.#conversationLimitReached(session, prompt.length)
-        ) {
+        // MCP reloads and project repairs must never replace the user's bound
+        // conversation. Rotation is reserved exclusively for the configured local
+        // conversation-size limit.
+        if (this.#conversationLimitReached(session, prompt.length)) {
+          const rotationProjectId = mcpConfigFingerprint !== null
+            ? await this.#ensureRuntimeProject(endpoint)
+            : session.projectId;
           await this.#startRotatedConversation(
             endpoint,
             session,
             prompt,
             mcpConfigFingerprint,
-            runtimeProjectId,
+            rotationProjectId,
           );
         } else {
-          await this.#sendMessage(endpoint, session, prompt);
-          await this.#waitForConversationIdle(endpoint, session.conversationId);
-          await this.#saveSessionUsage(session, prompt.length, mcpConfigFingerprint);
+          try {
+            await this.#sendMessage(endpoint, session, prompt);
+            await this.#waitForConversationIdle(endpoint, session.conversationId);
+            await this.#saveSessionUsage(session, prompt.length, mcpConfigFingerprint);
+          } catch (caught) {
+            if (!isConversationCapacityFailure(caught)) throw caught;
+            const rotationProjectId = mcpConfigFingerprint !== null
+              ? await this.#ensureRuntimeProject(endpoint)
+              : session.projectId;
+            await this.#startRotatedConversation(
+              endpoint,
+              session,
+              prompt,
+              mcpConfigFingerprint,
+              rotationProjectId,
+            );
+          }
         }
         this.#clearAutomaticRetryBlock();
       } catch (caught) {
@@ -557,8 +586,9 @@ export class AntigravityAgentBridge {
   #conversationLimitReached(session: StoredSession, promptCharacters: number): boolean {
     const turns = Number(session.turnCount ?? 0);
     const characters = Number(session.promptCharacters ?? 0);
-    return turns >= this.#maxConversationTurns
-      || characters + promptCharacters > this.#maxConversationPromptCharacters;
+    return (this.#maxConversationTurns !== null && turns >= this.#maxConversationTurns)
+      || (this.#maxConversationPromptCharacters !== null
+        && characters + promptCharacters > this.#maxConversationPromptCharacters);
   }
 
   async #saveSessionUsage(
@@ -575,7 +605,11 @@ export class AntigravityAgentBridge {
         turnCount: Number(session.turnCount ?? 0) + 1,
         promptCharacters: Number(session.promptCharacters ?? 0) + promptCharacters,
         mcpConfigFingerprint,
-        ...(session.mcpBindingVersion ? { mcpBindingVersion: session.mcpBindingVersion } : {}),
+        ...(mcpConfigFingerprint !== null
+          ? { mcpBindingVersion: MINECRAFT_MCP_BINDING_VERSION }
+          : session.mcpBindingVersion
+            ? { mcpBindingVersion: session.mcpBindingVersion }
+            : {}),
       },
     );
   }
@@ -676,7 +710,10 @@ export class AntigravityAgentBridge {
     }
     const endpoint = await this.#endpoint();
     const stored = await this.#readStoredSession();
-    if (stored && managedConversationGeneration(stored.conversationTitle, this.#requiredConversationTitle) !== null) {
+    // An explicit title bind must select that exact conversation. Normal startup
+    // and message delivery reuse a rotated stored session through #resolveSession;
+    // this path is the user's way to deliberately return to the unsuffixed chat.
+    if (stored?.conversationTitle === title) {
       try {
         const projectId = await this.#conversationProject(endpoint, stored.conversationId, stored.projectId);
         const session = await this.#saveSession(
@@ -684,7 +721,7 @@ export class AntigravityAgentBridge {
           projectId,
           stored.conversationTitle,
           {
-            generation: Number(stored.generation ?? managedConversationGeneration(stored.conversationTitle, this.#requiredConversationTitle) ?? 1),
+            generation: Number(stored.generation ?? 1),
             turnCount: Number(stored.turnCount ?? 0),
             promptCharacters: Number(stored.promptCharacters ?? 0),
             mcpConfigFingerprint: stored.mcpConfigFingerprint ?? null,
@@ -709,18 +746,8 @@ export class AntigravityAgentBridge {
       throw new Error("未找到反重力本地会话标题索引；请先启动反重力并打开目标会话");
     });
     const matching = parseAntigravityConversationSummaries(index)
-      .map((summary) => ({
-        ...summary,
-        generation: managedConversationGeneration(summary.title, this.#requiredConversationTitle),
-      }))
-      .filter((summary) => title === this.#requiredConversationTitle
-        ? summary.generation !== null
-        : summary.title === title)
-      .sort((a, b) => (b.generation ?? 0) - (a.generation ?? 0));
-    const highestGeneration = matching[0]?.generation ?? null;
-    const matchingIds = [...new Set(matching
-      .filter((summary) => summary.generation === highestGeneration)
-      .map((summary) => summary.conversationId))];
+      .filter((summary) => summary.title === title);
+    const matchingIds = [...new Set(matching.map((summary) => summary.conversationId))];
     if (matchingIds.length === 0) {
       throw new Error(`未找到标题完全等于“${title}”的反重力会话`);
     }
@@ -734,7 +761,7 @@ export class AntigravityAgentBridge {
       projectId,
       matching[0]?.title ?? title,
       {
-        generation: highestGeneration ?? 1,
+        generation: 1,
         turnCount: 0,
         promptCharacters: 0,
         mcpConfigFingerprint: await this.#mcpConfigFingerprint(),
@@ -1038,7 +1065,15 @@ export class AntigravityAgentBridge {
         stabilizationDurationSeconds: 2,
         returnOnExecutorError: true,
       }, timeoutSeconds + 10);
-      return response ? JSON.parse(response) as { timedOut?: boolean } : {};
+      const parsed = response ? JSON.parse(response) as {
+        timedOut?: boolean;
+        executorError?: unknown;
+        error?: unknown;
+      } : {};
+      if (isConversationCapacityFailure(parsed.executorError ?? parsed.error ?? "")) {
+        throw new AntigravityConversationCapacityError();
+      }
+      return parsed;
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       if (/超时|timed?\s*out|ECONNRESET|socket hang up/iu.test(message)) return { timedOut: true };
