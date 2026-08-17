@@ -4,7 +4,7 @@ final class GatherRetryPolicy {
     static final int MAX_SKIPPED_TARGETS = 24;
     static final int MAX_PATH_FAILURES = 4;
     static final int MAX_STALLED_TICKS = 80;
-    static final double MAX_USEFUL_TELEPORT_DISTANCE = 8.0;
+    static final double SEARCH_REGION_ARRIVAL_DISTANCE = 8.0;
     static final int REPATH_INTERVAL_TICKS = 10;
     static final int MAX_STAND_PATH_CANDIDATES_PER_ATTEMPT = 24;
 
@@ -26,13 +26,13 @@ final class GatherRetryPolicy {
 
     static Decision afterSkipping(
         int uniqueSkippedTargets,
-        boolean craftPrerequisite,
+        boolean recoverableGather,
         boolean deepMiningSupported,
         boolean remoteRecoveryAllowed
     ) {
         return afterSkipping(
             uniqueSkippedTargets,
-            craftPrerequisite,
+            recoverableGather,
             deepMiningSupported,
             remoteRecoveryAllowed,
             0,
@@ -42,7 +42,7 @@ final class GatherRetryPolicy {
 
     static Decision afterSkipping(
         int uniqueSkippedTargets,
-        boolean craftPrerequisite,
+        boolean recoverableGather,
         boolean deepMiningSupported,
         boolean remoteRecoveryAllowed,
         int completedExcursions,
@@ -50,7 +50,7 @@ final class GatherRetryPolicy {
     ) {
         Decision bounded = afterSkipping(uniqueSkippedTargets);
         if (bounded != Decision.FAIL_TASK) return bounded;
-        if (!craftPrerequisite || !remoteRecoveryAllowed) return Decision.FAIL_TASK;
+        if (!recoverableGather || !remoteRecoveryAllowed) return Decision.FAIL_TASK;
         if (deepMiningSupported) return Decision.START_DEEP_MINING;
         return completedExcursions < Math.max(0, maxExcursions)
             ? Decision.START_REMOTE_EXCURSION
@@ -62,7 +62,11 @@ final class GatherRetryPolicy {
     }
 
     static boolean teleportDestinationIsUseful(double distanceToTarget) {
-        return Double.isFinite(distanceToTarget) && distanceToTarget <= MAX_USEFUL_TELEPORT_DISTANCE;
+        return searchRegionReached(distanceToTarget);
+    }
+
+    static boolean searchRegionReached(double distanceToTarget) {
+        return Double.isFinite(distanceToTarget) && distanceToTarget <= SEARCH_REGION_ARRIVAL_DISTANCE;
     }
 
     static boolean teleportChangesChunk(int currentChunkX, int currentChunkZ, int destinationChunkX, int destinationChunkZ) {
@@ -77,7 +81,7 @@ final class GatherRetryPolicy {
     ) {
         return Double.isFinite(distance)
             && (distance > Math.max(0.0D, recallDistance)
-                || verticalDistance > MAX_USEFUL_TELEPORT_DISTANCE
+                || verticalDistance > SEARCH_REGION_ARRIVAL_DISTANCE
                 || stalledTicks >= NavigationProgressPolicy.SAMPLE_TICKS * 2);
     }
 

@@ -11,7 +11,7 @@ Two editions are published:
 | Edition | Intended user | Standalone |
 | --- | --- | --- |
 | `MinecraftCodexCompanion-Setup.exe` | Windows users who want an install-and-run application | Yes. It contains the local service, setup UI, and Forge installation resources. |
-| `MinecraftCodexCompanion-AgentKit-v0.1.5.zip` | Users who want Codex, Claude, Antigravity, or another MCP-capable AI to control the NPC | No. It connects to the local service installed by the EXE on the same PC. |
+| `MinecraftCodexCompanion-AgentKit-v0.1.7.zip` | Users who want Codex, Claude, Antigravity, or another MCP-capable AI to control the NPC | No. It connects to the local service installed by the EXE on the same PC. |
 
 The Skill teaches the AI how to observe, plan, enforce safety, submit work, and recover failures. MCP is the tool channel that actually reads Minecraft state and performs actions. A Skill without MCP is documentation only. MCP without the Skill can work, but complex planning, delivery, and recovery are more reliable when both are installed.
 
@@ -96,6 +96,63 @@ After connection, ask the AI to use this sequence:
 5. `mc_get_task` only when meaningful progress or recovery information is needed.
 6. `mc_chat` for the start, important progress, failure reason, and final result visible in game.
 7. `mc_release_control` before handing the actor to another controller.
+
+For a direct `gather` task, omitted `countMode` (or `acquire`) means "obtain this many new items." Use `countMode: inventory-total` only for inventory prerequisites such as carrying at least one stack of logs; existing matching backpack items then count toward the target.
+
+Agent v2 tools are also available for clients that want durable high-level planning before assigning concrete tasks:
+`mc_submit_goal`, `mc_get_goal`, `mc_get_plan`, `mc_advance_goal`, `mc_pause_goal`, `mc_resume_goal`, `mc_cancel_goal`,
+`mc_query_knowledge`, `mc_list_facilities`, and `mc_register_facility`. These tools store local-only Goal,
+WorkGraph, knowledge, and facility records. They do not replace `mc_assign_task`; the existing single-writer
+task executor remains the only channel that moves the NPC or changes the world. `mc_query_knowledge` reads
+the packaged local gameplay knowledge index plus local journal records; it does not browse the web or upload
+world files, logs, screenshots, prompts, or provider credentials.
+
+When `mc_submit_goal` is called without `taskHints`, the local GoalPlanner can already produce a recoverable
+WorkGraph for common survival goals: diamond-pickaxe deep mining, torch preparation with nearby-coal preference,
+bed crafting/placement, crop-farm setup with hoe/bucket prerequisites and facility memory, ranch establishment,
+food/meat provisioning, home storage organization, blueprint builds such as shelters, cottages, watchtowers,
+cobblestone generators, mob farms, and tree farms, plus direct crafting requests such as chests, buckets,
+workstations, furnaces, ordinary tools, weapons, shields, shears, fishing rods, and armor.
+Unknown goals stay blocked as `await_plan` instead of being reported as completed.
+
+Facility operations are planned separately from facility construction. Requests such as “harvest the farm,”
+“plant crops,” “breed the sheep,” or “shear wool” first reuse a remembered farm or ranch and only create a new
+facility if none exists. Equipment-kit requests such as “make iron gear” run as a recoverable Agent skill chain
+with workstation, storage, and furnace lookups, then rely on the NPC equipment policy to equip better gear and
+store low-tier spares. Dragon requests use the Book of Dragons / Saints Dragons adapters with remembered safe
+landing context for riding, shared riding with player-front/NPC-rear seating, landing, recall, dismount, and
+combat-assist actions.
+
+Use `mc_advance_goal` to run the persisted WorkGraph. It completes local-only nodes such as knowledge lookups and
+verification, then queues the next real `task` or `skill` node through the same validated single-writer executor used
+by `mc_assign_task`. The task id is stored in the node checkpoint, and terminal task results are synced back into the
+Goal/WorkGraph journal so the next call or automatic continuation can resume from the correct node.
+
+Facility memory is part of the WorkGraph runtime. Goals such as crafting, deep mining, bed placement, crop farms,
+ranches, home storage, and blueprint buildings first run local `query-facilities` nodes against the journal.
+Matching remembered crafting tables, furnaces, homes/spawn points, mines, farms, ranches, storage rooms,
+redstone builds, or structures receive a `lastUsedAt` update. Nodes marked with `skipIfFacilityQueryNodeId`
+are skipped when the matching facility already exists, preventing repeated mine-shaft, farm, ranch, storage,
+or duplicate blueprint construction while keeping all world-changing actions inside the normal executor. Completed
+planned builds can also register a facility checkpoint so later goals can reuse the same structure.
+Remembered mine metadata alone does not skip safety-supply preparation: ladders remain required until the runtime
+can prove that it physically navigated to and reused a safe existing mine route.
+
+Backends may also report observed world facilities through `WorldSnapshot.observedFacilities`. The control plane
+upserts those local observations, plus existing `homeState`, `miningState`, and `dragonState` hints, into the Agent
+journal. Repeated observations update the same facility instead of creating duplicates. Observations are structured
+Minecraft data only: type, name, position, bounds, tags, owner, and small metadata; they must not contain local files,
+logs, screenshots, API keys, account data, or provider prompts.
+
+The packaged local knowledge index includes vanilla crafting/smelting/mining/farming/ranching/storage entries,
+ladder/furnace/charcoal prerequisite facts, safe staircase/branch mining, food reserve and auto-eat policy, crop
+sources, livestock luring, storage fetch/delivery rules, recall/follow priority, tool-material progression, iron
+equipment chains, nearby-ore priority, inventory-pressure cleanup, farm/ranch facility reuse operations, plus
+Agent-specific building, redstone, equipment, and supported-dragon workflow facts. Chinese gameplay requests such as
+“我要钻石镐”, “建造农田”, “箱子里有”, or “停止目标召回” are mapped into the same local records instead of falling back to
+arbitrary results. It is shipped with the EXE/AgentKit and is queried locally; Smart AI may summarize or choose
+between these records, but external providers do not receive files, screenshots, keys, accounts, local paths, or raw
+world saves.
 
 ### In-game use
 

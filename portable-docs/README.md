@@ -5,7 +5,7 @@
 ### Choose an edition
 
 - `MinecraftCodexCompanion-Setup.exe` is the normal user entry point. The single-file installer contains the local Companion service, Dashboard, Forge 1.20.1 mod, and setup application. It does not require a separate Node.js installation or manual JAR build.
-- `MinecraftCodexCompanion-AgentKit-v0.1.5.zip` is an optional AI integration package. Download it when importing the Minecraft Skill/MCP configuration into Codex, Claude, Antigravity, or another AI client. It does not replace the EXE or the in-game mod.
+- `MinecraftCodexCompanion-AgentKit-v0.1.7.zip` is an optional AI integration package. Download it when importing the Minecraft Skill/MCP configuration into Codex, Claude, Antigravity, or another AI client. It does not replace the EXE or the in-game mod.
 
 The EXE does not include a Minecraft account, the Minecraft game, or HMCL login state. Prepare an HMCL environment that can enter a Forge 1.20.1 world. Full live acceptance currently covers HMCL single-player worlds.
 

@@ -18,6 +18,10 @@ final class FollowMovementPolicyTest {
         assertFalse(FollowMovementPolicy.shouldAutoRecall(true, false, true, 10_000, 32));
         assertFalse(FollowMovementPolicy.shouldAutoRecall(false, false, false, 10_000, 32));
         assertFalse(FollowMovementPolicy.shouldAutoRecall(false, false, true, 1_024, 32));
+        assertTrue(FollowMovementPolicy.shouldRecoverTaskApproach(true, 64, 48, 0, 200));
+        assertTrue(FollowMovementPolicy.shouldRecoverTaskApproach(true, 26, 48, 200, 200));
+        assertFalse(FollowMovementPolicy.shouldRecoverTaskApproach(true, 26, 48, 199, 200));
+        assertFalse(FollowMovementPolicy.shouldRecoverTaskApproach(false, 64, 48, 200, 200));
     }
 
     @Test

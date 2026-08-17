@@ -102,7 +102,7 @@ final class DragonActionPolicy {
 
     static boolean requiresApproach(String action) {
         return switch (action) {
-            case "follow", "stay", "mount", "recall", "assist-combat", "land", "fly-to" -> false;
+            case "follow", "stay", "mount", "share-ride", "recall", "assist-combat", "land", "fly-to" -> false;
             default -> true;
         };
     }

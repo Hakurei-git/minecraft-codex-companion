@@ -11,9 +11,15 @@ import {
   companionSchema,
   declarativeSkillDraftSchema,
   declarativeSkillSchema,
+  facilityRecordSchema,
+  goalRecordSchema,
+  goalSpecSchema,
+  knowledgeRecordSchema,
+  knowledgeTopicSchema,
   taskRecordSchema,
   taskSpecSchema,
   vec3Schema,
+  workGraphSchema,
   worldSnapshotSchema,
 } from "@mc/protocol";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -223,6 +229,137 @@ export function createMinecraftMcpServer(control: MinecraftControlApi): McpServe
     return success(result, result.taskId
       ? `智能决策已提交，任务 ${result.taskId} 已加入队列。`
       : `智能决策已提交：${result.decisionType}。`);
+  }));
+
+  server.registerTool("mc_submit_goal", {
+    title: "Submit Agent goal",
+    description: "Record a high-level Minecraft Agent goal and generate its initial local work graph. This v2 planner journal does not bypass the existing single-writer task executor.",
+    inputSchema: {
+      companionId: z.string().min(1),
+      spec: goalSpecSchema,
+      owner: z.string().min(1).default("mcp"),
+    },
+    outputSchema: { goal: goalRecordSchema, plan: workGraphSchema },
+    annotations: MUTATING,
+  }, async ({ companionId, spec, owner }) => handleTool(async () => {
+    const goal = await control.submitGoal(companionId, spec, owner);
+    const plan = await control.getPlan(goal.id);
+    return success({ goal, plan }, `Agent 目标 ${goal.id} 已记录，生成 ${plan.nodes.length} 个工作节点。`);
+  }));
+
+  server.registerTool("mc_get_goal", {
+    title: "Get Agent goal",
+    description: "Read one high-level Agent goal, including status and recovery message.",
+    inputSchema: { goalId: z.string().uuid() },
+    outputSchema: { goal: goalRecordSchema },
+    annotations: READ_ONLY,
+  }, async ({ goalId }) => handleTool(async () => {
+    const goal = await control.getGoal(goalId);
+    return success({ goal }, `Agent 目标 ${goal.id}: ${goal.status}。`);
+  }));
+
+  server.registerTool("mc_get_plan", {
+    title: "Get Agent work graph",
+    description: "Read the persisted v2 WorkGraph for one Agent goal.",
+    inputSchema: { goalId: z.string().uuid() },
+    outputSchema: { plan: workGraphSchema },
+    annotations: READ_ONLY,
+  }, async ({ goalId }) => handleTool(async () => {
+    const plan = await control.getPlan(goalId);
+    return success({ plan }, `Agent 工作图 ${plan.id}: ${plan.nodes.length} 个节点。`);
+  }));
+
+  server.registerTool("mc_advance_goal", {
+    title: "Advance Agent goal",
+    description: "Advance one local Agent WorkGraph until it either completes local nodes or queues the next real Minecraft task through the single-writer executor.",
+    inputSchema: {
+      goalId: z.string().uuid(),
+      owner: z.string().min(1).default("mcp"),
+    },
+    outputSchema: { goal: goalRecordSchema, plan: workGraphSchema, task: taskRecordSchema.optional(), advancedNodeId: z.string().optional() },
+    annotations: MUTATING,
+  }, async ({ goalId, owner }) => handleTool(async () => {
+    const result = await control.advanceGoal(goalId, owner);
+    return success({ ...result }, result.task
+      ? `Agent 目标 ${result.goal.id} 已推进到节点 ${result.advancedNodeId ?? "unknown"}，任务 ${result.task.id} 已入队。`
+      : `Agent 目标 ${result.goal.id} 已推进：${result.goal.status}。`);
+  }));
+
+  server.registerTool("mc_pause_goal", {
+    title: "Pause Agent goal",
+    description: "Pause a high-level Agent goal in the local planner journal.",
+    inputSchema: {
+      goalId: z.string().uuid(),
+      reason: z.string().min(1).max(200).default("MCP paused goal"),
+    },
+    outputSchema: { goal: goalRecordSchema },
+    annotations: MUTATING,
+  }, async ({ goalId, reason }) => handleTool(async () => {
+    const goal = await control.pauseGoal(goalId, reason);
+    return success({ goal }, `Agent 目标 ${goal.id} 已暂停。`);
+  }));
+
+  server.registerTool("mc_resume_goal", {
+    title: "Resume Agent goal",
+    description: "Resume a paused high-level Agent goal in the local planner journal.",
+    inputSchema: { goalId: z.string().uuid() },
+    outputSchema: { goal: goalRecordSchema },
+    annotations: MUTATING,
+  }, async ({ goalId }) => handleTool(async () => {
+    const goal = await control.resumeGoal(goalId);
+    return success({ goal }, `Agent 目标 ${goal.id} 已恢复。`);
+  }));
+
+  server.registerTool("mc_cancel_goal", {
+    title: "Cancel Agent goal",
+    description: "Cancel a high-level Agent goal in the local planner journal.",
+    inputSchema: {
+      goalId: z.string().uuid(),
+      reason: z.string().min(1).max(200).default("MCP cancelled goal"),
+    },
+    outputSchema: { goal: goalRecordSchema },
+    annotations: DESTRUCTIVE,
+  }, async ({ goalId, reason }) => handleTool(async () => {
+    const goal = await control.cancelGoal(goalId, reason);
+    return success({ goal }, `Agent 目标 ${goal.id} 已取消。`);
+  }));
+
+  server.registerTool("mc_query_knowledge", {
+    title: "Query Agent gameplay knowledge",
+    description: "Search the local gameplay knowledge journal. Runtime must not fetch public websites or upload local files through this tool.",
+    inputSchema: {
+      query: z.string().trim().max(240).default(""),
+      topics: z.array(knowledgeTopicSchema).max(16).default([]),
+    },
+    outputSchema: { records: z.array(knowledgeRecordSchema) },
+    annotations: READ_ONLY,
+  }, async ({ query, topics }) => handleTool(async () => {
+    const records = await control.queryKnowledge(query, topics);
+    return success({ records }, `找到 ${records.length} 条本地玩法知识。`);
+  }));
+
+  server.registerTool("mc_list_facilities", {
+    title: "List Agent facilities",
+    description: "List remembered homes, storage, farms, ranches, workstations, mines, builds, and other reusable world facilities.",
+    inputSchema: { worldId: z.string().trim().min(1).max(128).optional() },
+    outputSchema: { facilities: z.array(facilityRecordSchema) },
+    annotations: READ_ONLY,
+  }, async ({ worldId }) => handleTool(async () => {
+    const facilities = await control.listFacilities(worldId);
+    return success({ facilities }, `找到 ${facilities.length} 个已记录设施。`);
+  }));
+
+  server.registerTool("mc_register_facility", {
+    title: "Register Agent facility",
+    description: "Register a reusable in-world facility after it has been observed or built. Do not include local file paths, keys, logs, or screenshots.",
+    inputSchema: facilityRecordSchema.omit({ id: true, createdAt: true, updatedAt: true, lastUsedAt: true }).extend({
+      id: z.string().uuid().optional(),
+    }).shape,
+    outputSchema: { facility: facilityRecordSchema },
+    annotations: MUTATING,
+  }, async (input) => handleTool(async () => {
+    const facility = await control.registerFacility(input);
+    return success({ facility }, `设施已记录：${facility.name}。`);
   }));
 
   server.registerTool("mc_control_companion", {

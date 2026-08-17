@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
 const buildScript = await readFile(path.join(projectRoot, "scripts", "build-portable.ps1"), "utf8");
 const forgeTestScript = await readFile(
   path.join(projectRoot, "scripts", "run-forge-tests-in-process.ps1"),
@@ -17,6 +18,25 @@ const singleBuildScript = await readFile(
 );
 const singleScanScript = await readFile(
   path.join(projectRoot, "scripts", "scan-single-exe.ps1"),
+  "utf8",
+);
+const agentKitBuildScript = await readFile(
+  path.join(projectRoot, "scripts", "build-agent-kit.ps1"),
+  "utf8",
+);
+const agentKitManifest = JSON.parse(
+  await readFile(path.join(projectRoot, "agent-kit", "manifest.json"), "utf8"),
+);
+const playMinecraftSkill = await readFile(
+  path.join(projectRoot, ".agents", "skills", "play-minecraft", "SKILL.md"),
+  "utf8",
+);
+const playMinecraftToolsReference = await readFile(
+  path.join(projectRoot, ".agents", "skills", "play-minecraft", "references", "tools.md"),
+  "utf8",
+);
+const playMinecraftOpenAiAgent = await readFile(
+  path.join(projectRoot, ".agents", "skills", "play-minecraft", "agents", "openai.yaml"),
   "utf8",
 );
 const startScript = await readFile(
@@ -32,7 +52,8 @@ test("default portable build forcibly rebuilds and validates the Forge bridge", 
   assert.match(buildScript, /forgeBuildStartedAt/);
   assert.match(buildScript, /LastWriteTimeUtc/);
   assert.match(buildScript, /Forge bridge JAR is stale/);
-  assert.match(buildScript, /Get-FileHash -Algorithm SHA256 -LiteralPath \$bridgeJar/);
+  assert.match(buildScript, /function Get-Sha256Hex/);
+  assert.match(buildScript, /Get-Sha256Hex -LiteralPath \$bridgeJar/);
   assert.match(buildScript, /packagedBridgeJarHash -ne \$bridgeJarHash/);
   assert.match(buildScript, /forgeArtifact = \[ordered\]@\{/);
   assert.match(buildScript, /forcedRerun = \$forgeBuildForced/);
@@ -44,7 +65,7 @@ test("offline pinned Forge packaging is explicit, hash-bound, and runs every For
   assert.match(buildScript, /\^\[A-Fa-f0-9\]\{64\}\$/);
   assert.match(buildScript, /Pinned Forge bridge JAR SHA-256 does not match/);
   assert.match(buildScript, /run-forge-tests-in-process\.ps1/);
-  assert.match(buildScript, /pinned-sha256-and-431-tests/);
+  assert.match(buildScript, /pinned-sha256-and-434-tests/);
   assert.match(buildScript, /OfflineNodeModulesRoot/);
   assert.match(buildScript, /Assert-OfflineNodeModules/);
   assert.match(buildScript, /Offline node_modules contains filesystem links or reparse points/);
@@ -55,7 +76,10 @@ test("offline pinned Forge packaging is explicit, hash-bound, and runs every For
 test("Forge tests isolate audited JUnit jars and fail on compiler diagnostics", () => {
   assert.match(forgeTestScript, /junit-5\.10\.2/);
   assert.match(forgeTestScript, /Copy-Item -LiteralPath \$sourceJar\.FullName/);
-  assert.match(forgeTestScript, /Get-FileHash -Algorithm SHA256/);
+  assert.match(forgeTestScript, /function Get-Sha256Hex/);
+  assert.match(forgeTestScript, /Security\.Cryptography\.SHA256/);
+  assert.match(forgeTestScript, /Get-Sha256Hex -LiteralPath \$sourceJar\.FullName/);
+  assert.doesNotMatch(forgeTestScript, /Get-FileHash/);
   assert.match(forgeTestScript, /& \$javac -encoding UTF-8 -d \$runnerClasses \$runnerSource/);
   assert.doesNotMatch(forgeTestScript, /& \$javac[^\r\n]*\s-cp\s/);
   assert.match(forgeTestScript, /\$compileOutput\.Count -gt 0/);
@@ -80,6 +104,11 @@ test("local startup inherits the configured Antigravity conversation title", () 
   assert.match(startScript, /launcherConfig\.antigravityConversationTitle/);
   assert.match(startScript, /launcherConfig\.antigravityConfigPath/);
   assert.match(startScript, /MC_ANTIGRAVITY_CONFIG_PATH/);
+  assert.doesNotMatch(
+    startScript,
+    /MC_ANTIGRAVITY_HOME\s*=\s*Split-Path\s+-Parent\s+\$antigravityConfigPath/,
+    "the central MCP config directory must not replace the Antigravity agentapi home",
+  );
   assert.match(startScript, /MC_ANTIGRAVITY_CONVERSATION_TITLE/);
   assert.match(
     startScript,
@@ -106,10 +135,12 @@ test("ClamAV is optional, project-local, and selected before installed antivirus
 test("ClamAV records engine and database evidence and requires two clean targets", () => {
   assert.match(scanScript, /function Invoke-NativeCapture/);
   assert.match(scanScript, /\$ErrorActionPreference = 'Continue'/);
-  assert.match(scanScript, /Get-FileHash -Algorithm SHA256 -LiteralPath \$resolvedClamScanPath/);
+  assert.match(scanScript, /function Get-Sha256Hex/);
+  assert.match(scanScript, /Get-Sha256Hex -LiteralPath \$resolvedClamScanPath/);
   assert.match(scanScript, /Invoke-NativeCapture \$resolvedClamScanPath @\('--version'\)/);
   assert.match(scanScript, /databaseEvidence/);
-  assert.match(scanScript, /sha256 = \(Get-FileHash -Algorithm SHA256 -LiteralPath \$_\.FullName\)/);
+  assert.match(scanScript, /sha256 = Get-Sha256Hex -LiteralPath \$_\.FullName/);
+  assert.doesNotMatch(scanScript, /Get-FileHash/);
   assert.match(scanScript, /foreach \(\$scanTarget in \$scanTargets\)/);
   assert.match(scanScript, /0 \{ 'clean' \}/);
   assert.match(scanScript, /1 \{ 'infected' \}/);
@@ -169,4 +200,56 @@ test("archive integrity is verified before antivirus selection", () => {
   assert.match(scanScript, /SHA256SUMS\.txt/);
   assert.match(scanScript, /Portable archive SHA-256 does not match/);
   assert.match(scanScript, /sha256 = \$archiveHash/);
+});
+
+test("AgentKit release metadata and skill route external AI through Agent v2", () => {
+  assert.equal(agentKitManifest.version, packageJson.version);
+  assert.equal(agentKitManifest.skillEntry, "skill/play-minecraft/SKILL.md");
+  assert.equal(agentKitManifest.mcp.url, "http://127.0.0.1:8765/mcp");
+  assert.equal(agentKitManifest.requires.healthUrl, "http://127.0.0.1:8765/api/health");
+
+  assert.match(playMinecraftOpenAiAgent, /Prefer Agent v2 goals for multi-step Minecraft requests/);
+  assert.match(playMinecraftSkill, /## Local Agent v2 Workflow/);
+  assert.match(playMinecraftSkill, /mc_submit_goal/);
+  assert.match(playMinecraftSkill, /mc_advance_goal/);
+  assert.match(playMinecraftSkill, /mc_query_knowledge/);
+  assert.match(playMinecraftSkill, /Do not bypass Agent v2/);
+  assert.ok(
+    playMinecraftSkill.indexOf("prefer the local Agent v2 route") <
+      playMinecraftSkill.indexOf("mc_assign_task"),
+  );
+
+  for (const toolName of [
+    "mc_submit_goal",
+    "mc_get_goal",
+    "mc_get_plan",
+    "mc_advance_goal",
+    "mc_pause_goal",
+    "mc_resume_goal",
+    "mc_cancel_goal",
+    "mc_query_knowledge",
+    "mc_list_facilities",
+    "mc_register_facility",
+  ]) {
+    assert.match(playMinecraftToolsReference, new RegExp(`\\| \`${toolName}\``));
+  }
+  assert.match(playMinecraftToolsReference, /shared ride \(`share-ride`, player front and NPC rear\)/);
+  assert.match(playMinecraftToolsReference, /must not browse public websites/);
+  assert.match(playMinecraftToolsReference, /must not .*upload screenshots, logs, API keys, account data, local paths, prompts, or world saves/);
+});
+
+test("AgentKit build is deterministic, local-only, and does not depend on Get-FileHash availability", () => {
+  assert.match(agentKitBuildScript, /package\.json/);
+  assert.match(agentKitBuildScript, /AgentKit manifest version .* does not match package version/);
+  assert.match(agentKitBuildScript, /AgentKit README files must mention the current artifact name/);
+  assert.match(agentKitBuildScript, /function Get-Sha256Hex/);
+  assert.match(agentKitBuildScript, /Security\.Cryptography\.SHA256/);
+  assert.doesNotMatch(agentKitBuildScript, /Get-FileHash/);
+  assert.match(agentKitBuildScript, /AgentKit output must stay beneath the project build directory/);
+  assert.match(agentKitBuildScript, /\$allowedExtensions = @\("\.md", "\.yaml", "\.json"\)/);
+  assert.match(agentKitBuildScript, /AgentKit privacy scan rejected/);
+  assert.match(agentKitBuildScript, /AgentKit contains a non-loopback URL/);
+  assert.match(agentKitBuildScript, /SHA256SUMS\.txt/);
+  assert.match(agentKitBuildScript, /containsApiKeys = \$false/);
+  assert.match(agentKitBuildScript, /containsMinecraftWorlds = \$false/);
 });

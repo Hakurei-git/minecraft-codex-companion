@@ -12,7 +12,7 @@ param(
     [switch]$NormalizeOnly,
 
     [ValidateLength(1, 256)]
-    [string]$ControlBaseUri = "http://127.0.0.1:8765",
+    [string]$ControlBaseUri = "",
 
     [switch]$DraftOnly,
 
@@ -20,6 +20,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($ControlBaseUri)) {
+    $ControlBaseUri = if ([string]::IsNullOrWhiteSpace($env:MC_COMPANION_URL)) {
+        "http://127.0.0.1:8765"
+    } else {
+        [string]$env:MC_COMPANION_URL
+    }
+}
 if ($PSCmdlet.ParameterSetName -eq "Utf8Base64") {
     try {
         $Message = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($MessageUtf8Base64))

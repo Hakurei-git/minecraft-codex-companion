@@ -11,6 +11,12 @@ import {
   validateTask as validateDeepMiningTask,
   waitForTask as waitForDeepMiningTask,
 } from "./live-deep-mining-smoke.mjs";
+import {
+  assertGoalTaskCoverage,
+  findNewAgentGoal,
+  taskIdsFromPlan,
+  validateAgentGoalPlan,
+} from "./agent-goal-acceptance.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
@@ -155,6 +161,12 @@ export async function runFinalSmartTchatAcceptance({
   let socket = null;
   let setupCompleted = false;
   let task = null;
+  let goal = null;
+  let goalPlan = null;
+  let finalNode = null;
+  let agentTaskIds = new Set();
+  let previousGoalIds = new Set();
+  let newGoals = [];
   let result = null;
   let primaryError = null;
   let cleanup = null;
@@ -165,6 +177,8 @@ export async function runFinalSmartTchatAcceptance({
     setupCompleted = true;
     const previousTasks = await requestJson(base, "/api/tasks");
     const previousTaskIds = new Set((previousTasks.tasks ?? []).map((record) => record.id));
+    const previousGoals = await requestJson(base, "/api/agent/goals");
+    previousGoalIds = new Set((previousGoals.goals ?? []).map((record) => record.id));
     const previousMessages = await requestJson(base, "/api/chat/messages?afterSequence=0&limit=100");
     const afterSequence = Number(previousMessages.nextSequence ?? 0);
     const socketUrl = new URL("/api/events", base);
@@ -178,6 +192,9 @@ export async function runFinalSmartTchatAcceptance({
       try {
         const envelope = JSON.parse(data.toString());
         if (envelope.type === "event") liveEvents.push(envelope.event);
+        if (envelope.type === "bootstrap" && Array.isArray(envelope.events)) {
+          liveEvents.push(...envelope.events);
+        }
       } catch {
         // Only validated structured events are used as acceptance evidence.
       }
@@ -189,29 +206,26 @@ export async function runFinalSmartTchatAcceptance({
       return messages.messages?.some((message) => message.message === FINAL_DIAMOND_PROMPT);
     }, 15_000, "the exact T-chat command to enter the Forge bridge");
 
+    goal = await waitFor(async () => {
+      const response = await requestJson(base, "/api/agent/goals");
+      return findNewAgentGoal(response.goals, previousGoalIds, companion.id);
+    }, timeoutMs, "one Antigravity Agent goal");
+    goalPlan = await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}/plan`);
+    finalNode = validateAgentGoalPlan(goal, goalPlan, finalDiamondTaskSpec(companion.ownerName));
+
+    const decisionEvent = await waitFor(async () => liveEvents.find((event) => (
+      typeof event?.data?.taskId === "string"
+      && !previousTaskIds.has(event.data.taskId)
+      && event?.data?.decisionType === "task"
+    )), 15_000, "the single smart-decision event");
     task = await waitFor(async () => {
       const response = await requestJson(base, "/api/tasks");
       return response.tasks?.find((candidate) => (
-        candidate.companionId === companion.id && !previousTaskIds.has(candidate.id)
+        candidate.id === decisionEvent.data.taskId
+        && candidate.companionId === companion.id
+        && !previousTaskIds.has(candidate.id)
       ));
-    }, timeoutMs, "one smart-AI task");
-
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-    const newTasks = (await requestJson(base, "/api/tasks")).tasks?.filter((candidate) => (
-      candidate.companionId === companion.id && !previousTaskIds.has(candidate.id)
-    )) ?? [];
-    if (newTasks.length !== 1) throw new Error(`Expected one new task, received ${newTasks.length}`);
-    validateDeepMiningTask(task, companion.id, companion.ownerName);
-    const expectedSpec = finalDiamondTaskSpec(companion.ownerName);
-    for (const [key, value] of Object.entries(expectedSpec)) {
-      if (task.spec?.[key] !== value) {
-        throw new Error(`Smart task ${key} mismatch: expected ${value}, received ${task.spec?.[key]}`);
-      }
-    }
-
-    const decisionEvent = await waitFor(async () => liveEvents.find((event) => (
-      event?.data?.taskId === task.id && event?.data?.decisionType === "task"
-    )), 15_000, "the single smart-decision event");
+    }, timeoutMs, "the exact first Antigravity Agent child task");
     const interactionId = decisionEvent.data.interactionId;
     const matchingDecisionEvents = liveEvents.filter((event) => (
       event?.data?.taskId === task.id && event?.data?.decisionType === "task"
@@ -227,11 +241,22 @@ export async function runFinalSmartTchatAcceptance({
     ));
     if (!startReply) throw new Error("The Minecraft task-start reply was not delivered");
 
-    const terminalTask = validateDeepMiningTask(
-      await waitForDeepMiningTask(base, task, timeoutMs),
-      companion.id,
-      companion.ownerName,
-    );
+    const terminalGoal = await waitFor(async () => {
+      const current = await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}`);
+      if (current.status === "failed" || current.status === "cancelled") {
+        throw new Error(`Antigravity Agent goal ended ${current.status}: ${current.error?.message ?? current.message ?? "unknown error"}`);
+      }
+      return current.status === "succeeded" ? current : null;
+    }, timeoutMs, "the Antigravity Agent goal to complete");
+    newGoals = (await requestJson(base, "/api/agent/goals")).goals?.filter((candidate) => !previousGoalIds.has(candidate.id)) ?? [];
+    goalPlan = await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}/plan`);
+    agentTaskIds = taskIdsFromPlan(goalPlan);
+    const allTasks = (await requestJson(base, "/api/tasks")).tasks ?? [];
+    const tasksById = new Map(allTasks.map((candidate) => [candidate.id, candidate]));
+    assertGoalTaskCoverage(goalPlan, tasksById);
+    const finalTaskId = goalPlan.nodes.find((node) => node.id === finalNode.id)?.checkpoint?.taskId;
+    if (typeof finalTaskId !== "string") throw new Error("The final Antigravity craft node has no task checkpoint");
+    const terminalTask = validateDeepMiningTask(tasksById.get(finalTaskId), companion.id, companion.ownerName);
     const terminalReply = await waitFor(async () => liveEvents.find((event) => (
       event?.type === "chat"
       && event?.data?.owner === "antigravity-autoplay"
@@ -256,7 +281,10 @@ export async function runFinalSmartTchatAcceptance({
       screenshotUsed: false,
       companionName: companion.name,
       conversationReused: true,
-      newTaskCount: newTasks.length,
+      newGoalCount: newGoals.length,
+      newTaskCount: allTasks.filter((candidate) => candidate.companionId === companion.id && !previousTaskIds.has(candidate.id)).length,
+      agentTaskCount: agentTaskIds.size,
+      goalStatus: terminalGoal.status,
       task: {
         kind: terminalTask.spec.kind,
         itemId: terminalTask.spec.itemId,
@@ -273,14 +301,30 @@ export async function runFinalSmartTchatAcceptance({
     primaryError = error;
   } finally {
     socket?.close();
-    if (task?.id) {
+    if (!goal?.id && previousGoalIds.size > 0) {
       try {
-        const current = await requestJson(base, `/api/tasks/${encodeURIComponent(task.id)}`);
-        if (!terminalStatuses.has(current.status)) {
-          await requestJson(base, `/api/tasks/${encodeURIComponent(task.id)}/cancel`, {
-            method: "POST",
-            body: JSON.stringify({ reason: "final smart T-chat acceptance cleanup" }),
-          });
+        const goals = (await requestJson(base, "/api/agent/goals")).goals ?? [];
+        goal = findNewAgentGoal(goals, previousGoalIds, companion.id);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (goal?.id) {
+      try {
+        await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}/cancel`, {
+          method: "POST",
+          body: JSON.stringify({ reason: "final smart T-chat acceptance cleanup" }),
+        });
+        goalPlan = await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}/plan`).catch(() => goalPlan);
+        agentTaskIds = new Set([...agentTaskIds, ...taskIdsFromPlan(goalPlan)]);
+        for (const taskId of agentTaskIds) {
+          const current = await requestJson(base, `/api/tasks/${encodeURIComponent(taskId)}`);
+          if (!terminalStatuses.has(current.status)) {
+            await requestJson(base, `/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
+              method: "POST",
+              body: JSON.stringify({ reason: "final smart T-chat acceptance cleanup" }),
+            });
+          }
         }
       } catch (error) {
         cleanupErrors.push(error);

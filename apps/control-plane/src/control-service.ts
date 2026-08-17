@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AiTaskDecision,
   AiTaskDecisionResult,
+  ActionSpec,
   BuildPlan,
   BuildPlanDraft,
   BuildImportRequest,
@@ -12,26 +13,48 @@ import type {
   CompanionAction,
   DeclarativeSkill,
   DeclarativeSkillDraft,
+  FacilityRecord,
+  FacilityType,
+  GoalRecord,
+  GoalSpec,
+  KnowledgeRecord,
+  KnowledgeTopic,
   LiveFixtureRequest,
+  ObservedFacility,
   PermissionProfile,
   TaskProgressDetails,
   TaskRecord,
   TaskSpec,
+  WorkGraph,
+  WorkNode,
   WorldSnapshot,
 } from "@mc/protocol";
 import { sanitizeGameChatText } from "./game-chat-text.js";
-import { capabilitySchema, chatMessageSchema } from "@mc/protocol";
+import {
+  AGENT_PROTOCOL_VERSION,
+  capabilitySchema,
+  chatMessageSchema,
+  facilityRecordSchema,
+  goalRecordSchema,
+  goalSpecSchema,
+  knowledgeTopicSchema,
+  workGraphSchema,
+} from "@mc/protocol";
 import { BackendTaskFailure, type CompanionBackend, type TaskCallbacks } from "./backend.js";
-import type { AiDecisionMutationOptions, ChatDeliveryOptions } from "./control-api.js";
+import type { AgentAdvanceResult, AiDecisionMutationOptions, ChatDeliveryOptions, FacilityDraft } from "./control-api.js";
+import { AgentJournal, type AgentJournalState } from "./agent-journal.js";
 import { BuildPlanStore } from "./build-plan-store.js";
 import { importBuildDraft } from "./build-importer.js";
 import { ChatSettingsStore } from "./chat-settings-store.js";
 import { DeclarativeSkillStore } from "./declarative-skill-store.js";
 import { ControlError } from "./errors.js";
 import { CompanionEventBus } from "./event-bus.js";
+import { GameplayKnowledgeIndex } from "./gameplay-knowledge-index.js";
+import { planGoal } from "./goal-planner.js";
 import { TaskJournal } from "./task-journal.js";
 import { redactSensitiveText } from "./skill-security.js";
 import { commitAiTaskDecision } from "./ai-task-decision.js";
+import { z } from "zod";
 
 interface RuntimeCompanion {
   backend: CompanionBackend;
@@ -48,6 +71,20 @@ const DEFAULT_PERMISSIONS: PermissionProfile = {
   allowBreakingContainers: false,
   requireBuildConfirmation: true,
 };
+
+const FACILITY_TYPES = new Set<FacilityType>([
+  "home",
+  "storage",
+  "workstation",
+  "farm",
+  "ranch",
+  "mine",
+  "build",
+  "dragon-landing",
+  "portal",
+  "redstone",
+  "other",
+]);
 
 const TASK_CAPABILITIES: Partial<Record<TaskSpec["kind"], ReturnType<typeof capabilitySchema.parse>>> = {
   follow: "follow",
@@ -86,6 +123,7 @@ const MAX_PENDING_AI_DECISIONS = 128;
 interface PendingAiDecision {
   companionId: string;
   requester: string;
+  message: string;
   owner: string;
   expiresAt: number;
   submitting: boolean;
@@ -209,6 +247,8 @@ export class ControlService {
   readonly #taskJournal: TaskJournal;
   readonly #chatMessages: ChatMessage[] = [];
   readonly #pendingAiDecisions = new Map<string, PendingAiDecision>();
+  readonly #agentJournal: AgentJournal;
+  #agentState: AgentJournalState;
   #chatSequence = 0;
 
   constructor(options: {
@@ -219,6 +259,8 @@ export class ControlService {
     this.skills = options.skills ?? new DeclarativeSkillStore(options.stateDirectory);
     this.chatSettings = options.chatSettings ?? new ChatSettingsStore(options.stateDirectory);
     this.#taskJournal = new TaskJournal(options.stateDirectory);
+    this.#agentJournal = new AgentJournal(options.stateDirectory);
+    this.#agentState = this.#agentJournal.load();
     for (const { task, owner, terminalNotified } of this.#taskJournal.load()) {
       this.#tasks.set(task.id, task);
       this.#taskOwners.set(task.id, owner);
@@ -230,6 +272,8 @@ export class ControlService {
     const existing = this.#companions.get(backend.id);
     if (existing) {
       existing.backend = backend;
+      this.#syncSnapshotFacilities(backend.id, backend.snapshot());
+      void this.#resumeAgentGoalsForCompanion(backend.id);
       this.events.publish({
         type: "connection",
         companionId: backend.id,
@@ -245,6 +289,7 @@ export class ControlService {
       queue: [],
     });
     const runtime = this.#companions.get(backend.id)!;
+    this.#syncSnapshotFacilities(backend.id, backend.snapshot());
     const unfinished = [...this.#tasks.values()]
       .filter((task) => task.companionId === backend.id && !["succeeded", "failed", "cancelled"].includes(task.status))
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
@@ -261,6 +306,7 @@ export class ControlService {
     }
     this.#persistTaskState();
     void this.#pump(runtime);
+    void this.#resumeAgentGoalsForCompanion(backend.id);
     this.events.publish({
       type: "connection",
       companionId: backend.id,
@@ -277,7 +323,9 @@ export class ControlService {
   }
 
   getSnapshot(id: string): WorldSnapshot {
-    return this.#requireCompanion(id).backend.snapshot();
+    const snapshot = this.#requireCompanion(id).backend.snapshot();
+    this.#syncSnapshotFacilities(id, snapshot);
+    return snapshot;
   }
 
   getChatSettings(companionId?: string): Promise<ChatSettings> {
@@ -317,6 +365,7 @@ export class ControlService {
     this.#pendingAiDecisions.set(interactionId, {
       companionId: message.companionId,
       requester: message.sender,
+      message: message.message,
       owner,
       expiresAt: Date.now() + AI_DECISION_TTL_MS,
       submitting: false,
@@ -376,6 +425,7 @@ export class ControlService {
       const result = await commitAiTaskDecision(this, {
         companionId: pending.companionId,
         requester: pending.requester,
+        message: pending.message,
         owner: pending.owner,
         interactionId,
       }, decision);
@@ -416,6 +466,385 @@ export class ControlService {
       });
       throw caught;
     }
+  }
+
+  submitGoal(companionId: string, spec: GoalSpec, owner = "agent"): GoalRecord {
+    const runtime = this.#requireCompanion(companionId);
+    const parsedSpec = goalSpecSchema.parse(spec);
+    const now = new Date().toISOString();
+    const goal = goalRecordSchema.parse({
+      id: randomUUID(),
+      worldId: runtime.backend.snapshot().worldId,
+      companionId,
+      version: AGENT_PROTOCOL_VERSION,
+      spec: parsedSpec,
+      status: "planning",
+      progress: 0,
+      message: "Goal recorded and initial work graph generated",
+      createdAt: now,
+      plannedAt: now,
+    });
+    const graph = this.#buildInitialWorkGraph(goal, now);
+    if (graph.status === "draft" || graph.nodes.some((node) => node.status === "blocked")) {
+      goal.plannedAt = null;
+      goal.message = "Goal recorded; waiting for a supported local planner route";
+    } else {
+      goal.message = parsedSpec.taskHints.length > 0
+        ? "Goal recorded from task hints"
+        : `Goal planned locally with ${Math.max(0, graph.nodes.length - 1)} actionable work node${graph.nodes.length === 2 ? "" : "s"}`;
+    }
+    this.#agentState = {
+      ...this.#agentState,
+      goals: [...this.#agentState.goals.filter((entry) => entry.id !== goal.id), goal],
+      workGraphs: [
+        ...this.#agentState.workGraphs.filter((entry) => entry.goalId !== goal.id),
+        graph,
+      ],
+    };
+    this.#persistAgentState();
+    this.events.publish({
+      type: "system",
+      companionId,
+      message: `Agent goal accepted: ${goal.spec.title}`,
+      data: { goalId: goal.id, owner, workNodes: graph.nodes.length },
+    });
+    return structuredClone(goal);
+  }
+
+  listGoals(): GoalRecord[] {
+    return [...this.#agentState.goals]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((goal) => structuredClone(goal));
+  }
+
+  getGoal(id: string): GoalRecord {
+    const goal = this.#agentState.goals.find((entry) => entry.id === id);
+    if (!goal) {
+      throw new ControlError({ code: "GOAL_NOT_FOUND", message: `找不到 Agent 目标 ${id}`, statusCode: 404 });
+    }
+    return structuredClone(goal);
+  }
+
+  getPlan(goalId: string): WorkGraph {
+    const graph = this.#agentState.workGraphs.find((entry) => entry.goalId === goalId);
+    if (!graph) {
+      throw new ControlError({ code: "WORK_GRAPH_NOT_FOUND", message: `找不到目标 ${goalId} 的工作图`, statusCode: 404 });
+    }
+    return structuredClone(graph);
+  }
+
+  async advanceGoal(
+    goalId: string,
+    owner = "agent-goal",
+    options: AiDecisionMutationOptions = {},
+  ): Promise<AgentAdvanceResult> {
+    const goal = this.#requireMutableGoal(goalId);
+    const graph = this.#requireMutableWorkGraph(goalId);
+    const now = new Date().toISOString();
+    let startedTask: TaskRecord | undefined;
+    let advancedNodeId: string | undefined;
+
+    this.#syncWorkGraphFromTasks(goal, graph, now);
+    if (["paused", "succeeded", "failed", "cancelled"].includes(goal.status)
+      || ["paused", "succeeded", "failed", "cancelled"].includes(graph.status)) {
+      this.#persistAgentState();
+      return {
+        goal: structuredClone(goal),
+        plan: structuredClone(graph),
+        ...(startedTask ? { task: structuredClone(startedTask) } : {}),
+        ...(advancedNodeId ? { advancedNodeId } : {}),
+      };
+    }
+
+    for (let guard = 0; guard < 32; guard += 1) {
+      this.#syncWorkGraphFromTasks(goal, graph, new Date().toISOString());
+      if (this.#completeGoalIfDone(goal, graph, new Date().toISOString())) break;
+      const ready = this.#nextReadyWorkNode(graph);
+      if (!ready) break;
+
+      advancedNodeId = ready.id;
+      ready.status = "running";
+      ready.attempts += 1;
+      ready.checkpoint = {
+        ...ready.checkpoint,
+        owner,
+        startedAt: new Date().toISOString(),
+      };
+      graph.status = "running";
+      graph.updatedAt = new Date().toISOString();
+      goal.status = "running";
+      goal.startedAt ??= graph.updatedAt;
+      goal.activeWorkNodeId = ready.id;
+      goal.message = `Running work node: ${ready.label}`;
+      this.#persistAgentState();
+
+      try {
+        const task = await this.#executeWorkNodeAction(goal, graph, ready, owner, options);
+        if (task) {
+          startedTask = task;
+          break;
+        }
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : String(caught);
+        ready.status = "failed";
+        ready.progress = 0;
+        ready.checkpoint = {
+          ...ready.checkpoint,
+          failedAt: new Date().toISOString(),
+          error: redactSensitiveText(message).slice(0, 240),
+        };
+        graph.status = "failed";
+        graph.updatedAt = new Date().toISOString();
+        goal.status = "failed";
+        goal.finishedAt = graph.updatedAt;
+        goal.activeWorkNodeId = null;
+        goal.message = redactSensitiveText(message).slice(0, 500);
+        goal.error = {
+          code: caught instanceof ControlError ? caught.code : "WORK_NODE_FAILED",
+          message: goal.message || "Work node failed",
+          retryable: caught instanceof ControlError ? caught.retryable ?? true : true,
+          failedNodeId: ready.id,
+          suggestedRecovery: caught instanceof ControlError ? caught.suggestedRecovery : "观察环境后恢复或重试该目标。",
+        };
+        break;
+      }
+    }
+
+    this.#syncWorkGraphFromTasks(goal, graph, new Date().toISOString());
+    this.#completeGoalIfDone(goal, graph, new Date().toISOString());
+    this.#settleIdleWorkGraph(goal, graph, new Date().toISOString());
+    this.#persistAgentState();
+    return {
+      goal: structuredClone(goal),
+      plan: structuredClone(graph),
+      ...(startedTask ? { task: structuredClone(startedTask) } : {}),
+      ...(advancedNodeId ? { advancedNodeId } : {}),
+    };
+  }
+
+  pauseGoal(id: string, reason = "Goal paused"): GoalRecord {
+    const goal = this.#mutateGoal(id, (record, now) => {
+      if (["succeeded", "failed", "cancelled"].includes(record.status)) {
+        throw new ControlError({ code: "GOAL_TERMINAL", message: "已结束的 Agent 目标不能暂停", statusCode: 409 });
+      }
+      record.status = "paused";
+      record.message = reason.slice(0, 500);
+      for (const graph of this.#agentState.workGraphs.filter((entry) => entry.goalId === id)) {
+        graph.status = "paused";
+        graph.updatedAt = now;
+      }
+    });
+    this.events.publish({ type: "system", companionId: goal.companionId, message: `Agent goal paused: ${goal.spec.title}`, data: { goalId: id } });
+    return goal;
+  }
+
+  resumeGoal(id: string): GoalRecord {
+    const goal = this.#mutateGoal(id, (record, now) => {
+      if (record.status !== "paused") {
+        throw new ControlError({ code: "GOAL_NOT_PAUSED", message: "只有暂停中的 Agent 目标可以恢复", statusCode: 409 });
+      }
+      const graph = this.#agentState.workGraphs.find((entry) => entry.goalId === id);
+      record.status = graph?.status === "running" ? "running" : "planning";
+      record.message = "Goal resumed";
+      if (graph) {
+        graph.status = graph.nodes.some((node) => node.status === "running") ? "running" : "ready";
+        graph.updatedAt = now;
+      }
+    });
+    this.events.publish({ type: "system", companionId: goal.companionId, message: `Agent goal resumed: ${goal.spec.title}`, data: { goalId: id } });
+    return goal;
+  }
+
+  cancelGoal(id: string, reason = "Goal cancelled"): GoalRecord {
+    const goal = this.#mutateGoal(id, (record, now) => {
+      if (["succeeded", "failed", "cancelled"].includes(record.status)) return;
+      record.status = "cancelled";
+      record.message = reason.slice(0, 500);
+      record.finishedAt = now;
+      for (const graph of this.#agentState.workGraphs.filter((entry) => entry.goalId === id)) {
+        graph.status = "cancelled";
+        graph.updatedAt = now;
+        for (const node of graph.nodes) {
+          if (!["succeeded", "failed", "skipped"].includes(node.status)) node.status = "skipped";
+        }
+      }
+    });
+    this.events.publish({ type: "system", companionId: goal.companionId, message: `Agent goal cancelled: ${goal.spec.title}`, data: { goalId: id } });
+    return goal;
+  }
+
+  queryKnowledge(query: string, topics: KnowledgeTopic[] = []): KnowledgeRecord[] {
+    const parsedTopics = z.array(knowledgeTopicSchema).max(16).parse(topics);
+    return new GameplayKnowledgeIndex(this.#agentState.knowledge).query({
+      query,
+      topics: parsedTopics,
+      limit: 64,
+    });
+  }
+
+  listFacilities(worldId?: string): FacilityRecord[] {
+    return this.#agentState.facilities
+      .filter((facility) => !worldId || facility.worldId === worldId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((facility) => structuredClone(facility));
+  }
+
+  #facilitySignature(input: Pick<FacilityRecord, "worldId" | "dimension" | "type" | "name" | "position" | "tags">): string {
+    const tags = [...input.tags].sort((left, right) => left.localeCompare(right, "en-US")).join(",");
+    const x = Math.trunc(input.position.x);
+    const y = Math.trunc(input.position.y);
+    const z = Math.trunc(input.position.z);
+    return [
+      input.worldId,
+      input.dimension,
+      input.type,
+      input.name.toLocaleLowerCase("en-US"),
+      `${x},${y},${z}`,
+      tags,
+    ].join("\u0000");
+  }
+
+  #upsertFacility(input: FacilityDraft, now: string): FacilityRecord {
+    const parsed = facilityRecordSchema.parse({
+      ...input,
+      id: input.id ?? randomUUID(),
+      tags: input.tags ?? [],
+      properties: input.properties ?? {},
+      createdAt: now,
+      updatedAt: now,
+      lastUsedAt: null,
+    });
+    const existingIndex = this.#agentState.facilities.findIndex((entry) => (
+      entry.id === parsed.id || this.#facilitySignature(entry) === this.#facilitySignature(parsed)
+    ));
+    const existing = existingIndex >= 0 ? this.#agentState.facilities[existingIndex] : undefined;
+    const facility = facilityRecordSchema.parse({
+      ...parsed,
+      id: existing?.id ?? parsed.id,
+      createdAt: existing?.createdAt ?? parsed.createdAt,
+      updatedAt: now,
+      lastUsedAt: existing?.lastUsedAt ?? parsed.lastUsedAt,
+      properties: {
+        ...(existing?.properties ?? {}),
+        ...parsed.properties,
+      },
+    });
+    const facilities = [...this.#agentState.facilities];
+    if (existingIndex >= 0) facilities[existingIndex] = facility;
+    else facilities.push(facility);
+    this.#agentState = { ...this.#agentState, facilities };
+    return facility;
+  }
+
+  #syncSnapshotFacilities(companionId: string, snapshot: WorldSnapshot): void {
+    const now = new Date().toISOString();
+    const drafts = this.#facilityDraftsFromSnapshot(snapshot);
+    if (drafts.length === 0) return;
+    let synced = 0;
+    for (const draft of drafts) {
+      try {
+        this.#upsertFacility(draft, now);
+        synced += 1;
+      } catch (caught) {
+        this.events.publish({
+          type: "warning",
+          companionId,
+          message: `Skipped invalid observed facility: ${caught instanceof Error ? redactSensitiveText(caught.message) : "unknown error"}`,
+          data: { worldId: snapshot.worldId, facilityName: draft.name, facilityType: draft.type },
+        });
+      }
+    }
+    if (synced === 0) return;
+    this.#persistAgentState();
+    this.events.publish({
+      type: "system",
+      companionId,
+      message: `Agent facilities synchronized from snapshot: ${synced}`,
+      data: { worldId: snapshot.worldId, facilityCount: synced },
+    });
+  }
+
+  #facilityDraftsFromSnapshot(snapshot: WorldSnapshot): FacilityDraft[] {
+    const drafts: FacilityDraft[] = [];
+    const observed = snapshot.observedFacilities ?? [];
+    for (const facility of observed) {
+      drafts.push(this.#observedFacilityDraft(snapshot, facility));
+    }
+    if (snapshot.homeState && !snapshot.homeState.temporary) {
+      drafts.push({
+        worldId: snapshot.worldId,
+        dimension: snapshot.homeState.dimension,
+        type: "home",
+        name: "Observed home spawn",
+        position: snapshot.homeState.position,
+        tags: ["spawn", "home"],
+        properties: { source: "snapshot.homeState", temporary: false },
+      });
+    }
+    if (snapshot.miningState) {
+      const itemTag = snapshot.miningState.itemId.split(":").at(-1)?.replace(/[^a-z0-9_-]/giu, "_") || "resource";
+      drafts.push({
+        worldId: snapshot.worldId,
+        dimension: snapshot.dimension,
+        type: "mine",
+        name: `Observed ${itemTag} mine`,
+        position: snapshot.miningState.entrance ?? snapshot.miningState.lastSafeStand ?? snapshot.position,
+        tags: ["mining", itemTag],
+        properties: {
+          source: "snapshot.miningState",
+          phase: snapshot.miningState.phase,
+          targetY: snapshot.miningState.targetY,
+          itemId: snapshot.miningState.itemId,
+        },
+      });
+    }
+    if (snapshot.dragonState) {
+      drafts.push({
+        worldId: snapshot.worldId,
+        dimension: snapshot.dimension,
+        type: "dragon-landing",
+        name: `${snapshot.dragonState.name} landing area`,
+        position: snapshot.position,
+        tags: ["dragon", snapshot.dragonState.modId],
+        properties: {
+          source: "snapshot.dragonState",
+          entityId: snapshot.dragonState.entityId,
+          ownedByPlayer: snapshot.dragonState.ownedByPlayer,
+          flying: snapshot.dragonState.flying,
+        },
+      });
+    }
+    return drafts;
+  }
+
+  #observedFacilityDraft(snapshot: WorldSnapshot, facility: ObservedFacility): FacilityDraft {
+    return {
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: facility.type,
+      name: facility.name,
+      position: facility.position,
+      ...(facility.bounds ? { bounds: facility.bounds } : {}),
+      tags: facility.tags,
+      ...(facility.owner ? { owner: facility.owner } : {}),
+      properties: {
+        ...facility.properties,
+        source: "snapshot.observedFacilities",
+      },
+    };
+  }
+
+  registerFacility(input: FacilityDraft): FacilityRecord {
+    const now = new Date().toISOString();
+    const facility = this.#upsertFacility(input, now);
+    this.#persistAgentState();
+    this.events.publish({
+      type: "system",
+      companionId: null,
+      message: `Agent facility registered: ${facility.name}`,
+      data: { facilityId: facility.id, worldId: facility.worldId, type: facility.type },
+    });
+    return structuredClone(facility);
   }
 
   #pruneAiDecisions(now = Date.now()): void {
@@ -879,6 +1308,23 @@ export class ControlService {
   }
 
   async emergencyStop(disconnect = false): Promise<void> {
+    const stoppedAt = new Date().toISOString();
+    for (const goal of this.#agentState.goals) {
+      if (["succeeded", "failed", "cancelled"].includes(goal.status)) continue;
+      goal.status = "cancelled";
+      goal.activeWorkNodeId = null;
+      goal.message = "紧急停止";
+      goal.finishedAt = stoppedAt;
+      goal.error = null;
+      const graph = this.#agentState.workGraphs.find((entry) => entry.goalId === goal.id);
+      if (!graph) continue;
+      graph.status = "cancelled";
+      graph.updatedAt = stoppedAt;
+      for (const node of graph.nodes) {
+        if (!["succeeded", "failed", "skipped"].includes(node.status)) node.status = "skipped";
+      }
+    }
+    this.#persistAgentState();
     for (const controller of this.#controllers.values()) controller.abort(new Error("紧急停止"));
     this.#controllers.clear();
     this.#macroSteps.clear();
@@ -1191,6 +1637,7 @@ export class ControlService {
         runtime.activeTaskId = runtime.inFlightTaskIds.values().next().value ?? null;
       }
       this.#persistTaskState();
+      this.#continueAgentGoalsWaitingOnTask(task);
       void this.#pump(runtime);
     }
   }
@@ -1209,6 +1656,520 @@ export class ControlService {
 
   #persistTaskState(): void {
     this.#taskJournal.save(this.#tasks.values(), this.#taskOwners, this.#terminalNotifications);
+  }
+
+  #persistAgentState(): void {
+    this.#agentJournal.save(this.#agentState);
+  }
+
+  #requireMutableGoal(id: string): GoalRecord {
+    const goal = this.#agentState.goals.find((entry) => entry.id === id);
+    if (!goal) {
+      throw new ControlError({ code: "GOAL_NOT_FOUND", message: `找不到 Agent 目标 ${id}`, statusCode: 404 });
+    }
+    return goal;
+  }
+
+  #requireMutableWorkGraph(goalId: string): WorkGraph {
+    const graph = this.#agentState.workGraphs.find((entry) => entry.goalId === goalId);
+    if (!graph) {
+      throw new ControlError({ code: "WORK_GRAPH_NOT_FOUND", message: `找不到目标 ${goalId} 的工作图`, statusCode: 404 });
+    }
+    return graph;
+  }
+
+  #checkpointString(node: WorkNode, key: string): string | undefined {
+    const value = node.checkpoint[key];
+    return typeof value === "string" && value.trim() ? value : undefined;
+  }
+
+  #checkpointNumber(node: WorkNode, key: string): number | undefined {
+    const value = node.checkpoint[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  }
+
+  #checkpointBoolean(node: WorkNode, key: string): boolean {
+    return node.checkpoint[key] === true;
+  }
+
+  #checkpointStringArray(node: WorkNode, key: string): string[] {
+    const value = node.checkpoint[key];
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .map((entry) => entry.trim())
+      .slice(0, 16);
+  }
+
+  #markWorkNodeSucceeded(node: WorkNode, checkpoint: Record<string, unknown> = {}): void {
+    node.status = "succeeded";
+    node.progress = 1;
+    node.checkpoint = {
+      ...node.checkpoint,
+      ...checkpoint,
+      completedAt: new Date().toISOString(),
+    };
+  }
+
+  #syncWorkGraphFromTasks(goal: GoalRecord, graph: WorkGraph, now: string): void {
+    if (["cancelled", "succeeded"].includes(goal.status) || ["cancelled", "succeeded"].includes(graph.status)) return;
+    let activeNodeId: string | null = null;
+    for (const node of graph.nodes) {
+      const taskId = this.#checkpointString(node, "taskId");
+      if (!taskId) continue;
+      const task = this.#tasks.get(taskId);
+      if (!task) continue;
+      node.progress = task.progress;
+      node.checkpoint = {
+        ...node.checkpoint,
+        taskStatus: task.status,
+        taskMessage: redactSensitiveText(task.message).slice(0, 240),
+        syncedAt: now,
+      };
+      if (task.status === "queued" || task.status === "running") {
+        node.status = "running";
+        activeNodeId = node.id;
+      } else if (task.status === "paused") {
+        node.status = "paused";
+        activeNodeId = node.id;
+      } else if (task.status === "succeeded") {
+        node.status = "succeeded";
+        node.progress = 1;
+        this.#registerCompletedFacilityIfRequested(goal, node, task, now);
+      } else if (task.status === "failed" || task.status === "cancelled") {
+        node.status = "failed";
+        graph.status = "failed";
+        graph.updatedAt = now;
+        goal.status = "failed";
+        goal.finishedAt = now;
+        goal.activeWorkNodeId = null;
+        goal.message = redactSensitiveText(task.message).slice(0, 500);
+        goal.error = {
+          code: task.error?.code ?? (task.status === "cancelled" ? "TASK_CANCELLED" : "TASK_FAILED"),
+          message: goal.message || "Agent task node failed",
+          retryable: task.error?.retryable ?? task.status !== "cancelled",
+          failedNodeId: node.id,
+          ...(task.error?.suggestedRecovery ? { suggestedRecovery: task.error.suggestedRecovery } : {}),
+        };
+      }
+    }
+    const progress = graph.nodes.length === 0
+      ? 0
+      : graph.nodes.reduce((sum, node) => sum + node.progress, 0) / graph.nodes.length;
+    goal.progress = Math.max(0, Math.min(1, progress));
+    if (goal.status === "failed" || graph.status === "failed") return;
+    if (activeNodeId) {
+      goal.activeWorkNodeId = activeNodeId;
+      if (goal.status !== "paused") goal.status = "running";
+      if (graph.status !== "paused") graph.status = "running";
+      graph.updatedAt = now;
+    }
+  }
+
+  #registerCompletedFacilityIfRequested(goal: GoalRecord, node: WorkNode, task: TaskRecord, now: string): void {
+    if (!this.#checkpointBoolean(node, "shouldRegisterFacilityAfterBuild")) return;
+    if (this.#checkpointString(node, "registeredFacilityId")) return;
+    const type = this.#facilityTypeForCompletedNode(node, task);
+    const snapshot = this.#companions.get(goal.companionId)?.backend.snapshot();
+    const position = this.#facilityPositionForCompletedTask(task, snapshot);
+    if (!position || !snapshot?.dimension) {
+      node.checkpoint = {
+        ...node.checkpoint,
+        facilityRegistrationSkippedAt: now,
+        facilityRegistrationSkippedReason: "No live snapshot or placement anchor was available",
+      };
+      return;
+    }
+    const tags = this.#facilityTagsForCompletedNode(type, node, task);
+    const facility = this.#upsertFacility({
+      worldId: goal.worldId,
+      dimension: snapshot.dimension,
+      type,
+      name: this.#facilityNameForCompletedNode(type, node, task),
+      position,
+      tags,
+      owner: goal.spec.requestedBy,
+      sourceGoalId: goal.id,
+      properties: {
+        source: "agent.workGraph",
+        nodeId: node.id,
+        taskId: task.id,
+        taskKind: task.spec.kind,
+        ...(task.spec.kind === "macro" ? { skillId: task.spec.skillId } : {}),
+        ...(task.spec.kind === "build" ? { planId: task.spec.planId } : {}),
+      },
+    }, now);
+    node.checkpoint = {
+      ...node.checkpoint,
+      registeredFacilityId: facility.id,
+      registeredFacilityName: facility.name,
+      registeredFacilityType: facility.type,
+      registeredAt: now,
+    };
+  }
+
+  #facilityTypeForCompletedNode(node: WorkNode, task: TaskRecord): FacilityType {
+    const raw = this.#checkpointString(node, "facilityType");
+    if (raw && FACILITY_TYPES.has(raw as FacilityType)) return raw as FacilityType;
+    if (task.spec.kind === "macro") {
+      if (task.spec.skillId === "build.crop-farm") return "farm";
+      if (task.spec.skillId === "build.storage-room") return "storage";
+      if (task.spec.skillId === "life.establish-ranch" || task.spec.skillId === "build.animal-pen") return "ranch";
+      if (task.spec.skillId.includes("cobblestone-generator") || task.spec.skillId.includes("mob-farm")) return "redstone";
+    }
+    return task.spec.kind === "build" || task.spec.kind === "macro" ? "build" : "other";
+  }
+
+  #facilityTagsForCompletedNode(type: FacilityType, node: WorkNode, task: TaskRecord): string[] {
+    const tags = new Set<string>([
+      type,
+      "agent-goal",
+      ...this.#checkpointStringArray(node, "facilityTags"),
+    ]);
+    if (task.spec.kind === "macro") {
+      tags.add(task.spec.skillId);
+      if (task.spec.skillId.startsWith("build.")) tags.add("build");
+      if (task.spec.skillId === "build.crop-farm") tags.add("crop");
+      if (task.spec.skillId === "build.storage-room") tags.add("home");
+      if (task.spec.skillId === "life.establish-ranch" || task.spec.skillId === "build.animal-pen") tags.add("livestock");
+      if (task.spec.skillId.includes("cobblestone-generator")) tags.add("cobblestone-generator");
+      if (task.spec.skillId.includes("mob-farm")) tags.add("mob-farm");
+    } else if (task.spec.kind === "build") {
+      tags.add("build");
+      tags.add(task.spec.planId);
+    }
+    return [...tags].slice(0, 32);
+  }
+
+  #facilityNameForCompletedNode(type: FacilityType, node: WorkNode, task: TaskRecord): string {
+    const explicit = this.#checkpointString(node, "facilityName");
+    if (explicit) return explicit.slice(0, 120);
+    if (task.spec.kind === "macro") {
+      const readable = task.spec.skillId
+        .replace(/^build\./u, "")
+        .replace(/^life\./u, "")
+        .replace(/[-_.]+/gu, " ")
+        .trim();
+      if (readable) return `Agent ${type}: ${readable}`.slice(0, 120);
+    }
+    if (task.spec.kind === "build") return `Agent build: ${task.spec.planId}`.slice(0, 120);
+    return `Agent facility: ${node.label}`.slice(0, 120);
+  }
+
+  #facilityPositionForCompletedTask(task: TaskRecord, snapshot?: WorldSnapshot): FacilityDraft["position"] | null {
+    if (task.spec.kind === "macro" && task.spec.placementAnchor) return task.spec.placementAnchor;
+    if (task.spec.kind === "build" && task.spec.placementAnchor) return task.spec.placementAnchor;
+    return snapshot?.position ?? null;
+  }
+
+  #dependencySatisfied(node: WorkNode | undefined): boolean {
+    return node?.status === "succeeded" || node?.status === "skipped";
+  }
+
+  #completeGoalIfDone(goal: GoalRecord, graph: WorkGraph, now: string): boolean {
+    if (graph.nodes.length === 0 || !graph.nodes.every((node) => node.status === "succeeded" || node.status === "skipped")) return false;
+    graph.status = "succeeded";
+    graph.updatedAt = now;
+    goal.status = "succeeded";
+    goal.progress = 1;
+    goal.activeWorkNodeId = null;
+    goal.finishedAt = now;
+    goal.message = "Agent goal completed";
+    goal.error = null;
+    return true;
+  }
+
+  #settleIdleWorkGraph(goal: GoalRecord, graph: WorkGraph, now: string): void {
+    if (["paused", "succeeded", "failed", "cancelled"].includes(goal.status)
+      || ["paused", "succeeded", "failed", "cancelled"].includes(graph.status)) return;
+    if (graph.nodes.some((node) => node.status === "running" || node.status === "paused")) return;
+    goal.activeWorkNodeId = null;
+    if (graph.nodes.some((node) => node.status === "blocked")) {
+      graph.status = "draft";
+      graph.updatedAt = now;
+      goal.status = "planning";
+      goal.message = "Goal is waiting for an expanded local planner route";
+      return;
+    }
+    if (graph.nodes.some((node) => node.status === "pending")) {
+      graph.status = "ready";
+      graph.updatedAt = now;
+      goal.status = "planning";
+      goal.message = "Goal is ready for the next work node";
+    }
+  }
+
+  #nextReadyWorkNode(graph: WorkGraph): WorkNode | undefined {
+    const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+    for (const node of graph.nodes) {
+      if (node.status !== "pending") continue;
+      if (!node.dependsOn.every((dependency) => this.#dependencySatisfied(byId.get(dependency)))) continue;
+      if (this.#skipIfReusableFacilityAlreadyExists(graph, node)) continue;
+      return node;
+    }
+    return undefined;
+  }
+
+  #skipIfReusableFacilityAlreadyExists(graph: WorkGraph, node: WorkNode): boolean {
+    const queryNodeId = this.#checkpointString(node, "skipIfFacilityQueryNodeId");
+    if (!queryNodeId) return false;
+    const queryNode = graph.nodes.find((candidate) => candidate.id === queryNodeId);
+    if (!queryNode || !this.#dependencySatisfied(queryNode)) return false;
+    const facilityCount = this.#checkpointNumber(queryNode, "facilityCount") ?? 0;
+    if (facilityCount <= 0) return false;
+    node.status = "skipped";
+    node.progress = 1;
+    node.checkpoint = {
+      ...node.checkpoint,
+      skippedAt: new Date().toISOString(),
+      skippedReason: "Reusable facility already exists",
+      reusedFacilityId: this.#checkpointString(queryNode, "firstFacilityId") ?? "",
+      reusedFacilityName: this.#checkpointString(queryNode, "firstFacilityName") ?? "",
+    };
+    return true;
+  }
+
+  async #executeWorkNodeAction(
+    goal: GoalRecord,
+    graph: WorkGraph,
+    node: WorkNode,
+    owner: string,
+    options: AiDecisionMutationOptions = {},
+  ): Promise<TaskRecord | undefined> {
+    const action = node.action;
+    switch (action.kind) {
+      case "query-knowledge": {
+        const records = this.queryKnowledge(action.query, action.topics);
+        this.#markWorkNodeSucceeded(node, {
+          recordIds: records.map((record) => record.id).slice(0, 32),
+          recordCount: records.length,
+        });
+        graph.updatedAt = new Date().toISOString();
+        return undefined;
+      }
+      case "query-facilities": {
+        const facilities = this.#queryFacilitiesForAction(goal, action);
+        const usedAt = new Date().toISOString();
+        for (const facility of facilities) {
+          facility.lastUsedAt = usedAt;
+          facility.updatedAt = usedAt;
+        }
+        this.#markWorkNodeSucceeded(node, {
+          facilityIds: facilities.map((facility) => facility.id).slice(0, 32),
+          facilityCount: facilities.length,
+          ...(facilities[0] ? {
+            firstFacilityId: facilities[0].id,
+            firstFacilityName: facilities[0].name,
+            firstFacilityType: facilities[0].type,
+            firstFacilityPosition: facilities[0].position,
+          } : {}),
+        });
+        graph.updatedAt = usedAt;
+        return undefined;
+      }
+      case "noop": {
+        this.#markWorkNodeSucceeded(node, { note: action.note });
+        graph.updatedAt = new Date().toISOString();
+        return undefined;
+      }
+      case "verify": {
+        this.#markWorkNodeSucceeded(node, {
+          evidenceKind: action.evidenceKind,
+          expectation: action.expectation,
+          localVerification: true,
+        });
+        graph.updatedAt = new Date().toISOString();
+        return undefined;
+      }
+      case "register-facility": {
+        const facility = this.registerFacility(action.facility);
+        this.#markWorkNodeSucceeded(node, { facilityId: facility.id, facilityType: facility.type });
+        graph.updatedAt = new Date().toISOString();
+        return undefined;
+      }
+      case "chat": {
+        await this.sendChat(goal.companionId, action.message, owner);
+        this.#markWorkNodeSucceeded(node, { chatDelivered: true });
+        graph.updatedAt = new Date().toISOString();
+        return undefined;
+      }
+      case "control": {
+        await this.controlCompanion(goal.companionId, action.action);
+        this.#markWorkNodeSucceeded(node, { controlAction: action.action });
+        graph.updatedAt = new Date().toISOString();
+        return undefined;
+      }
+      case "task": {
+        const task = this.assignTask(goal.companionId, action.spec, owner, options);
+        node.status = task.status === "succeeded" ? "succeeded" : "running";
+        node.progress = task.progress;
+        node.checkpoint = {
+          ...node.checkpoint,
+          taskId: task.id,
+          taskStatus: task.status,
+          owner,
+        };
+        graph.updatedAt = new Date().toISOString();
+        return task;
+      }
+      case "skill": {
+        const spec: TaskSpec = {
+          kind: "macro",
+          skillId: action.skillId,
+          arguments: action.arguments,
+          requestedBy: goal.spec.requestedBy,
+          note: goal.spec.objective.slice(0, 500),
+          ...(action.materialMode ? { materialMode: action.materialMode } : {}),
+          ...(action.materialPreference ? { materialPreference: action.materialPreference } : {}),
+        };
+        const task = this.assignTask(goal.companionId, spec, owner, options);
+        node.status = task.status === "succeeded" ? "succeeded" : "running";
+        node.progress = task.progress;
+        node.checkpoint = {
+          ...node.checkpoint,
+          taskId: task.id,
+          taskStatus: task.status,
+          owner,
+        };
+        graph.updatedAt = new Date().toISOString();
+        return task;
+      }
+    }
+  }
+
+  #queryFacilitiesForAction(
+    goal: GoalRecord,
+    action: Extract<ActionSpec, { kind: "query-facilities" }>,
+  ): FacilityRecord[] {
+    const worldId = action.worldId ?? goal.worldId;
+    const tags = new Set(action.tags);
+    return this.#agentState.facilities
+      .filter((facility) => facility.worldId === worldId)
+      .filter((facility) => !action.dimension || facility.dimension === action.dimension)
+      .filter((facility) => !action.type || facility.type === action.type)
+      .filter((facility) => !action.owner || facility.owner === action.owner)
+      .filter((facility) => tags.size === 0 || action.tags.every((tag) => facility.tags.includes(tag)))
+      .sort((left, right) => (
+        (right.lastUsedAt ?? right.updatedAt).localeCompare(left.lastUsedAt ?? left.updatedAt)
+      ))
+      .slice(0, action.limit);
+  }
+
+  #continueAgentGoalsWaitingOnTask(task: TaskRecord): void {
+    if (!["succeeded", "failed", "cancelled"].includes(task.status)) return;
+    this.#pruneAiDecisions();
+    const decisionStillSettling = [...this.#pendingAiDecisions.values()]
+      .some((candidate) => candidate.companionId === task.companionId);
+    if (decisionStillSettling) {
+      // An instant backend task can finish before submitAiDecision has delivered
+      // its one start reply and released the one-shot mutation guard. Continue
+      // after that transaction settles instead of failing the validated graph.
+      const retry = setTimeout(() => this.#continueAgentGoalsWaitingOnTask(task), 25);
+      retry.unref();
+      return;
+    }
+    for (const graph of this.#agentState.workGraphs) {
+      const node = graph.nodes.find((candidate) => this.#checkpointString(candidate, "taskId") === task.id);
+      if (!node) continue;
+      const goal = this.#agentState.goals.find((candidate) => candidate.id === graph.goalId);
+      if (!goal || ["paused", "succeeded", "failed", "cancelled"].includes(goal.status)) continue;
+      const owner = this.#checkpointString(node, "owner") ?? "agent-goal";
+      void this.advanceGoal(goal.id, owner).catch((caught) => {
+        this.events.publish({
+          type: "warning",
+          companionId: goal.companionId,
+          message: `Agent goal continuation failed: ${caught instanceof Error ? redactSensitiveText(caught.message) : "unknown error"}`,
+          data: { goalId: goal.id, nodeId: node.id, taskId: task.id },
+        });
+      });
+    }
+  }
+
+  async #resumeAgentGoalsForCompanion(companionId: string): Promise<void> {
+    const candidates = this.#agentState.goals
+      .filter((goal) => goal.companionId === companionId)
+      .filter((goal) => !["paused", "succeeded", "failed", "cancelled"].includes(goal.status))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    for (const goal of candidates) {
+      const graph = this.#agentState.workGraphs.find((entry) => entry.goalId === goal.id);
+      if (!graph || ["paused", "succeeded", "failed", "cancelled"].includes(graph.status)) continue;
+      const activeNode = graph.nodes.find((node) => node.id === goal.activeWorkNodeId)
+        ?? graph.nodes.find((node) => node.status === "running" || node.status === "paused")
+        ?? graph.nodes.find((node) => this.#checkpointString(node, "owner"));
+      const owner = activeNode ? this.#checkpointString(activeNode, "owner") ?? "agent-goal" : "agent-goal";
+      try {
+        await this.advanceGoal(goal.id, owner);
+      } catch (caught) {
+        this.events.publish({
+          type: "warning",
+          companionId,
+          message: `Agent goal resume failed: ${caught instanceof Error ? redactSensitiveText(caught.message) : "unknown error"}`,
+          data: { goalId: goal.id },
+        });
+      }
+    }
+  }
+
+  #buildInitialWorkGraph(goal: GoalRecord, now: string): WorkGraph {
+    const taskHints = goal.spec.taskHints;
+    const knowledgeNode: WorkNode = {
+      id: "knowledge_lookup",
+      label: "Retrieve local gameplay knowledge",
+      action: {
+        kind: "query-knowledge",
+        query: goal.spec.objective,
+        topics: [],
+      } satisfies ActionSpec,
+      dependsOn: [],
+      status: "pending",
+      attempts: 0,
+      progress: 0,
+      checkpoint: {},
+    };
+    const planned = taskHints.length > 0
+      ? {
+          nodes: taskHints.map((spec, index) => ({
+            id: `task_${index + 1}`,
+            label: `${spec.kind} task`,
+            action: { kind: "task", spec } satisfies ActionSpec,
+            dependsOn: index === 0 ? [knowledgeNode.id] : [`task_${index}`],
+            status: "pending" as const,
+            attempts: 0,
+            progress: 0,
+            checkpoint: {},
+          })),
+          edges: taskHints.map((_, index) => ({
+            from: index === 0 ? knowledgeNode.id : `task_${index}`,
+            to: `task_${index + 1}`,
+          })),
+          status: "ready" as const,
+        }
+      : planGoal(goal, knowledgeNode.id);
+    const actionNodes: WorkNode[] = planned.nodes;
+    const nodes = [knowledgeNode, ...actionNodes];
+    return workGraphSchema.parse({
+      id: randomUUID(),
+      goalId: goal.id,
+      version: AGENT_PROTOCOL_VERSION,
+      status: planned.status,
+      nodes,
+      edges: planned.edges,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  #mutateGoal(id: string, mutate: (goal: GoalRecord, now: string) => void): GoalRecord {
+    const index = this.#agentState.goals.findIndex((entry) => entry.id === id);
+    if (index < 0) {
+      throw new ControlError({ code: "GOAL_NOT_FOUND", message: `找不到 Agent 目标 ${id}`, statusCode: 404 });
+    }
+    const nextGoals = this.#agentState.goals.map((goal) => structuredClone(goal));
+    const goal = nextGoals[index]!;
+    mutate(goal, new Date().toISOString());
+    this.#agentState = { ...this.#agentState, goals: nextGoals };
+    this.#persistAgentState();
+    return structuredClone(goal);
   }
 
   async #notifyTaskTerminalOnce(task: TaskRecord): Promise<void> {

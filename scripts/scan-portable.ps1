@@ -22,6 +22,21 @@ function Invoke-NativeCapture([string]$Command, [string[]]$Arguments) {
     return [PSCustomObject]@{ Output = $output; ExitCode = $exitCode }
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $resolved = [System.IO.Path]::GetFullPath($LiteralPath)
+    $stream = [System.IO.File]::OpenRead($resolved)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 $projectRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 
 function Get-AbsoluteInputPath([string]$Value, [string]$BasePath) {
@@ -47,7 +62,7 @@ if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
     throw "Portable archive not found: $archivePath"
 }
 $scanTargets = @($ArtifactRoot, $archivePath)
-$archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+$archiveHash = Get-Sha256Hex -LiteralPath $archivePath
 $checksumPath = Join-Path (Split-Path -Parent $ArtifactRoot) "SHA256SUMS.txt"
 if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf)) {
     throw "Portable checksum file not found: $checksumPath"
@@ -73,7 +88,7 @@ foreach ($entry in $manifest.files) {
         $hashFailures += "missing: $($entry.path)"
         continue
     }
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
+    $actual = Get-Sha256Hex -LiteralPath $file
     if ($actual -ne ([string]$entry.sha256).ToLowerInvariant()) {
         $hashFailures += "hash mismatch: $($entry.path)"
     }
@@ -105,8 +120,18 @@ foreach ($pattern in @('powershell.exe', 'pwsh.exe', 'cmd.exe', 'NODE_SEA_BLOB',
 
 $executables = @(Get-ChildItem -LiteralPath $ArtifactRoot -Recurse -File -Filter "*.exe")
 $signatureReport = @($executables | ForEach-Object {
-    $signature = Get-AuthenticodeSignature -LiteralPath $_.FullName
     $relative = $_.FullName.Substring($ArtifactRoot.Length).TrimStart('\').Replace('\', '/')
+    $signatureStatus = 'Unavailable'
+    $signer = $null
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $_.FullName -ErrorAction Stop
+        $signatureStatus = $signature.Status.ToString()
+        $signer = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+    } catch {
+        if ($RequireSignature) {
+            throw "Authenticode inspection is required but unavailable for $relative`: $($_.Exception.Message)"
+        }
+    }
     [ordered]@{
         path = $relative
         firstParty = $relative -in @(
@@ -115,9 +140,9 @@ $signatureReport = @($executables | ForEach-Object {
             'runtime/MinecraftCodexPicker.exe',
             'runtime/MinecraftCodexSecret.exe'
         )
-        status = $signature.Status.ToString()
-        signer = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
-        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+        status = $signatureStatus
+        signer = $signer
+        sha256 = Get-Sha256Hex -LiteralPath $_.FullName
     }
 })
 if ($RequireSignature -and @($signatureReport | Where-Object { $_.firstParty -and $_.status -ne 'Valid' }).Count -gt 0) {
@@ -228,12 +253,12 @@ if ($SkipDefender -or $AllowUnavailableScanner) {
             $scanFailure = $scanner.reason
         } else {
             try {
-                $clamExecutableHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedClamScanPath).Hash.ToLowerInvariant()
+                $clamExecutableHash = Get-Sha256Hex -LiteralPath $resolvedClamScanPath
                 $databaseEvidence = @($clamDatabaseFiles | Sort-Object FullName | ForEach-Object {
                     [ordered]@{
                         name = $_.FullName.Substring($resolvedClamDatabaseRoot.Length).TrimStart('\').Replace('\', '/')
                         size = $_.Length
-                        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+                        sha256 = Get-Sha256Hex -LiteralPath $_.FullName
                     }
                 })
                 $versionResult = Invoke-NativeCapture $resolvedClamScanPath @('--version')

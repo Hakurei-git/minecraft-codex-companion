@@ -53,6 +53,9 @@ final class DeepMiningLiveFixture {
     private static final int STAIR_STEPS = 4;
     private static final int ORE_START = 10;
     private static final int ORE_COUNT = 3;
+    static final int INITIAL_LOG_COUNT = DeepMiningPolicy.REQUIRED_LOG_RESERVE + 32;
+    static final int INITIAL_COAL_COUNT = 16;
+    static final int BALLAST_STACK_COUNT = 21;
     private static final int[] SITE_OFFSETS = {96, -96, 128, -128, 160, -160, 192, -192};
     private static final Set<String> GRAVITY_BLOCK_IDS = Set.of(
         "minecraft:sand",
@@ -180,8 +183,11 @@ final class DeepMiningLiveFixture {
                 set(level, entry.getKey(), entry.getValue());
             }
             clearNpcInventory(npc);
-            insert(npc, Items.OAK_LOG, 16);
-            insert(npc, Items.COAL, 8);
+            // The Agent plan crafts tools, 64 torches, and 64 ladders before
+            // replenishing its required full-stack log reserve. Keep that
+            // preparation local so this fixture isolates the deep-mining route.
+            insert(npc, Items.OAK_LOG, INITIAL_LOG_COUNT);
+            insert(npc, Items.COAL, INITIAL_COAL_COUNT);
             insert(npc, Items.IRON_INGOT, 6);
             insert(npc, Items.COBBLESTONE, 32);
             insert(npc, Items.COOKED_BEEF, 16);
@@ -194,7 +200,7 @@ final class DeepMiningLiveFixture {
                 Blocks.DEEPSLATE.asItem(),
                 Blocks.COBBLED_DEEPSLATE.asItem()
             };
-            for (int index = 0; index < 22; index++) {
+            for (int index = 0; index < BALLAST_STACK_COUNT; index++) {
                 insert(npc, ballast[index % ballast.length], 64);
             }
             player.getInventory().clearContent();
@@ -270,6 +276,7 @@ final class DeepMiningLiveFixture {
             + ",o=" + state.getInt("MaxDiamonds")
             + ",g=" + state.getInt("MaxPlayerDiamondPickaxes")
             + ",v=" + bit(state.getBoolean("DeliverySeen"))
+            + ",q=" + bit(state.getBoolean("TaskIdStable"))
             + ",w=" + state.getInt("DiscardedStoneStacks")
             + ",j=" + state.getInt("DiscardedStoneItems")
             + ",n=" + bit(state.getBoolean("SawStoneDropLedger"))
@@ -316,7 +323,7 @@ final class DeepMiningLiveFixture {
             ));
         }
         String taskId = npc.tasks().activeTaskId();
-        if (taskId != null && !taskId.isBlank() && !taskId.startsWith("local:")) {
+        if (shouldTrackDeepMiningTaskId(diagnostics.phase(), taskId)) {
             String observed = state.getString("ObservedTaskId");
             if (observed.isBlank()) state.putString("ObservedTaskId", taskId);
             else if (!observed.equals(taskId)) state.putBoolean("TaskIdStable", false);
@@ -329,6 +336,12 @@ final class DeepMiningLiveFixture {
             }
         }
         marker.getPersistentData().put(STATE_KEY, state);
+    }
+
+    static boolean shouldTrackDeepMiningTaskId(String phase, String taskId) {
+        return phase != null && !phase.isBlank()
+            && taskId != null && !taskId.isBlank()
+            && !taskId.startsWith("local:");
     }
 
     static boolean acceptanceComplete(

@@ -35,7 +35,6 @@ try {
             $launcherConfig = Get-Content -LiteralPath $launcherConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
             $antigravityConfigPath = [string]$launcherConfig.antigravityConfigPath
             if (-not [string]::IsNullOrWhiteSpace($antigravityConfigPath)) {
-                $env:MC_ANTIGRAVITY_HOME = Split-Path -Parent $antigravityConfigPath
                 if ([string]::IsNullOrWhiteSpace([string]$env:MC_ANTIGRAVITY_CONFIG_PATH)) {
                     $env:MC_ANTIGRAVITY_CONFIG_PATH = $antigravityConfigPath
                 }

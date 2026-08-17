@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const PROTOCOL_VERSION = 1 as const;
+export const AGENT_PROTOCOL_VERSION = 2 as const;
 
 export const backendKindSchema = z.enum([
   "simulator",
@@ -121,6 +122,32 @@ export const dragonStateSchema = z.object({
 });
 export type DragonState = z.infer<typeof dragonStateSchema>;
 
+export const observedFacilitySchema = z.object({
+  type: z.enum([
+    "home",
+    "storage",
+    "workstation",
+    "farm",
+    "ranch",
+    "mine",
+    "build",
+    "dragon-landing",
+    "portal",
+    "redstone",
+    "other",
+  ]),
+  name: z.string().trim().min(1).max(120),
+  position: vec3Schema,
+  bounds: z.object({ min: vec3Schema, max: vec3Schema }).optional(),
+  tags: z.array(z.string().trim().min(1).max(64)).max(32).default([]),
+  owner: z.string().trim().min(1).max(64).optional(),
+  properties: z.record(z.string().trim().min(1).max(64), z.unknown()).refine(
+    (value) => Object.keys(value).length <= 64,
+    "At most 64 metadata fields",
+  ).default({}),
+});
+export type ObservedFacility = z.infer<typeof observedFacilitySchema>;
+
 export const npcTaskQueueEntrySchema = z.object({
   id: z.string().min(1),
   kind: z.string().min(1),
@@ -202,6 +229,7 @@ export const worldSnapshotSchema = z.object({
   liveFixtureAck: liveFixtureAckSchema.optional(),
   homeState: homeStateSchema.optional(),
   dragonState: dragonStateSchema.optional(),
+  observedFacilities: z.array(observedFacilitySchema).max(64).optional(),
 });
 export type WorldSnapshot = z.infer<typeof worldSnapshotSchema>;
 
@@ -362,6 +390,9 @@ const resourceSelectorSchema = z.string().trim().min(1).max(257).refine(
   "Expected a Minecraft resource identifier or #tag",
 );
 
+export const companionActionSchema = z.enum(["summon", "recall", "follow", "stay"]);
+export type CompanionAction = z.infer<typeof companionActionSchema>;
+
 export const buildMaterialPreferenceSchema = z.object({
   source: z.enum(["auto", "inventory", "home", "nearby"]).default("auto"),
   preferredBlockId: resourceLocationSchema.optional(),
@@ -384,6 +415,7 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     kind: z.literal("gather"),
     itemId: resourceSelectorSchema,
     count: z.number().int().min(1).max(4096),
+    countMode: z.enum(["acquire", "inventory-total"]).optional(),
     movement: z.enum(["auto", "walk"]).optional(),
   }),
   z.object({
@@ -427,7 +459,7 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
   z.object({
     ...taskBase,
     kind: z.literal("dragon"),
-    action: z.enum(["observe", "feed", "heal", "tame", "follow", "stay", "mount", "dismount", "care-for-egg", "recall", "assist-combat", "land", "fly-to"]),
+    action: z.enum(["observe", "feed", "heal", "tame", "follow", "stay", "mount", "share-ride", "dismount", "care-for-egg", "recall", "assist-combat", "land", "fly-to"]),
     targetId: z.string().trim().max(128).optional(),
     target: vec3Schema.optional(),
   }),
@@ -451,6 +483,316 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type TaskSpec = z.infer<typeof taskSpecSchema>;
+
+const boundedMetadataSchema = z.record(
+  z.string().trim().min(1).max(64),
+  z.unknown(),
+).refine((value) => Object.keys(value).length <= 64, "At most 64 metadata fields").default({});
+
+const workNodeIdSchema = z.string().regex(/^[a-z][a-z0-9._-]{0,63}$/u);
+const goalTitleSchema = z.string().trim().min(1).max(160);
+const boundedTextSchema = z.string().trim().min(1).max(500);
+
+export const agentProtocolVersionSchema = z.literal(AGENT_PROTOCOL_VERSION);
+export type AgentProtocolVersion = z.infer<typeof agentProtocolVersionSchema>;
+
+export const goalIntentSourceSchema = z.enum([
+  "t-chat",
+  "mcp",
+  "dashboard",
+  "automation",
+  "system",
+]);
+export type GoalIntentSource = z.infer<typeof goalIntentSourceSchema>;
+
+export const goalStatusSchema = z.enum([
+  "queued",
+  "planning",
+  "running",
+  "paused",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+export type GoalStatus = z.infer<typeof goalStatusSchema>;
+
+export const goalSpecSchema = z.object({
+  title: goalTitleSchema,
+  objective: boundedTextSchema,
+  requestedBy: playerReferenceSchema,
+  source: goalIntentSourceSchema.default("t-chat"),
+  priority: z.number().int().min(0).max(1000).default(100),
+  mode: chatActionModeSchema.default(DEFAULT_CHAT_ACTION_MODE),
+  deliverTo: playerReferenceSchema.optional(),
+  constraints: z.array(z.string().trim().min(1).max(200)).max(32).default([]),
+  taskHints: z.array(taskSpecSchema).max(16).default([]),
+  metadata: boundedMetadataSchema,
+});
+export type GoalSpec = z.infer<typeof goalSpecSchema>;
+
+export const facilityTypeSchema = z.enum([
+  "home",
+  "storage",
+  "workstation",
+  "farm",
+  "ranch",
+  "mine",
+  "build",
+  "dragon-landing",
+  "portal",
+  "redstone",
+  "other",
+]);
+export type FacilityType = z.infer<typeof facilityTypeSchema>;
+
+export const facilityRecordSchema = z.object({
+  id: z.string().uuid(),
+  worldId: z.string().trim().min(1).max(128),
+  dimension: resourceLocationSchema,
+  type: facilityTypeSchema,
+  name: z.string().trim().min(1).max(120),
+  position: vec3Schema,
+  bounds: z.object({ min: vec3Schema, max: vec3Schema }).optional(),
+  tags: z.array(z.string().trim().min(1).max(64)).max(32).default([]),
+  owner: playerReferenceSchema.optional(),
+  sourceGoalId: z.string().uuid().optional(),
+  properties: boundedMetadataSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  lastUsedAt: z.string().datetime().nullable().default(null),
+});
+export type FacilityRecord = z.infer<typeof facilityRecordSchema>;
+
+export const knowledgeSourceSchema = z.enum([
+  "world-state",
+  "vanilla-registry",
+  "datapack",
+  "builtin",
+  "mod-adapter",
+  "skill",
+  "ai-suggestion",
+]);
+export type KnowledgeSource = z.infer<typeof knowledgeSourceSchema>;
+
+export const knowledgeTopicSchema = z.enum([
+  "crafting",
+  "smelting",
+  "mining",
+  "farming",
+  "ranching",
+  "food",
+  "combat",
+  "storage",
+  "building",
+  "redstone",
+  "dragon",
+  "travel",
+  "other",
+]);
+export type KnowledgeTopic = z.infer<typeof knowledgeTopicSchema>;
+
+export const knowledgeRecordSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9._:-]{1,127}$/u),
+  version: z.string().trim().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
+  gameVersion: z.string().trim().min(1).max(32),
+  source: knowledgeSourceSchema,
+  topic: knowledgeTopicSchema,
+  inputs: z.array(resourceSelectorSchema).max(32).default([]),
+  outputs: z.array(resourceSelectorSchema).max(32).default([]),
+  tags: z.array(z.string().trim().min(1).max(64)).max(32).default([]),
+  summary: z.string().trim().min(1).max(500),
+  facts: boundedMetadataSchema,
+  confidence: z.enum(["authoritative", "observed", "inferred"]).default("authoritative"),
+  updatedAt: z.string().datetime(),
+});
+export type KnowledgeRecord = z.infer<typeof knowledgeRecordSchema>;
+
+export const resourceReservationSchema = z.object({
+  id: z.string().uuid(),
+  goalId: z.string().uuid(),
+  nodeId: workNodeIdSchema.optional(),
+  itemId: resourceSelectorSchema,
+  count: z.number().int().min(1).max(4096),
+  source: z.enum([
+    "npc-inventory",
+    "player",
+    "nearby-container",
+    "home-storage",
+    "nearby-resource",
+    "expedition",
+    "crafted",
+  ]),
+  status: z.enum(["planned", "reserved", "consumed", "released", "failed"]).default("planned"),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type ResourceReservation = z.infer<typeof resourceReservationSchema>;
+
+export const actionEvidenceSchema = z.object({
+  id: z.string().uuid(),
+  nodeId: workNodeIdSchema,
+  kind: z.enum([
+    "snapshot",
+    "item-transaction",
+    "block-state",
+    "entity-state",
+    "chat-delivery",
+    "task-result",
+    "fixture",
+    "manual",
+  ]),
+  at: z.string().datetime(),
+  summary: z.string().trim().min(1).max(500),
+  data: boundedMetadataSchema,
+  verified: z.boolean().default(false),
+});
+export type ActionEvidence = z.infer<typeof actionEvidenceSchema>;
+
+export const actionSpecSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("noop"), note: boundedTextSchema }).strict(),
+  z.object({ kind: z.literal("chat"), message: z.string().trim().min(1).max(220) }).strict(),
+  z.object({ kind: z.literal("control"), action: companionActionSchema }).strict(),
+  z.object({ kind: z.literal("task"), spec: taskSpecSchema }).strict(),
+  z.object({
+    kind: z.literal("skill"),
+    skillId: z.string().trim().min(1).max(128),
+    arguments: boundedMetadataSchema,
+    materialMode: z.enum(["survival", "creative"]).optional(),
+    materialPreference: buildMaterialPreferenceSchema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("query-knowledge"),
+    query: z.string().trim().min(1).max(240),
+    topics: z.array(knowledgeTopicSchema).max(16).default([]),
+  }).strict(),
+  z.object({
+    kind: z.literal("query-facilities"),
+    worldId: z.string().trim().min(1).max(128).optional(),
+    dimension: resourceLocationSchema.optional(),
+    type: facilityTypeSchema.optional(),
+    tags: z.array(z.string().trim().min(1).max(64)).max(16).default([]),
+    owner: playerReferenceSchema.optional(),
+    limit: z.number().int().min(1).max(64).default(16),
+  }).strict(),
+  z.object({
+    kind: z.literal("register-facility"),
+    facility: facilityRecordSchema.omit({ createdAt: true, updatedAt: true, lastUsedAt: true }),
+  }).strict(),
+  z.object({
+    kind: z.literal("verify"),
+    evidenceKind: actionEvidenceSchema.shape.kind,
+    expectation: z.string().trim().min(1).max(240),
+  }).strict(),
+]);
+export type ActionSpec = z.infer<typeof actionSpecSchema>;
+
+export const workNodeStatusSchema = z.enum([
+  "pending",
+  "ready",
+  "running",
+  "blocked",
+  "paused",
+  "succeeded",
+  "failed",
+  "skipped",
+]);
+export type WorkNodeStatus = z.infer<typeof workNodeStatusSchema>;
+
+export const workNodeSchema = z.object({
+  id: workNodeIdSchema,
+  label: z.string().trim().min(1).max(120),
+  action: actionSpecSchema,
+  dependsOn: z.array(workNodeIdSchema).max(32).default([]),
+  status: workNodeStatusSchema.default("pending"),
+  attempts: z.number().int().nonnegative().max(32).default(0),
+  progress: z.number().min(0).max(1).default(0),
+  checkpoint: boundedMetadataSchema,
+});
+export type WorkNode = z.infer<typeof workNodeSchema>;
+
+export const workGraphEdgeSchema = z.object({
+  from: workNodeIdSchema,
+  to: workNodeIdSchema,
+  condition: z.string().trim().min(1).max(160).optional(),
+});
+export type WorkGraphEdge = z.infer<typeof workGraphEdgeSchema>;
+
+export const workGraphStatusSchema = z.enum([
+  "draft",
+  "ready",
+  "running",
+  "paused",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+export type WorkGraphStatus = z.infer<typeof workGraphStatusSchema>;
+
+export const workGraphSchema = z.object({
+  id: z.string().uuid(),
+  goalId: z.string().uuid(),
+  version: agentProtocolVersionSchema.default(AGENT_PROTOCOL_VERSION),
+  status: workGraphStatusSchema.default("draft"),
+  nodes: z.array(workNodeSchema).min(1).max(512),
+  edges: z.array(workGraphEdgeSchema).max(2048).default([]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).superRefine((graph, context) => {
+  const ids = new Set<string>();
+  graph.nodes.forEach((node, index) => {
+    if (ids.has(node.id)) {
+      context.addIssue({ code: "custom", path: ["nodes", index, "id"], message: "Duplicate work node id" });
+    }
+    ids.add(node.id);
+  });
+  graph.nodes.forEach((node, index) => {
+    node.dependsOn.forEach((dependency, dependencyIndex) => {
+      if (!ids.has(dependency)) {
+        context.addIssue({
+          code: "custom",
+          path: ["nodes", index, "dependsOn", dependencyIndex],
+          message: "Unknown dependency node",
+        });
+      }
+    });
+  });
+  graph.edges.forEach((edge, index) => {
+    if (!ids.has(edge.from)) {
+      context.addIssue({ code: "custom", path: ["edges", index, "from"], message: "Unknown edge source" });
+    }
+    if (!ids.has(edge.to)) {
+      context.addIssue({ code: "custom", path: ["edges", index, "to"], message: "Unknown edge target" });
+    }
+    if (edge.from === edge.to) {
+      context.addIssue({ code: "custom", path: ["edges", index], message: "Self-referential edges are not useful" });
+    }
+  });
+});
+export type WorkGraph = z.infer<typeof workGraphSchema>;
+
+export const goalRecordSchema = z.object({
+  id: z.string().uuid(),
+  worldId: z.string().trim().min(1).max(128),
+  companionId: z.string().trim().min(1).max(128),
+  version: agentProtocolVersionSchema.default(AGENT_PROTOCOL_VERSION),
+  spec: goalSpecSchema,
+  status: goalStatusSchema,
+  activeWorkNodeId: workNodeIdSchema.nullable().default(null),
+  progress: z.number().min(0).max(1).default(0),
+  message: z.string().trim().max(500).default(""),
+  createdAt: z.string().datetime(),
+  plannedAt: z.string().datetime().nullable().default(null),
+  startedAt: z.string().datetime().nullable().default(null),
+  finishedAt: z.string().datetime().nullable().default(null),
+  error: z.object({
+    code: z.string().trim().min(1).max(80),
+    message: z.string().trim().min(1).max(500),
+    retryable: z.boolean(),
+    failedNodeId: workNodeIdSchema.optional(),
+    suggestedRecovery: z.string().trim().min(1).max(240).optional(),
+  }).nullable().default(null),
+});
+export type GoalRecord = z.infer<typeof goalRecordSchema>;
 
 export const skillParameterSchema = z.object({
   name: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,47}$/),
@@ -643,9 +985,6 @@ export const companionSchema = z.object({
 });
 export type Companion = z.infer<typeof companionSchema>;
 
-export const companionActionSchema = z.enum(["summon", "recall", "follow", "stay"]);
-export type CompanionAction = z.infer<typeof companionActionSchema>;
-
 const aiDecisionBase = {
   reply: z.string().trim().min(1).max(220),
   summary: z.string().trim().max(400).default(""),
@@ -693,6 +1032,7 @@ export const aiTaskDecisionResultSchema = z.object({
   ok: z.literal(true),
   interactionId: z.string().trim().min(1).max(128),
   decisionType: aiTaskDecisionTypeSchema,
+  goalId: z.string().uuid().optional(),
   taskId: z.string().uuid().optional(),
   reply: z.string().trim().min(1).max(220),
 });

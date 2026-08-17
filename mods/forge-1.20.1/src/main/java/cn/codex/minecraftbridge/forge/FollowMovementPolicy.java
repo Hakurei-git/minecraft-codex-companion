@@ -44,6 +44,19 @@ final class FollowMovementPolicy {
             && stalledTicks >= maxStalledTicks;
     }
 
+    static boolean shouldRecoverTaskApproach(
+        boolean ownerCanTeleport,
+        double distance,
+        double recallDistance,
+        int stalledTicks,
+        int maxStalledTicks
+    ) {
+        return ownerCanTeleport
+            && Double.isFinite(distance)
+            && distance > 0.0D
+            && (distance > recallDistance || stalledTicks >= maxStalledTicks);
+    }
+
     static boolean shouldUseWalkingDescent(
         boolean ownerCanTeleport,
         int stalledTicks,

@@ -20,4 +20,8 @@ final class GatherProgressPolicy {
     static int includingExternalSupply(int completed, int inventoryAtStart, int inventoryNow) {
         return Math.max(0, inventoryNow - Math.max(0, inventoryAtStart));
     }
+
+    static int inventoryTotal(int target, int inventoryNow) {
+        return Math.min(Math.max(0, target), Math.max(0, inventoryNow));
+    }
 }

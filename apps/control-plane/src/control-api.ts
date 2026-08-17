@@ -11,8 +11,14 @@ import type {
   CompanionAction,
   DeclarativeSkill,
   DeclarativeSkillDraft,
+  FacilityRecord,
+  GoalRecord,
+  GoalSpec,
+  KnowledgeRecord,
+  KnowledgeTopic,
   TaskRecord,
   TaskSpec,
+  WorkGraph,
   WorldSnapshot,
 } from "@mc/protocol";
 
@@ -35,6 +41,19 @@ export interface AiDecisionMutationOptions {
   aiDecisionInteractionId?: string;
 }
 
+export type FacilityDraft = Omit<FacilityRecord, "id" | "createdAt" | "updatedAt" | "lastUsedAt"> & {
+  id?: string | undefined;
+  tags?: string[] | undefined;
+  properties?: Record<string, unknown> | undefined;
+};
+
+export interface AgentAdvanceResult {
+  goal: GoalRecord;
+  plan: WorkGraph;
+  task?: TaskRecord | undefined;
+  advancedNodeId?: string | undefined;
+}
+
 export interface MinecraftControlApi {
   listCompanions(): Companion[] | Promise<Companion[]>;
   getCompanion(id: string): Companion | Promise<Companion>;
@@ -42,6 +61,17 @@ export interface MinecraftControlApi {
   getChatSettings(companionId?: string): ChatSettings | Promise<ChatSettings>;
   updateChatSettings(input: ChatSettingsDraft): ChatSettings | Promise<ChatSettings>;
   submitAiDecision(interactionId: string, decision: AiTaskDecision): AiTaskDecisionResult | Promise<AiTaskDecisionResult>;
+  submitGoal(companionId: string, spec: GoalSpec, owner?: string): GoalRecord | Promise<GoalRecord>;
+  listGoals(): GoalRecord[] | Promise<GoalRecord[]>;
+  getGoal(id: string): GoalRecord | Promise<GoalRecord>;
+  getPlan(goalId: string): WorkGraph | Promise<WorkGraph>;
+  advanceGoal(goalId: string, owner?: string, options?: AiDecisionMutationOptions): AgentAdvanceResult | Promise<AgentAdvanceResult>;
+  pauseGoal(id: string, reason?: string): GoalRecord | Promise<GoalRecord>;
+  resumeGoal(id: string): GoalRecord | Promise<GoalRecord>;
+  cancelGoal(id: string, reason?: string): GoalRecord | Promise<GoalRecord>;
+  queryKnowledge(query: string, topics?: KnowledgeTopic[]): KnowledgeRecord[] | Promise<KnowledgeRecord[]>;
+  listFacilities(worldId?: string): FacilityRecord[] | Promise<FacilityRecord[]>;
+  registerFacility(input: FacilityDraft): FacilityRecord | Promise<FacilityRecord>;
   listChatMessages(afterSequence?: number, limit?: number): ChatMessage[] | Promise<ChatMessage[]>;
   listTasks(): TaskRecord[] | Promise<TaskRecord[]>;
   getTask(id: string): TaskRecord | Promise<TaskRecord>;
@@ -146,6 +176,68 @@ export class HttpControlClient implements MinecraftControlApi {
     return this.#request(`/api/ai/decisions/${encodeURIComponent(interactionId)}`, {
       method: "POST",
       body: JSON.stringify({ decision }),
+    });
+  }
+
+  async submitGoal(companionId: string, spec: GoalSpec, owner = "mcp"): Promise<GoalRecord> {
+    return this.#request("/api/agent/goals", {
+      method: "POST",
+      body: JSON.stringify({ companionId, spec, owner }),
+    });
+  }
+
+  async listGoals(): Promise<GoalRecord[]> {
+    return (await this.#request<{ goals: GoalRecord[] }>("/api/agent/goals")).goals;
+  }
+
+  async getGoal(id: string): Promise<GoalRecord> {
+    return this.#request(`/api/agent/goals/${encodeURIComponent(id)}`);
+  }
+
+  async getPlan(goalId: string): Promise<WorkGraph> {
+    return this.#request(`/api/agent/goals/${encodeURIComponent(goalId)}/plan`);
+  }
+
+  async advanceGoal(goalId: string, owner = "mcp", options: AiDecisionMutationOptions = {}): Promise<AgentAdvanceResult> {
+    return this.#request(`/api/agent/goals/${encodeURIComponent(goalId)}/advance`, {
+      method: "POST",
+      body: JSON.stringify({ owner, ...options }),
+    });
+  }
+
+  async pauseGoal(id: string, reason = "MCP paused goal"): Promise<GoalRecord> {
+    return this.#request(`/api/agent/goals/${encodeURIComponent(id)}/pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  async resumeGoal(id: string): Promise<GoalRecord> {
+    return this.#request(`/api/agent/goals/${encodeURIComponent(id)}/resume`, { method: "POST" });
+  }
+
+  async cancelGoal(id: string, reason = "MCP cancelled goal"): Promise<GoalRecord> {
+    return this.#request(`/api/agent/goals/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  async queryKnowledge(query: string, topics: KnowledgeTopic[] = []): Promise<KnowledgeRecord[]> {
+    const params = new URLSearchParams({ query });
+    for (const topic of topics) params.append("topic", topic);
+    return (await this.#request<{ records: KnowledgeRecord[] }>(`/api/agent/knowledge?${params}`)).records;
+  }
+
+  async listFacilities(worldId?: string): Promise<FacilityRecord[]> {
+    const query = worldId ? `?worldId=${encodeURIComponent(worldId)}` : "";
+    return (await this.#request<{ facilities: FacilityRecord[] }>(`/api/agent/facilities${query}`)).facilities;
+  }
+
+  async registerFacility(input: FacilityDraft): Promise<FacilityRecord> {
+    return this.#request("/api/agent/facilities", {
+      method: "POST",
+      body: JSON.stringify(input),
     });
   }
 

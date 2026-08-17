@@ -34,25 +34,54 @@ describe("Minecraft MCP server", () => {
 
     expect(result.tools.map((tool) => tool.name).sort()).toEqual([
       "mc_acquire_control",
+      "mc_advance_goal",
       "mc_assign_task",
+      "mc_cancel_goal",
       "mc_cancel_task",
       "mc_chat",
       "mc_confirm_build",
       "mc_control_companion",
       "mc_delete_skill",
       "mc_emergency_stop",
+      "mc_get_goal",
+      "mc_get_plan",
       "mc_get_task",
       "mc_import_build",
       "mc_list_build_plans",
       "mc_list_chat_messages",
       "mc_list_companions",
+      "mc_list_facilities",
       "mc_list_skills",
       "mc_observe",
+      "mc_pause_goal",
       "mc_preview_build",
+      "mc_query_knowledge",
+      "mc_register_facility",
       "mc_release_control",
+      "mc_resume_goal",
       "mc_save_skill",
       "mc_submit_ai_decision",
+      "mc_submit_goal",
     ]);
+  }, 10_000);
+
+  it("serves local gameplay knowledge through MCP without a provider call", async () => {
+    const service = new ControlService();
+    service.registerBackend(new SimulatorBackend());
+    const client = await createClient(service);
+
+    const result = await client.callTool({
+      name: "mc_query_knowledge",
+      arguments: { query: "diamond pickaxe prerequisites", topics: ["crafting"] },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      records: expect.arrayContaining([expect.objectContaining({
+        id: "minecraft:crafting.diamond_pickaxe",
+        outputs: ["minecraft:diamond_pickaxe"],
+      })]),
+    });
   });
 
   it("submits one bound smart decision and rejects a duplicate interaction", async () => {

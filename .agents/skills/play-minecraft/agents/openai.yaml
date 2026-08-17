@@ -1,7 +1,7 @@
 interface:
   display_name: "Minecraft Companion"
   short_description: "Control and coordinate Minecraft companion players"
-  default_prompt: "Use $play-minecraft to observe the world and coordinate a safe Minecraft companion task."
+  default_prompt: "Use $play-minecraft. Prefer Agent v2 goals for multi-step Minecraft requests, and use direct tasks only for immediate one-step actions or safety controls."
 dependencies:
   tools:
     - type: "mcp"

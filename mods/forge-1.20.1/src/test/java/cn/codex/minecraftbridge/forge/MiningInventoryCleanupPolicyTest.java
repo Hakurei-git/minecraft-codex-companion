@@ -206,6 +206,25 @@ final class MiningInventoryCleanupPolicyTest {
                 "minecraft:cobblestone"
             )
         ));
+
+        List<MiningInventoryCleanupPolicy.InventorySlot> recursiveCrafting = new ArrayList<>();
+        recursiveCrafting.add(slot(0, "minecraft:birch_log", 63));
+        recursiveCrafting.add(slot(1, "minecraft:iron_ingot", 6));
+        recursiveCrafting.add(slot(2, "minecraft:diamond", 1));
+        recursiveCrafting.add(slot(3, "minecraft:tuff", 64));
+        recursiveCrafting.add(slot(4, "minecraft:granite", 64));
+        recursiveCrafting.add(slot(5, "minecraft:andesite", 64));
+        for (int index = 6; index < 27; index++) {
+            recursiveCrafting.add(slot(index, "minecraft:task_item_" + index, 1));
+        }
+        assertEquals(List.of(
+            new MiningInventoryCleanupPolicy.Drop(3, "minecraft:tuff", 64),
+            new MiningInventoryCleanupPolicy.Drop(4, "minecraft:granite", 64)
+        ), MiningInventoryCleanupPolicy.plan(
+            27,
+            recursiveCrafting,
+            Set.of("minecraft:birch_log", "minecraft:birch_planks", "minecraft:iron_ingot", "minecraft:diamond")
+        ));
     }
 
     private static MiningInventoryCleanupPolicy.InventorySlot slot(int index, String itemId, int count) {

@@ -8,6 +8,7 @@ import {
   companionActionSchema,
   taskSpecSchema,
   type Companion,
+  type GoalSpec,
   type InventoryItem,
   type TaskRecord,
   type TaskSpec,
@@ -26,7 +27,7 @@ import { commitAiTaskDecision } from "./ai-task-decision.js";
 const DRIVER_OWNER = "codex-driver";
 const DEFAULT_MODEL_TURN_TIMEOUT_MS = 180_000;
 const DIRECTED_MESSAGE = /^\s*@?(codex|claude|克劳德|多代理|协作|team|multi-agent|multiagent)(?:\s*[,，:：]\s*|\s+)(.+)$/iu;
-const IMMEDIATE_STOP = /^\s*(?:@?(?:codex|claude|克劳德|多代理|协作|team|multi-agent|multiagent|反重力|antigravity)(?:\s*[,，:：]\s*|\s+))?(?:停|停止|停下|别动|急停|全部停止|stop|halt|emergency\s+stop)\s*[!！。.]?\s*$/iu;
+const IMMEDIATE_STOP = /^\s*(?:@?(?:codex|claude|克劳德|多代理|协作|team|multi-agent|multiagent|反重力|antigravity)(?:\s*[,，:：]\s*|\s+))?(?:停止(?:全部|所有|当前)?(?:任务|目标)?|取消(?:全部|所有|当前)?(?:任务|目标)|全部停止|停下|别动|急停|停|stop(?:\s+(?:all|current)\s+(?:tasks?|goals?))?|halt|emergency\s+stop)(?<recall>(?:(?:\s*[,，;；、]\s*|\s+)(?:然后\s*)?(?:你\s*)?(?:快\s*)?(?:回来|回到我身边|到我身边来|召回|recall)))?\s*(?:吧|呀|啊|喵)?\s*[!！。.]?\s*$/iu;
 
 type ProviderRole = "codex" | "claude";
 type AgentRoute = ProviderRole | "multi-agent";
@@ -850,6 +851,7 @@ export class CodexDriver {
     const result = await commitAiTaskDecision(this.#control, {
       companionId: request.companionId,
       requester: request.sender,
+      message: request.message,
       owner: DRIVER_OWNER,
       interactionId: request.id,
     }, decision);
@@ -969,12 +971,19 @@ export class CodexDriver {
       } else if (action.operation === "task") {
         const companion = await this.#control.getCompanion(request.companionId);
         const owner = companion.leaseOwner ?? DRIVER_OWNER;
-        const task = await this.#control.assignTask(request.companionId, action.spec, owner, {
-          replaceConflictingDelivery: action.replaceConflictingDelivery === true,
-        });
-        taskId = task.id;
-        actionName = task.spec.kind;
-        reply = `${action.reply}（任务 ID：${task.id}）`;
+        const goalResult = await this.#tryRunAgentGoalForDeterministicTask(request, action, owner);
+        if (goalResult) {
+          taskId = goalResult.taskId;
+          actionName = goalResult.actionName;
+          reply = goalResult.reply;
+        } else {
+          const task = await this.#control.assignTask(request.companionId, action.spec, owner, {
+            replaceConflictingDelivery: action.replaceConflictingDelivery === true,
+          });
+          taskId = task.id;
+          actionName = task.spec.kind;
+          reply = `${action.reply}（任务 ID：${task.id}）`;
+        }
         if (action.context === "build-selection") {
           this.#pendingBuildMenus.delete(this.#buildMenuKey(request.companionId, request.sender));
         }
@@ -1031,6 +1040,79 @@ export class CodexDriver {
     }
   }
 
+  async #tryRunAgentGoalForDeterministicTask(
+    request: CodexDriverRequest,
+    action: Extract<DeterministicChatAction, { operation: "task" }>,
+    owner: string,
+  ): Promise<{ taskId?: string; actionName: string; reply: string } | null> {
+    if (!this.#shouldUseAgentGoalForDeterministicTask(request.message, action)) return null;
+    const settings = await this.#control.getChatSettings(request.companionId);
+    const goalSpec: GoalSpec = {
+      title: this.#goalTitleFromMessage(request.message, action.spec),
+      objective: request.message,
+      requestedBy: request.sender,
+      source: "t-chat",
+      priority: action.spec.priority ?? 100,
+      mode: settings.actionMode,
+      constraints: [
+        "Use the local Agent WorkGraph and single-writer task executor; do not bypass task validation.",
+        "Do not upload files, screenshots, provider keys, local paths, account data, or raw world saves.",
+      ],
+      taskHints: [],
+      metadata: {
+        routedFrom: "deterministic-t-chat",
+        deterministicTaskKind: action.spec.kind,
+        ...(action.spec.kind === "macro" ? { deterministicSkillId: action.spec.skillId } : {}),
+      },
+    };
+    const goal = await this.#control.submitGoal(request.companionId, goalSpec, owner);
+    const plan = await this.#control.getPlan(goal.id);
+    if (goal.plannedAt === null || plan.nodes.some((node) => node.id === "await_plan" && node.status === "blocked")) {
+      await this.#control.cancelGoal(goal.id, "Local Agent planner did not recognize this deterministic chat action; falling back to direct task.");
+      return null;
+    }
+    const advanced = await this.#control.advanceGoal(goal.id, owner);
+    const taskId = advanced.task?.id;
+    const actionName = `agent-goal:${advanced.advancedNodeId ?? advanced.goal.status}`;
+    const suffix = taskId
+      ? `Agent 目标：${goal.id}，任务 ID：${taskId}`
+      : `Agent 目标：${goal.id}，状态：${advanced.goal.status}`;
+    return {
+      ...(taskId ? { taskId } : {}),
+      actionName,
+      reply: `${action.reply}（${suffix}）`,
+    };
+  }
+
+  #shouldUseAgentGoalForDeterministicTask(
+    message: string,
+    action: Extract<DeterministicChatAction, { operation: "task" }>,
+  ): boolean {
+    if (action.context === "build-selection") return false;
+    if (action.spec.kind === "macro") {
+      return action.spec.skillId.startsWith("build.")
+        || action.spec.skillId.startsWith("craft.")
+        || action.spec.skillId.startsWith("dragon.")
+        || action.spec.skillId === "life.establish-ranch"
+        || action.spec.skillId === "life.craft-and-place-bed";
+    }
+    if (action.spec.kind === "craft") {
+      return action.spec.itemId.startsWith("minecraft:")
+        && !["minecraft:pickaxe", "minecraft:axe", "minecraft:shovel", "minecraft:hoe", "minecraft:melee_weapon"].includes(action.spec.itemId);
+    }
+    if (action.spec.kind === "farm" || action.spec.kind === "ranch" || action.spec.kind === "organize-storage" || action.spec.kind === "dragon") return true;
+    return /(?:钻石镐|diamond pickaxe|火把|torch|床|bed|农田|农场|田地|牧场|畜牧|围栏|仓库|储物|装备|护甲|防具|武器|铁剑|盾牌|剪刀|水桶|桶|工作台|熔炉|建造|房子|小屋|住宅|刷石机|刷怪|树场|瞭望塔|骑龙|龙|dragon)/iu
+      .test(message);
+  }
+
+  #goalTitleFromMessage(message: string, spec: TaskSpec): string {
+    const trimmed = message.trim().replace(/\s+/gu, " ");
+    if (trimmed) return trimmed.slice(0, 160);
+    if (spec.kind === "macro") return `Run ${spec.skillId}`.slice(0, 160);
+    if ("itemId" in spec && typeof spec.itemId === "string") return `${spec.kind} ${spec.itemId}`.slice(0, 160);
+    return `${spec.kind} goal`.slice(0, 160);
+  }
+
   async #parseDeterministicAction(
     companionId: string,
     message: string,
@@ -1074,9 +1156,15 @@ export class CodexDriver {
     request.status = "running";
     request.startedAt = new Date().toISOString();
     try {
+      const recallAfterStop = Boolean(request.message.match(IMMEDIATE_STOP)?.groups?.recall);
       await this.#control.emergencyStop(false);
+      if (recallAfterStop) {
+        await this.#control.controlCompanion(request.companionId, "recall");
+      }
       request.status = "stopped";
-      request.reply = "已立即停止所有任务。";
+      request.reply = recallAfterStop
+        ? "已立即停止所有任务，并回到你身边。"
+        : "已立即停止所有任务。";
       request.finishedAt = new Date().toISOString();
       await this.#sendReply(request.companionId, request.reply).catch(() => undefined);
     } catch (caught) {

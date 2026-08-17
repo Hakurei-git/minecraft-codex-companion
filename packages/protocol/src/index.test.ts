@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aiProviderDraftSchema, bridgeMessageSchema, buildPlanSchema, chatSettingsDraftSchema, declarativeSkillDraftSchema, declarativeSkillSchema, dragonStateSchema, liveFixtureRequestSchema, taskRecordSchema, taskSpecSchema, worldSnapshotSchema } from "./index.js";
+import { AGENT_PROTOCOL_VERSION, actionSpecSchema, aiProviderDraftSchema, bridgeMessageSchema, buildPlanSchema, chatSettingsDraftSchema, declarativeSkillDraftSchema, declarativeSkillSchema, dragonStateSchema, facilityRecordSchema, goalRecordSchema, goalSpecSchema, liveFixtureRequestSchema, resourceReservationSchema, taskRecordSchema, taskSpecSchema, workGraphSchema, worldSnapshotSchema } from "./index.js";
 
 describe("protocol schemas", () => {
   it("accepts the explicit multi-agent free-chat target", () => {
@@ -76,6 +76,184 @@ describe("protocol schemas", () => {
       itemId: "#minecraft:logs",
       count: 1,
       movement: "teleport",
+    })).toThrow();
+  });
+
+  it("distinguishes newly acquired gather counts from inventory reserve targets", () => {
+    expect(taskSpecSchema.parse({
+      kind: "gather",
+      itemId: "#minecraft:logs",
+      count: 64,
+    })).not.toHaveProperty("countMode");
+    expect(taskSpecSchema.parse({
+      kind: "gather",
+      itemId: "#minecraft:logs",
+      count: 64,
+      countMode: "acquire",
+    })).toMatchObject({ countMode: "acquire" });
+    expect(taskSpecSchema.parse({
+      kind: "gather",
+      itemId: "#minecraft:logs",
+      count: 64,
+      countMode: "inventory-total",
+    })).toMatchObject({ countMode: "inventory-total" });
+    expect(() => taskSpecSchema.parse({
+      kind: "gather",
+      itemId: "#minecraft:logs",
+      count: 64,
+      countMode: "inventory-delta",
+    })).toThrow();
+  });
+
+  it("accepts dragon shared-ride tasks for supported two-seat adapters", () => {
+    expect(taskSpecSchema.parse({
+      kind: "dragon",
+      action: "share-ride",
+      targetId: "",
+      requestedBy: "PlayerOne",
+    })).toMatchObject({
+      kind: "dragon",
+      action: "share-ride",
+      requestedBy: "PlayerOne",
+    });
+  });
+
+  it("accepts Agent v2 goals and work graphs without changing the bridge protocol", () => {
+    const goal = goalRecordSchema.parse({
+      id: "00000000-0000-4000-8000-000000000201",
+      worldId: "world-one",
+      companionId: "codex-sim",
+      spec: {
+        title: "Craft a diamond pickaxe",
+        objective: "Prepare tools, mine diamonds, craft the pickaxe, and deliver it.",
+        requestedBy: "PlayerOne",
+        mode: "smart",
+        taskHints: [{
+          kind: "craft",
+          itemId: "minecraft:diamond_pickaxe",
+          count: 1,
+          deliverTo: "PlayerOne",
+        }],
+      },
+      status: "planning",
+      progress: 0,
+      message: "Planning prerequisites",
+      createdAt: "2026-08-16T00:00:00.000Z",
+    });
+    expect(goal.version).toBe(AGENT_PROTOCOL_VERSION);
+    expect(goal.spec.constraints).toEqual([]);
+
+    const graph = workGraphSchema.parse({
+      id: "00000000-0000-4000-8000-000000000202",
+      goalId: goal.id,
+      status: "ready",
+      nodes: [{
+        id: "observe",
+        label: "Observe current inventory and nearby facilities",
+        action: { kind: "query-knowledge", query: "diamond pickaxe prerequisites", topics: ["crafting", "mining"] },
+      }, {
+        id: "craft_pickaxe",
+        label: "Craft and deliver the diamond pickaxe",
+        dependsOn: ["observe"],
+        action: {
+          kind: "task",
+          spec: {
+            kind: "craft",
+            itemId: "minecraft:diamond_pickaxe",
+            count: 1,
+            deliverTo: "PlayerOne",
+          },
+        },
+      }],
+      edges: [{ from: "observe", to: "craft_pickaxe" }],
+      createdAt: "2026-08-16T00:00:01.000Z",
+      updatedAt: "2026-08-16T00:00:01.000Z",
+    });
+    expect(graph.version).toBe(AGENT_PROTOCOL_VERSION);
+    expect(graph.nodes[1]?.status).toBe("pending");
+  });
+
+  it("rejects dangling Agent v2 work-graph dependencies and arbitrary control tools", () => {
+    expect(() => workGraphSchema.parse({
+      id: "00000000-0000-4000-8000-000000000203",
+      goalId: "00000000-0000-4000-8000-000000000201",
+      nodes: [{
+        id: "craft_pickaxe",
+        label: "Craft pickaxe",
+        dependsOn: ["missing_node"],
+        action: { kind: "task", spec: { kind: "craft", itemId: "minecraft:diamond_pickaxe", count: 1 } },
+      }],
+      edges: [{ from: "craft_pickaxe", to: "missing_node" }],
+      createdAt: "2026-08-16T00:00:01.000Z",
+      updatedAt: "2026-08-16T00:00:01.000Z",
+    })).toThrow();
+    expect(() => actionSpecSchema.parse({ kind: "shell", command: "type secrets.txt" })).toThrow();
+  });
+
+  it("captures reusable facilities and bounded resource reservations for Agent planning", () => {
+    expect(facilityRecordSchema.parse({
+      id: "00000000-0000-4000-8000-000000000204",
+      worldId: "world-one",
+      dimension: "minecraft:overworld",
+      type: "workstation",
+      name: "Base crafting table",
+      position: { x: 4, y: 64, z: 5 },
+      tags: ["crafting_table", "base"],
+      createdAt: "2026-08-16T00:00:00.000Z",
+      updatedAt: "2026-08-16T00:00:00.000Z",
+    })).toMatchObject({ type: "workstation", lastUsedAt: null });
+    expect(resourceReservationSchema.parse({
+      id: "00000000-0000-4000-8000-000000000205",
+      goalId: "00000000-0000-4000-8000-000000000201",
+      nodeId: "craft_pickaxe",
+      itemId: "minecraft:diamond",
+      count: 3,
+      source: "home-storage",
+      createdAt: "2026-08-16T00:00:00.000Z",
+      updatedAt: "2026-08-16T00:00:00.000Z",
+    })).toMatchObject({ status: "planned" });
+    expect(actionSpecSchema.parse({
+      kind: "query-facilities",
+      worldId: "world-one",
+      dimension: "minecraft:overworld",
+      type: "farm",
+      tags: ["crop"],
+      owner: "PlayerOne",
+      limit: 4,
+    })).toMatchObject({ kind: "query-facilities", type: "farm", tags: ["crop"], limit: 4 });
+    expect(worldSnapshotSchema.parse({
+      sequence: 1,
+      capturedAt: "2026-08-16T00:00:00.000Z",
+      worldId: "world-one",
+      dimension: "minecraft:overworld",
+      position: { x: 0, y: 64, z: 0 },
+      yaw: 0,
+      pitch: 0,
+      health: 20,
+      maxHealth: 20,
+      food: 20,
+      air: 300,
+      gameMode: "survival",
+      timeOfDay: 0,
+      weather: "clear",
+      inventory: [],
+      nearbyEntities: [],
+      status: "ready",
+      observedFacilities: [{
+        type: "workstation",
+        name: "Observed crafting table",
+        position: { x: 2, y: 64, z: 2 },
+        tags: ["crafting_table"],
+        properties: { blockId: "minecraft:crafting_table" },
+      }],
+    })).toMatchObject({
+      observedFacilities: [{ type: "workstation", tags: ["crafting_table"] }],
+    });
+    expect(() => goalSpecSchema.parse({
+      title: "Bad",
+      objective: "x",
+      requestedBy: "PlayerOne",
+      taskHints: new Array(17).fill({ kind: "follow", player: "PlayerOne" }),
     })).toThrow();
   });
 

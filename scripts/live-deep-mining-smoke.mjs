@@ -325,14 +325,14 @@ export async function waitForTask(base, task, waitMs) {
 }
 
 export function parseInspection(status) {
-  const pattern = /^deep-mining:i\|ok=([01]),l=(\d+),t=(\d+),p=(\d+),d=([01]),b=([01]),s=(\d+),r=(\d+),x=(\d+),k=(\d+),o=(\d+),g=(\d+),v=([01]),w=(\d+),j=(\d+),n=([01]),e=(\d+)$/u;
+  const pattern = /^deep-mining:i\|ok=([01]),l=(\d+),t=(\d+),p=(\d+),d=([01]),b=([01]),s=(\d+),r=(\d+),x=(\d+),k=(\d+),o=(\d+),g=(\d+),v=([01]),q=([01]),w=(\d+),j=(\d+),n=([01]),e=(\d+)$/u;
   const match = pattern.exec(status ?? "");
   if (!match) throw new Error(`Unexpected deep-mining inspection: ${JSON.stringify(status)}`);
   const numbers = match.slice(1).map(Number);
   const keys = [
     "ok", "ladders", "torches", "usableIronPickaxes", "sawDescending", "sawBranching",
     "staircaseStep", "branchProgress", "placedTorches", "brokenBlocks", "diamonds",
-    "playerDiamondPickaxes", "deliverySeen", "discardedStoneStacks", "discardedStoneItems",
+    "playerDiamondPickaxes", "deliverySeen", "taskIdStable", "discardedStoneStacks", "discardedStoneItems",
     "stoneDropLedgerSeen", "observationErrors",
   ];
   return Object.fromEntries(keys.map((key, index) => [key, numbers[index]]));
@@ -343,7 +343,8 @@ export function validateInspection(value) {
     || value.usableIronPickaxes < 2 || value.sawDescending !== 1 || value.sawBranching !== 1
     || value.staircaseStep < 4 || value.branchProgress < 8 || value.placedTorches < 1
     || value.brokenBlocks < 20 || value.diamonds < 3 || value.playerDiamondPickaxes < 1
-    || value.deliverySeen !== 1 || value.discardedStoneStacks < 2 || value.discardedStoneItems < 128
+    || value.deliverySeen !== 1 || value.taskIdStable !== 1
+    || value.discardedStoneStacks < 2 || value.discardedStoneItems < 128
     || value.stoneDropLedgerSeen !== 1 || value.observationErrors !== 0) {
     throw new Error(`Incomplete deep-mining evidence: ${JSON.stringify(value)}`);
   }

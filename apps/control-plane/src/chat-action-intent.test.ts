@@ -542,6 +542,10 @@ describe("parseDeterministicChatAction", () => {
       operation: "task",
       spec: { kind: "macro", skillId: "dragon.mount-and-follow" },
     });
+    expect(parseDeterministicChatAction("一起骑龙", "PlayerOne")).toMatchObject({
+      operation: "task",
+      spec: { kind: "macro", skillId: "dragon.shared-ride" },
+    });
     expect(parseDeterministicChatAction("下来跟我走", "PlayerOne")).toMatchObject({
       operation: "task",
       spec: { kind: "dragon", action: "dismount" },

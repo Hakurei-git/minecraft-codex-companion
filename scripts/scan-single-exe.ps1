@@ -19,6 +19,21 @@ function Invoke-NativeCapture([string]$Command, [string[]]$Arguments) {
     return [PSCustomObject]@{ Output = $output; ExitCode = $exitCode }
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $resolved = [System.IO.Path]::GetFullPath($LiteralPath)
+    $stream = [System.IO.File]::OpenRead($resolved)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 $projectRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $singleBuildRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "build\single-exe"))
 $expectedExecutable = Join-Path $singleBuildRoot "MinecraftCodexCompanion-Setup.exe"
@@ -44,7 +59,7 @@ if (-not (Test-Path -LiteralPath $buildReportPath -PathType Leaf) -or
 }
 
 $buildReport = Get-Content -Raw -Encoding UTF8 -LiteralPath $buildReportPath | ConvertFrom-Json
-$sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExecutablePath).Hash.ToLowerInvariant()
+$sha256 = Get-Sha256Hex -LiteralPath $ExecutablePath
 $expectedSha256 = ((Get-Content -Raw -Encoding UTF8 -LiteralPath $checksumPath).Trim() -split '\s+')[0].ToLowerInvariant()
 if ($expectedSha256 -notmatch '^[a-f0-9]{64}$' -or
     $sha256 -ne $expectedSha256 -or
@@ -141,7 +156,15 @@ $scanStatus = switch ($scanExitCode) {
     1 { 'threat-detected' }
     default { 'error' }
 }
-$signature = Get-AuthenticodeSignature -LiteralPath $ExecutablePath
+$signatureStatus = 'Unavailable'
+$signatureSigner = $null
+try {
+    $signature = Get-AuthenticodeSignature -LiteralPath $ExecutablePath -ErrorAction Stop
+    $signatureStatus = $signature.Status.ToString()
+    $signatureSigner = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+} catch {
+    $signatureStatus = 'Unavailable'
+}
 $report = [ordered]@{
     format = 1
     scannedAt = [DateTime]::UtcNow.ToString('o')
@@ -165,13 +188,13 @@ $report = [ordered]@{
         containsBuildMachinePaths = $false
     }
     signature = [ordered]@{
-        status = $signature.Status.ToString()
-        signer = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+        status = $signatureStatus
+        signer = $signatureSigner
     }
     antivirus = [ordered]@{
         engine = 'ClamAV'
         version = $version
-        executableSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedClamScan).Hash.ToLowerInvariant()
+        executableSha256 = Get-Sha256Hex -LiteralPath $resolvedClamScan
         databaseFileCount = $databaseFiles.Count
         status = $scanStatus
         exitCode = $scanExitCode

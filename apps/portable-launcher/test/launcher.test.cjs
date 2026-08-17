@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
+  antigravityInstallationCurrent,
   beginAutomaticBridge,
   bindConfiguredAntigravity,
   bridgeTokenFingerprint,
@@ -135,7 +136,7 @@ test("portable defaults discover HMCL, Minecraft, and Antigravity from bounded u
   const appData = path.join(root, "AppData", "Roaming");
   const launcher = path.join(desktop, "HMCL-Portable.exe");
   const adjacentMinecraft = path.join(desktop, ".minecraft");
-  const antigravity = path.join(root, ".gemini", "antigravity", "mcp_config.json");
+  const antigravity = path.join(root, ".gemini", "config", "mcp_config.json");
   await fsp.mkdir(path.join(adjacentMinecraft, "versions"), { recursive: true });
   await fsp.mkdir(path.dirname(antigravity), { recursive: true });
   await fsp.writeFile(launcher, "fixture", "utf8");
@@ -149,6 +150,20 @@ test("portable defaults discover HMCL, Minecraft, and Antigravity from bounded u
   assert.equal(config.launcherPath, launcher);
   assert.equal(config.minecraftRoot, adjacentMinecraft);
   assert.equal(config.antigravityConfigPath, antigravity);
+});
+
+test("normalization migrates the historical Antigravity default to the central MCP config", async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "mc-codex-antigravity-migration-"));
+  t.after(() => removeFixture(root));
+  const legacy = path.join(root, ".gemini", "antigravity", "mcp_config.json");
+  const central = path.join(root, ".gemini", "config", "mcp_config.json");
+  await fsp.mkdir(path.dirname(legacy), { recursive: true });
+  await fsp.mkdir(path.dirname(central), { recursive: true });
+  await fsp.writeFile(legacy, "{}", "utf8");
+  await fsp.writeFile(central, "{}", "utf8");
+  const environment = { USERPROFILE: root, APPDATA: path.join(root, "roaming") };
+
+  assert.equal(normalizeConfig({ antigravityConfigPath: legacy }, environment).antigravityConfigPath, central);
 });
 
 test("explicit discovery environment paths override inferred defaults", async (t) => {
@@ -373,6 +388,32 @@ test("Antigravity MCP installation is idempotent and does not create repeat back
   assert.equal(second.configChanged, false);
   assert.equal(second.backupCreated, false);
   assert.deepEqual((await fsp.readdir(path.dirname(configPath))).filter((name) => name.endsWith(".bak")), []);
+});
+
+test("Antigravity bridge health rejects a stale control port or missing permission grant", async (t) => {
+  const files = await fixture();
+  t.after(() => removeFixture(files.root));
+  const configPath = path.join(files.root, ".gemini", "antigravity", "mcp_config.json");
+  const config = normalizeConfig({
+    port: 18765,
+    antigravityConfigPath: configPath,
+  });
+  const payloadRoot = path.resolve(__dirname, "../../..");
+  const fixturePaths = () => ({ node: "runtime-node.exe", mcpStdio: "mcp-stdio.js" });
+
+  await installAntigravity(config, payloadRoot, fixturePaths);
+  assert.equal(await antigravityInstallationCurrent(config, payloadRoot, fixturePaths), true);
+
+  const moved = { ...config, port: 18766 };
+  assert.equal(await antigravityInstallationCurrent(moved, payloadRoot, fixturePaths), false);
+  await installAntigravity(moved, payloadRoot, fixturePaths);
+  assert.equal(await antigravityInstallationCurrent(moved, payloadRoot, fixturePaths), true);
+
+  const permissionPath = resolveAntigravityPermissionConfigPath(configPath);
+  const permissions = JSON.parse(await fsp.readFile(permissionPath, "utf8"));
+  permissions.userSettings.globalPermissionGrants.allow = [];
+  await fsp.writeFile(permissionPath, `${JSON.stringify(permissions, null, 2)}\n`, "utf8");
+  assert.equal(await antigravityInstallationCurrent(moved, payloadRoot, fixturePaths), false);
 });
 
 test("persona normalization keeps bounded public fields only", () => {
@@ -731,9 +772,13 @@ test("Antigravity permissions add only the two companion tools and preserve poli
 
 test("Antigravity permission path is derived only from the standard profile layout", () => {
   const profileRoot = os.homedir();
-  const standard = path.join(profileRoot, ".gemini", "antigravity", "mcp_config.json");
+  const standard = path.join(profileRoot, ".gemini", "config", "mcp_config.json");
   assert.equal(
     resolveAntigravityPermissionConfigPath(standard),
+    path.join(profileRoot, ".gemini", "config", "config.json"),
+  );
+  assert.equal(
+    resolveAntigravityPermissionConfigPath(path.join(profileRoot, ".gemini", "antigravity", "mcp_config.json")),
     path.join(profileRoot, ".gemini", "config", "config.json"),
   );
   assert.equal(resolveAntigravityPermissionConfigPath(path.join(os.tmpdir(), "custom", "mcp.json")), null);

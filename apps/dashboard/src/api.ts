@@ -9,8 +9,14 @@ import type {
   CompanionAction,
   CompanionEvent,
   DeclarativeSkill,
+  FacilityRecord,
+  GoalRecord,
+  GoalSpec,
+  KnowledgeRecord,
+  KnowledgeTopic,
   TaskRecord,
   TaskSpec,
+  WorkGraph,
 } from "@mc/protocol";
 
 interface ApiErrorBody {
@@ -102,6 +108,79 @@ export async function fetchCompanions(): Promise<Companion[]> {
 export async function fetchTasks(): Promise<TaskRecord[]> {
   const result = await request<{ tasks: TaskRecord[] }>("/api/tasks");
   return result.tasks;
+}
+
+export interface AgentAdvanceResponse {
+  goal: GoalRecord;
+  plan: WorkGraph;
+  task?: TaskRecord;
+  advancedNodeId?: string;
+}
+
+export async function fetchAgentGoals(): Promise<GoalRecord[]> {
+  return (await request<{ goals: GoalRecord[] }>("/api/agent/goals")).goals;
+}
+
+export async function submitAgentGoal(companionId: string, objective: string, requestedBy: string): Promise<GoalRecord> {
+  const trimmed = objective.trim();
+  const spec: GoalSpec = {
+    title: trimmed.slice(0, 160) || "Dashboard Agent goal",
+    objective: trimmed || "Dashboard Agent goal",
+    requestedBy: requestedBy.trim() || "dashboard",
+    source: "dashboard",
+    priority: 100,
+    mode: "smart",
+    constraints: [
+      "Use the local Agent WorkGraph and single-writer task executor.",
+      "Do not upload files, screenshots, provider keys, local paths, account data, prompts, logs, or raw world saves.",
+    ],
+    taskHints: [],
+    metadata: { routedFrom: "dashboard" },
+  };
+  return request("/api/agent/goals", {
+    method: "POST",
+    body: JSON.stringify({ companionId, spec, owner: "dashboard" }),
+  });
+}
+
+export async function fetchAgentPlan(goalId: string): Promise<WorkGraph> {
+  return request(`/api/agent/goals/${encodeURIComponent(goalId)}/plan`);
+}
+
+export async function advanceAgentGoal(goalId: string): Promise<AgentAdvanceResponse> {
+  return request(`/api/agent/goals/${encodeURIComponent(goalId)}/advance`, {
+    method: "POST",
+    body: JSON.stringify({ owner: "dashboard" }),
+  });
+}
+
+export async function pauseAgentGoal(goalId: string): Promise<GoalRecord> {
+  return request(`/api/agent/goals/${encodeURIComponent(goalId)}/pause`, {
+    method: "POST",
+    body: JSON.stringify({ reason: "Dashboard paused goal" }),
+  });
+}
+
+export async function resumeAgentGoal(goalId: string): Promise<GoalRecord> {
+  return request(`/api/agent/goals/${encodeURIComponent(goalId)}/resume`, { method: "POST" });
+}
+
+export async function cancelAgentGoal(goalId: string): Promise<GoalRecord> {
+  return request(`/api/agent/goals/${encodeURIComponent(goalId)}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason: "Dashboard cancelled goal" }),
+  });
+}
+
+export async function fetchAgentFacilities(worldId?: string): Promise<FacilityRecord[]> {
+  const query = worldId ? `?worldId=${encodeURIComponent(worldId)}` : "";
+  return (await request<{ facilities: FacilityRecord[] }>(`/api/agent/facilities${query}`)).facilities;
+}
+
+export async function queryAgentKnowledge(query: string, topics: KnowledgeTopic[] = []): Promise<KnowledgeRecord[]> {
+  const params = new URLSearchParams({ query });
+  for (const topic of topics) params.append("topic", topic);
+  return (await request<{ records: KnowledgeRecord[] }>(`/api/agent/knowledge?${params}`)).records;
 }
 
 export async function fetchSkills(): Promise<DeclarativeSkill[]> {

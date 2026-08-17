@@ -3,6 +3,7 @@ package cn.codex.minecraftbridge.forge;
 import cn.codex.minecraftbridge.client.BridgeConfig;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -18,7 +19,9 @@ import net.minecraft.world.level.GameRules;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.UUID;
 
 @SuppressWarnings("deprecation")
@@ -84,6 +87,7 @@ public final class NpcSnapshotFactory {
         snapshot.add("homeState", homeState(owner));
         JsonObject dragonState = dragonState(npc, owner);
         if (dragonState != null) snapshot.add("dragonState", dragonState);
+        snapshot.add("observedFacilities", observedFacilities(npc, config));
         return snapshot;
     }
 
@@ -167,6 +171,94 @@ public final class NpcSnapshotFactory {
             result.addProperty("maxHealth", living.getMaxHealth());
         }
         return result;
+    }
+
+    private JsonArray observedFacilities(CodexNpcEntity npc, BridgeConfig config) {
+        JsonArray result = new JsonArray();
+        int radius = Math.min(16, Math.max(4, (int)Math.floor(config.observeRadius)));
+        BlockPos center = npc.blockPosition();
+        List<BlockPos> candidates = new ArrayList<>();
+        for (BlockPos position : BlockPos.betweenClosed(
+            center.offset(-radius, -4, -radius),
+            center.offset(radius, 4, radius)
+        )) {
+            candidates.add(position.immutable());
+        }
+        candidates.sort(Comparator.comparingDouble(position -> position.distSqr(center)));
+        for (BlockPos position : candidates) {
+            JsonObject facility = observedFacility(npc, position);
+            if (facility == null) continue;
+            result.add(facility);
+            if (result.size() >= 64) break;
+        }
+        return result;
+    }
+
+    private JsonObject observedFacility(CodexNpcEntity npc, BlockPos position) {
+        String blockId = BuiltInRegistries.BLOCK.getKey(npc.level().getBlockState(position).getBlock()).toString();
+        String type = null;
+        String name = null;
+        JsonArray tags = new JsonArray();
+        switch (blockId) {
+            case "minecraft:crafting_table" -> {
+                type = "workstation";
+                name = "Observed crafting table";
+                tags.add("crafting_table");
+                tags.add("workstation");
+            }
+            case "minecraft:furnace", "minecraft:blast_furnace", "minecraft:smoker" -> {
+                type = "workstation";
+                name = "Observed furnace";
+                tags.add("furnace");
+                tags.add(blockId.substring("minecraft:".length()));
+                tags.add("workstation");
+            }
+            case "minecraft:chest", "minecraft:trapped_chest", "minecraft:barrel" -> {
+                type = "storage";
+                name = "Observed storage";
+                tags.add(blockId.endsWith("barrel") ? "barrel" : "chest");
+                tags.add("storage");
+            }
+            case "minecraft:farmland" -> {
+                type = "farm";
+                name = "Observed crop farmland";
+                tags.add("crop");
+                tags.add("farmland");
+            }
+            case "minecraft:composter" -> {
+                type = "farm";
+                name = "Observed farm composter";
+                tags.add("crop");
+                tags.add("composter");
+            }
+            case "minecraft:nether_portal", "minecraft:end_portal", "minecraft:end_gateway" -> {
+                type = "portal";
+                name = "Observed portal";
+                tags.add("portal");
+                tags.add(blockId.substring("minecraft:".length()));
+            }
+            case "minecraft:redstone_wire", "minecraft:repeater", "minecraft:comparator",
+                 "minecraft:observer", "minecraft:piston", "minecraft:sticky_piston",
+                 "minecraft:hopper", "minecraft:dispenser", "minecraft:dropper" -> {
+                type = "redstone";
+                name = "Observed redstone component";
+                tags.add("redstone");
+                tags.add(blockId.substring("minecraft:".length()));
+            }
+            default -> {
+                return null;
+            }
+        }
+        JsonObject facility = new JsonObject();
+        facility.addProperty("type", type);
+        facility.addProperty("name", name);
+        facility.add("position", vector(position.getX(), position.getY(), position.getZ()));
+        facility.add("tags", tags);
+        JsonObject properties = new JsonObject();
+        properties.addProperty("source", "forge.snapshot");
+        properties.addProperty("blockId", blockId);
+        facility.add("properties", properties);
+        return facility;
     }
 
     private JsonArray inventory(CodexNpcEntity npc) {

@@ -39,6 +39,21 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments, [string]$Working
     }
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $resolved = [System.IO.Path]::GetFullPath($LiteralPath)
+    $stream = [System.IO.File]::OpenRead($resolved)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Copy-File([string]$Source, [string]$Destination) {
     $parent = Split-Path -Parent $Destination
     if ($parent) {
@@ -198,6 +213,27 @@ function Assert-TransparentRuntime([string]$PayloadRoot) {
     }
 }
 
+function Get-SignatureEvidence([string]$ExecutablePath, [string]$PayloadRoot) {
+    $relative = $ExecutablePath.Substring($PayloadRoot.Length).TrimStart('\').Replace('\', '/')
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $ExecutablePath -ErrorAction Stop
+        return [ordered]@{
+            path = $relative
+            status = $signature.Status.ToString()
+            signer = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+        }
+    } catch {
+        if ($RequireSignature) {
+            throw "Authenticode inspection is required but unavailable for $relative`: $($_.Exception.Message)"
+        }
+        return [ordered]@{
+            path = $relative
+            status = 'Unavailable'
+            signer = $null
+        }
+    }
+}
+
 if (Test-Path -LiteralPath $OutputRoot) {
     $resolvedOutput = [System.IO.Path]::GetFullPath($OutputRoot)
     if (-not $resolvedOutput.Equals($buildRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
@@ -234,7 +270,7 @@ $bridgeJarInfo = Get-Item -LiteralPath $bridgeJar
 if ($forgeBuildForced -and $bridgeJarInfo.LastWriteTimeUtc -lt $forgeBuildStartedAt) {
     throw "Forge bridge JAR is stale: it was not rebuilt by the current portable build."
 }
-$bridgeJarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bridgeJar).Hash.ToLowerInvariant()
+$bridgeJarHash = Get-Sha256Hex -LiteralPath $bridgeJar
 if ($bridgeJarHash -notmatch '^[a-f0-9]{64}$') {
     throw "Forge bridge JAR did not produce a valid SHA-256 digest."
 }
@@ -246,7 +282,7 @@ if (-not $forgeBuildForced) {
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $PSScriptRoot "run-forge-tests-in-process.ps1"),
-        "-ExpectedTestCount", "431"
+        "-ExpectedTestCount", "434"
     ) $projectRoot
 }
 $baritoneJar = Get-SingleFile (Join-Path $projectRoot "vendor\baritone") "baritone-api-forge-1.20.1-*.jar" "Baritone JAR"
@@ -265,7 +301,7 @@ Copy-File (Join-Path $projectRoot "packages\protocol\dist\index.js") (Join-Path 
 Copy-File (Join-Path $projectRoot "scripts\mcp-portable-smoke.mjs") (Join-Path $stage "scripts\mcp-portable-smoke.mjs")
 $packagedBridgeJar = Join-Path $stage "mods\forge-1.20.1\build\libs\$(Split-Path -Leaf $bridgeJar)"
 Copy-File $bridgeJar $packagedBridgeJar
-$packagedBridgeJarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $packagedBridgeJar).Hash.ToLowerInvariant()
+$packagedBridgeJarHash = Get-Sha256Hex -LiteralPath $packagedBridgeJar
 if ($packagedBridgeJarHash -ne $bridgeJarHash) {
     throw "Packaged Forge bridge JAR hash does not match the freshly rebuilt artifact."
 }
@@ -457,15 +493,10 @@ $manifest = [ordered]@{
         sha256 = $bridgeJarHash
         packagedSha256 = $packagedBridgeJarHash
         forcedRerun = $forgeBuildForced
-        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-431-tests' }
+        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-434-tests' }
     }
     signatures = @(@($launcherExe, $clientExe, $pickerExe, $secretExe) | ForEach-Object {
-        $signature = Get-AuthenticodeSignature -LiteralPath $_
-        [ordered]@{
-            path = $_.Substring($stage.Length).TrimStart('\').Replace('\', '/')
-            status = $signature.Status.ToString()
-            signer = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
-        }
+        Get-SignatureEvidence $_ $stage
     })
     buildInputs = @(@(
         'apps/portable-launcher/src/launcher.cjs',
@@ -484,7 +515,7 @@ $manifest = [ordered]@{
         $source = Join-Path $projectRoot $_
         [ordered]@{
             path = $_.Replace('\', '/')
-            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant()
+            sha256 = Get-Sha256Hex -LiteralPath $source
         }
     })
     privacy = [ordered]@{
@@ -498,7 +529,7 @@ $manifest = [ordered]@{
         [ordered]@{
             path = $_.FullName.Substring($stage.Length).TrimStart('\').Replace('\', '/')
             size = $_.Length
-            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            sha256 = Get-Sha256Hex -LiteralPath $_.FullName
         }
     })
 }
@@ -524,7 +555,7 @@ if (-not $SkipArchive) {
         [System.IO.Compression.CompressionLevel]::Optimal,
         $true
     )
-    $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+    $archiveHash = Get-Sha256Hex -LiteralPath $archive
     [System.IO.File]::WriteAllText(
         (Join-Path $OutputRoot "SHA256SUMS.txt"),
         "$($archiveHash.ToLowerInvariant()) *$(Split-Path -Leaf $archive)`n",

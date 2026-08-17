@@ -17,6 +17,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $resolved = [System.IO.Path]::GetFullPath($LiteralPath)
+    $stream = [System.IO.File]::OpenRead($resolved)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 if (-not ("MinecraftLaunchWindowState" -as [type])) {
     Add-Type @'
 using System;
@@ -330,7 +345,7 @@ $classesRoot = Join-Path $runtimeRoot "classes"
 [IO.Directory]::CreateDirectory($classesRoot) | Out-Null
 $agentSourcePath = Join-Path $sourceRoot "HmclBackgroundLaunchAgent.java"
 $manifestPath = Join-Path $sourceRoot "MANIFEST.MF"
-$sourceFingerprint = (Get-FileHash -LiteralPath $agentSourcePath -Algorithm SHA256).Hash.Substring(0, 16)
+$sourceFingerprint = (Get-Sha256Hex -LiteralPath $agentSourcePath).Substring(0, 16)
 $agentJar = Join-Path $runtimeRoot ("hmcl-background-agent-" + $sourceFingerprint + ".jar")
 
 & $javac --add-modules jdk.attach -encoding UTF-8 -d $classesRoot `
@@ -442,7 +457,7 @@ $bridgeJar = Get-ChildItem -LiteralPath (Join-Path $projectRoot "mods\forge-1.20
 if ($null -eq $bridgeJar) {
     throw "The rebuilt Forge bridge JAR is unavailable"
 }
-$bridgeHash = (Get-FileHash -LiteralPath $bridgeJar.FullName -Algorithm SHA256).Hash
+$bridgeHash = Get-Sha256Hex -LiteralPath $bridgeJar.FullName
 $configuredInstance = Join-Path $launchMinecraftRoot ("versions\" + $launchTargetVersion)
 $configuredMods = Join-Path $configuredInstance "mods"
 $installedBridge = Get-ChildItem -LiteralPath $configuredMods `
@@ -451,7 +466,7 @@ $installedBridge = Get-ChildItem -LiteralPath $configuredMods `
 $installedBridgeHash = if ($null -eq $installedBridge) {
     ""
 } else {
-    (Get-FileHash -LiteralPath $installedBridge.FullName -Algorithm SHA256).Hash
+    Get-Sha256Hex -LiteralPath $installedBridge.FullName
 }
 $bridgeUpdated = $false
 if ($installedBridgeHash -ne $bridgeHash -and -not $UseInstalledBridgeForDiagnostic) {
@@ -486,7 +501,7 @@ if ($installedBridgeHash -ne $bridgeHash -and -not $UseInstalledBridgeForDiagnos
             -Filter $bridgeJar.Name -File -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $installedBridge -or
-        (Get-FileHash -LiteralPath $installedBridge.FullName -Algorithm SHA256).Hash -ne $bridgeHash) {
+        (Get-Sha256Hex -LiteralPath $installedBridge.FullName) -ne $bridgeHash) {
         throw "Installed bridge did not pass the caller-side SHA-256 verification"
     }
     $bridgeUpdated = $true

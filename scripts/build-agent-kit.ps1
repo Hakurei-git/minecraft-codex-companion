@@ -1,10 +1,40 @@
 param(
-    [string]$Version = "v0.1.7",
+    [string]$Version = "",
     [string]$OutputDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $resolved = [IO.Path]::GetFullPath($LiteralPath)
+    $stream = [IO.File]::OpenRead($resolved)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    }
+    finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $packageJsonPath = Join-Path $projectRoot "package.json"
+    $packageVersion = [string]((Get-Content -Raw -Encoding UTF8 -LiteralPath $packageJsonPath | ConvertFrom-Json).version)
+    if ([string]::IsNullOrWhiteSpace($packageVersion)) {
+        throw "Cannot determine AgentKit version from package.json."
+    }
+    $Version = "v$packageVersion"
+}
+if ($Version -notmatch '^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+    throw "AgentKit version must be semantic, optionally prefixed with v."
+}
+$semanticVersion = if ($Version.StartsWith("v", [StringComparison]::OrdinalIgnoreCase)) { $Version.Substring(1) } else { $Version }
+$artifactVersion = if ($Version.StartsWith("v", [StringComparison]::OrdinalIgnoreCase)) { $Version } else { "v$Version" }
+
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $projectRoot "build\agent-kit"
 }
@@ -14,7 +44,7 @@ if (-not $outputRoot.StartsWith($expectedRoot + [IO.Path]::DirectorySeparatorCha
     throw "AgentKit output must stay beneath the project build directory."
 }
 
-$artifactBase = "MinecraftCodexCompanion-AgentKit-$Version"
+$artifactBase = "MinecraftCodexCompanion-AgentKit-$artifactVersion"
 $stage = Join-Path $outputRoot $artifactBase
 $archive = Join-Path $outputRoot ($artifactBase + ".zip")
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
@@ -27,6 +57,18 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "agent-kit\README.zh-CN.md") -Des
 Copy-Item -LiteralPath (Join-Path $projectRoot "agent-kit\mcp-config.example.json") -Destination $stage
 Copy-Item -LiteralPath (Join-Path $projectRoot "agent-kit\manifest.json") -Destination $stage
 Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE") -Destination $stage
+
+$manifestPath = Join-Path $stage "manifest.json"
+$manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
+if ([string]$manifest.version -ne $semanticVersion) {
+    throw "AgentKit manifest version '$($manifest.version)' does not match package version '$semanticVersion'."
+}
+$readmeText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $stage "README.md")
+$readmeZhText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $stage "README.zh-CN.md")
+$expectedArtifactName = "$artifactBase.zip"
+if (-not $readmeText.Contains($expectedArtifactName) -or -not $readmeZhText.Contains($expectedArtifactName)) {
+    throw "AgentKit README files must mention the current artifact name: $expectedArtifactName."
+}
 
 $allowedExtensions = @(".md", ".yaml", ".json")
 $files = @(Get-ChildItem -LiteralPath $stage -Recurse -File)
@@ -60,7 +102,7 @@ foreach ($file in $files) {
 
 $hashLines = foreach ($file in ($files | Sort-Object FullName)) {
     $relative = $file.FullName.Substring($stage.Length + 1).Replace("\", "/")
-    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+    $hash = Get-Sha256Hex -LiteralPath $file.FullName
     "$hash  $relative"
 }
 $utf8 = New-Object Text.UTF8Encoding($false)
@@ -93,7 +135,7 @@ finally {
     $zip.Dispose()
 }
 
-$archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+$archiveHash = Get-Sha256Hex -LiteralPath $archive
 $report = [ordered]@{
     artifact = [IO.Path]::GetFileName($archive)
     sha256 = $archiveHash

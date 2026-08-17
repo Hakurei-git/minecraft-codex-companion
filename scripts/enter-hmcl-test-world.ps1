@@ -108,10 +108,20 @@ public static class MinecraftBackgroundInput
 '@
 }
 
-$baseUri = [Uri]"http://127.0.0.1:8765/"
-if ($baseUri.Host -notin @("127.0.0.1", "localhost", "::1")) {
+$configuredBaseUri = if ([string]::IsNullOrWhiteSpace($env:MC_COMPANION_URL)) {
+    "http://127.0.0.1:8765/"
+} else {
+    [string]$env:MC_COMPANION_URL
+}
+$baseUri = [Uri]$configuredBaseUri
+if ($baseUri.Scheme -ne "http" -or $baseUri.Host -notin @("127.0.0.1", "localhost", "::1")) {
     throw "The Minecraft entry check must use the loopback control service"
 }
+$builder = [UriBuilder]$baseUri
+$builder.Path = "/"
+$builder.Query = ""
+$builder.Fragment = ""
+$baseUri = $builder.Uri
 
 if ($AnyWorld -and $PSBoundParameters.ContainsKey("WorldId")) {
     throw "-AnyWorld and -WorldId cannot be used together"

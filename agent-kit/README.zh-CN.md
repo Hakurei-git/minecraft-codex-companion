@@ -11,7 +11,7 @@ AgentKit 是给支持 Skill 或 MCP 的 AI 客户端导入的轻量包。它包�
 | 版本 | 适合谁 | 是否能单独运行 |
 | --- | --- | --- |
 | `MinecraftCodexCompanion-Setup.exe` | 希望安装后直接配置和启动的 Windows 用户 | 可以；它包含本地控制服务、界面和 Forge 模组安装资源 |
-| `MinecraftCodexCompanion-AgentKit-v0.1.5.zip` | 希望让 Codex、Claude、反重力或其他支持 MCP 的 AI 学会控制 NPC 的用户 | 不可以；它必须连接同一台电脑上由 EXE 启动的本地服务 |
+| `MinecraftCodexCompanion-AgentKit-v0.1.7.zip` | 希望让 Codex、Claude、反重力或其他支持 MCP 的 AI 学会控制 NPC 的用户 | 不可以；它必须连接同一台电脑上由 EXE 启动的本地服务 |
 
 Skill 负责告诉 AI 应该如何观察、规划、确保安全、分配任务和恢复失败；MCP 才是 AI 真正读取 Minecraft 状态并执行动作的工具通道。只有 Skill 而没有 MCP 时，AI 只能阅读说明，不能移动 NPC。只有 MCP 而没有 Skill 时也能调用工具，但复杂任务的规划、交付和恢复通常不如同时导入两者稳定。
 
@@ -96,6 +96,51 @@ AgentKit 不需要也不应包含你的 API Key。Codex、Claude 兼容 API 或�
 5. `mc_get_task`：只在需要查看进度或恢复提示时查询。
 6. `mc_chat`：把开始、关键进度、失败原因和最终结果发回游戏聊天。
 7. `mc_release_control`：把 NPC 交给其他控制器时释放租约。
+
+直接提交 `gather` 时，不填写 `countMode`（或填写 `acquire`）表示“新增获得这些物品”；只有“背包至少携带一组原木”一类前置库存目标才使用 `countMode: inventory-total`，此时背包中已有的匹配物品也会计入目标。
+
+需要先做可恢复的高层规划时，也可以使用 Agent v2 工具：
+`mc_submit_goal`、`mc_get_goal`、`mc_get_plan`、`mc_advance_goal`、`mc_pause_goal`、`mc_resume_goal`、`mc_cancel_goal`、
+`mc_query_knowledge`、`mc_list_facilities`、`mc_register_facility`。这些工具只在本地保存 Goal、WorkGraph、
+玩法知识和设施记录，不替代 `mc_assign_task`；真正让 NPC 移动或改变世界的通道仍然是现有单写任务执行器。
+`mc_query_knowledge` 只读取随包发布的本地玩法知识索引和本机 journal 记录，不会联网搜索，也不会上传世界文件、
+日志、截图、提示词或服务商凭据。
+
+当 `mc_submit_goal` 没有传 `taskHints` 时，本地 GoalPlanner 已能为常见生存目标生成可恢复 WorkGraph：
+钻石镐深挖准备、火把制作并优先采附近煤、制作/安放床、建造农田并补齐锄头/水桶前置且记录设施、
+建立畜牧围栏、寻找食物/肉、整理家园仓库、房屋/石屋/瞭望塔/刷石机/刷怪塔/树场等蓝图建造，
+以及箱子、水桶、工作台、熔炉、普通工具、武器、盾牌、剪刀、钓鱼竿和防具等直接制作请求。未知目标会停在
+`await_plan` blocked 状态，不会假装已经执行完成。
+
+设施操作和设施建造会分开规划。比如“收割农田”“播种”“繁殖羊”“剪羊毛”会先复用已经记住的农田或牧场，
+只有没有合适设施时才新建。类似“做一套铁装备”的装备套装请求会以可恢复 Agent skill 工作链执行，
+先查询工作台、仓库和熔炉，再制作并交给 NPC 自动装备更好的武器/防具、把低级备用装备放回仓库。
+骑龙相关请求会使用 Book of Dragons / Saints Dragons 适配器，并结合已记录的安全降落点处理骑乘、
+玩家前座/NPC 后座共骑、降落、召回、下龙和协战。
+
+使用 `mc_advance_goal` 可以真正推进已持久化的 WorkGraph。它会先完成知识检索、验证等本地节点，
+再把下一个真实 `task` 或 `skill` 节点通过和 `mc_assign_task` 相同的单写任务执行器入队。任务 ID 会写回
+节点 checkpoint；普通任务完成、失败或取消后会同步回 Goal/WorkGraph journal，下一次推进或自动续跑可以从正确节点继续。
+
+设施记忆已经进入 WorkGraph 运行时。制作、深挖、放床、农田、牧场、家园仓库、蓝图建筑等目标会先执行本地
+`query-facilities` 节点查询 journal。匹配到的工作台、熔炉、家/出生点、矿道、农田、牧场、仓库、
+红石设施或建筑会更新 `lastUsedAt`；带有 `skipIfFacilityQueryNodeId` 的节点会在设施已存在时跳过，
+避免重复开矿道、建农田、建围栏、建仓库或重复建造同类蓝图，同时所有真正改变世界的动作仍然只通过
+原有任务执行器。已完成的计划内建造也会把设施 ID 写回 checkpoint，后续目标可以直接复用。
+仅有矿道记忆不能跳过安全物资准备；在运行时能够证明 NPC 已物理导航并复用安全旧矿道之前，仍会准备梯子。
+
+后端也可以通过 `WorldSnapshot.observedFacilities` 上报观察到的世界设施。控制服务会把这些本地观察，
+以及现有 `homeState`、`miningState`、`dragonState` 提示，upsert 到 Agent journal；重复观察会更新同一设施，
+不会无限新增。观察内容只允许是结构化 Minecraft 数据：类型、名称、位置、边界、标签、owner 和少量元数据；
+不能包含本地文件、日志、截图、API Key、账号数据或服务商提示词。
+
+随包发布的本地玩法知识索引包含原版合成/熔炼/挖矿/农业/畜牧/仓储条目、梯子/熔炉/木炭等前置知识、
+安全阶梯/分支挖矿、食物储备与自动进食、作物来源、牵引畜牧、仓库取物/交付、召回/跟随优先级、
+工具材料进阶、铁装备制作链、附近矿脉优先级、背包压力清理、农田/牧场设施复用操作，也包含 Agent
+专用的建筑、红石设施、装备自动更换和已适配龙模组工作流知识。类似“我要钻石镐”“建造农田”
+“箱子里有”“停止目标召回”这样的中文玩法请求会映射到同一套本地知识记录，而不是退化成随机结果。
+EXE/AgentKit 会在本地查询这些知识；智能 AI 可以用它们做摘要和选择，但不会把文件、截图、Key、账号、
+本地路径或世界存档上传给外部服务商。
 
 ### 游戏内使用
 

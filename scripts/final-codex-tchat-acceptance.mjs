@@ -13,6 +13,12 @@ import {
   waitForTask as waitForDeepMiningTask,
 } from "./live-deep-mining-smoke.mjs";
 import { finalDiamondTaskSpec } from "./final-smart-tchat-acceptance.mjs";
+import {
+  assertGoalTaskCoverage,
+  findNewAgentGoal,
+  taskIdsFromPlan,
+  validateAgentGoalPlan,
+} from "./agent-goal-acceptance.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
@@ -152,8 +158,14 @@ export async function runFinalCodexTchatAcceptance({
   let setupCompleted = false;
   let settingsChanged = false;
   let task = null;
+  let goal = null;
+  let goalPlan = null;
+  let finalNode = null;
+  let agentTaskIds = new Set();
   let driverRequestId = null;
   let previousTaskIds = new Set();
+  let previousGoalIds = new Set();
+  let newGoals = [];
   let result = null;
   let primaryError = null;
   let cleanup = null;
@@ -175,6 +187,8 @@ export async function runFinalCodexTchatAcceptance({
     setupCompleted = true;
     const previousTasks = await requestJson(base, "/api/tasks");
     previousTaskIds = new Set((previousTasks.tasks ?? []).map((record) => record.id));
+    const previousGoals = await requestJson(base, "/api/agent/goals");
+    previousGoalIds = new Set((previousGoals.goals ?? []).map((record) => record.id));
     const previousDriver = await requestJson(base, "/api/codex/status");
     const previousRequestIds = new Set((previousDriver.recentRequests ?? []).map((record) => record.id));
 
@@ -189,6 +203,9 @@ export async function runFinalCodexTchatAcceptance({
       try {
         const envelope = JSON.parse(data.toString());
         if (envelope.type === "event") liveEvents.push(envelope.event);
+        if (envelope.type === "bootstrap" && Array.isArray(envelope.events)) {
+          liveEvents.push(...envelope.events);
+        }
       } catch {
         // Only structured local events are accepted as evidence.
       }
@@ -209,37 +226,39 @@ export async function runFinalCodexTchatAcceptance({
     }, 15_000, "the exact Codex T-chat command to enter the Codex driver");
     driverRequestId = acceptedRequest.id;
 
-    task = await waitFor(async () => {
+    goal = await waitFor(async () => {
       const driverRequest = await requestJson(base, `/api/codex/requests/${encodeURIComponent(driverRequestId)}`);
       if (driverRequest.status === "failed") {
         throw new Error(`Codex smart planning failed: ${driverRequest.error ?? "unknown error"}`);
       }
+      const response = await requestJson(base, "/api/agent/goals");
+      return findNewAgentGoal(response.goals, previousGoalIds, companion.id);
+    }, timeoutMs, "one Codex Agent goal");
+    goalPlan = await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}/plan`);
+    finalNode = validateAgentGoalPlan(goal, goalPlan, finalDiamondTaskSpec(companion.ownerName));
+
+    const decisionEvent = await waitFor(async () => {
+      const driverRequest = await requestJson(base, `/api/codex/requests/${encodeURIComponent(driverRequestId)}`);
+      if (driverRequest.status === "failed") {
+        throw new Error(`Codex smart planning failed: ${driverRequest.error ?? "unknown error"}`);
+      }
+      return liveEvents.find((event) => (
+        event?.data?.decisionType === "task"
+        && event?.data?.requestId === driverRequestId
+        && typeof event?.data?.taskId === "string"
+      ));
+    }, timeoutMs, "the single Codex smart-decision event");
+    task = await waitFor(async () => {
       const response = await requestJson(base, "/api/tasks");
       return response.tasks?.find((candidate) => (
-        candidate.companionId === companion.id && !previousTaskIds.has(candidate.id)
+        candidate.id === decisionEvent.data.taskId
+        && candidate.companionId === companion.id
+        && !previousTaskIds.has(candidate.id)
       ));
-    }, timeoutMs, "one Codex smart-AI task");
-
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-    const newTasks = (await requestJson(base, "/api/tasks")).tasks?.filter((candidate) => (
-      candidate.companionId === companion.id && !previousTaskIds.has(candidate.id)
-    )) ?? [];
-    if (newTasks.length !== 1) throw new Error(`Expected one new task, received ${newTasks.length}`);
-    validateDeepMiningTask(task, companion.id, companion.ownerName);
-    for (const [key, value] of Object.entries(finalDiamondTaskSpec(companion.ownerName))) {
-      if (task.spec?.[key] !== value) {
-        throw new Error(`Codex task ${key} mismatch: expected ${value}, received ${task.spec?.[key]}`);
-      }
-    }
-
-    const decisionEvent = await waitFor(async () => liveEvents.find((event) => (
-      event?.data?.taskId === task.id
-      && event?.data?.decisionType === "task"
-      && event?.data?.requestId === driverRequestId
-    )), 15_000, "the single Codex smart-decision event");
+    }, timeoutMs, "the exact first Codex Agent child task");
     const requestId = decisionEvent.data.requestId;
     const matchingDecisionEvents = liveEvents.filter((event) => (
-      event?.data?.taskId === task.id
+      event?.data?.taskId === decisionEvent.data.taskId
       && event?.data?.decisionType === "task"
       && event?.data?.requestId === requestId
     ));
@@ -257,11 +276,22 @@ export async function runFinalCodexTchatAcceptance({
       && event?.data?.interactionId === requestId
     )), 15_000, "the Codex Minecraft task-start reply");
 
-    const terminalTask = validateDeepMiningTask(
-      await waitForDeepMiningTask(base, task, timeoutMs),
-      companion.id,
-      companion.ownerName,
-    );
+    const terminalGoal = await waitFor(async () => {
+      const current = await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}`);
+      if (current.status === "failed" || current.status === "cancelled") {
+        throw new Error(`Codex Agent goal ended ${current.status}: ${current.error?.message ?? current.message ?? "unknown error"}`);
+      }
+      return current.status === "succeeded" ? current : null;
+    }, timeoutMs, "the Codex Agent goal to complete");
+    newGoals = (await requestJson(base, "/api/agent/goals")).goals?.filter((candidate) => !previousGoalIds.has(candidate.id)) ?? [];
+    goalPlan = await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}/plan`);
+    agentTaskIds = taskIdsFromPlan(goalPlan);
+    const allTasks = (await requestJson(base, "/api/tasks")).tasks ?? [];
+    const tasksById = new Map(allTasks.map((candidate) => [candidate.id, candidate]));
+    assertGoalTaskCoverage(goalPlan, tasksById);
+    const finalTaskId = goalPlan.nodes.find((node) => node.id === finalNode.id)?.checkpoint?.taskId;
+    if (typeof finalTaskId !== "string") throw new Error("The final Codex craft node has no task checkpoint");
+    const terminalTask = validateDeepMiningTask(tasksById.get(finalTaskId), companion.id, companion.ownerName);
     const terminalReply = await waitFor(async () => liveEvents.find((event) => (
       event?.type === "chat"
       && event?.data?.owner === "codex-driver"
@@ -288,7 +318,10 @@ export async function runFinalCodexTchatAcceptance({
       clipboardUsed: false,
       screenshotUsed: false,
       companionName: companion.name,
-      newTaskCount: newTasks.length,
+      newGoalCount: newGoals.length,
+      newTaskCount: allTasks.filter((candidate) => candidate.companionId === companion.id && !previousTaskIds.has(candidate.id)).length,
+      agentTaskCount: agentTaskIds.size,
+      goalStatus: terminalGoal.status,
       task: {
         kind: terminalTask.spec.kind,
         itemId: terminalTask.spec.itemId,
@@ -306,28 +339,36 @@ export async function runFinalCodexTchatAcceptance({
     primaryError = error;
   } finally {
     socket?.close();
-    if (!task?.id && previousTaskIds.size > 0) {
+    if (!goal?.id && previousGoalIds.size > 0) {
       try {
-        const tasks = (await requestJson(base, "/api/tasks")).tasks ?? [];
-        task = tasks.find((candidate) => (
-          candidate.companionId === companion.id && !previousTaskIds.has(candidate.id)
-        )) ?? null;
+        const goals = (await requestJson(base, "/api/agent/goals")).goals ?? [];
+        goal = findNewAgentGoal(goals, previousGoalIds, companion.id);
       } catch (error) {
         cleanupErrors.push(error);
       }
     }
-    if (task?.id) {
+    if (goal?.id) {
       try {
-        let current = await requestJson(base, `/api/tasks/${encodeURIComponent(task.id)}`);
-        if (!terminalStatuses.has(current.status)) {
+        await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}/cancel`, {
+          method: "POST",
+          body: JSON.stringify({ reason: "final Codex T-chat acceptance cleanup" }),
+        });
+        goalPlan = await requestJson(base, `/api/agent/goals/${encodeURIComponent(goal.id)}/plan`).catch(() => goalPlan);
+        agentTaskIds = new Set([...agentTaskIds, ...taskIdsFromPlan(goalPlan)]);
+        for (const taskId of agentTaskIds) {
+          const current = await requestJson(base, `/api/tasks/${encodeURIComponent(taskId)}`);
+          if (!terminalStatuses.has(current.status)) {
+            await requestJson(base, `/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
+              method: "POST",
+              body: JSON.stringify({ reason: "final Codex T-chat acceptance cleanup" }),
+            });
+          }
+        }
+        if (task?.id && !agentTaskIds.has(task.id)) {
           await requestJson(base, `/api/tasks/${encodeURIComponent(task.id)}/cancel`, {
             method: "POST",
             body: JSON.stringify({ reason: "final Codex T-chat acceptance cleanup" }),
           });
-          current = await waitFor(async () => {
-            const candidate = await requestJson(base, `/api/tasks/${encodeURIComponent(task.id)}`);
-            return terminalStatuses.has(candidate.status) ? candidate : null;
-          }, 30_000, "the Codex acceptance task to stop during cleanup");
         }
         await waitFor(async () => {
           const currentCompanion = (await requestJson(base, "/api/companions")).companions

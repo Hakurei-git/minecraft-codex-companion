@@ -35,6 +35,11 @@ class GatherProgressPolicyTest {
         assertEquals(4, GatherProgressPolicy.retained(7, 10, 14));
         assertEquals(0, GatherProgressPolicy.retained(7, 10, 8));
         assertEquals(2, GatherProgressPolicy.retained(2, 10, 40));
+
+        assertEquals(16, GatherProgressPolicy.inventoryTotal(64, 16));
+        assertEquals(64, GatherProgressPolicy.inventoryTotal(64, 64));
+        assertEquals(64, GatherProgressPolicy.inventoryTotal(64, 80));
+        assertEquals(40, GatherProgressPolicy.inventoryTotal(64, 40));
     }
 
     @Test

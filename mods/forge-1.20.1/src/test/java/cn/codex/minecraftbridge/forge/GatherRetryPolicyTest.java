@@ -43,6 +43,9 @@ final class GatherRetryPolicyTest {
         assertTrue(GatherRetryPolicy.teleportDestinationIsUseful(8.0));
         assertFalse(GatherRetryPolicy.teleportDestinationIsUseful(8.01));
         assertFalse(GatherRetryPolicy.teleportDestinationIsUseful(Double.NaN));
+        assertTrue(GatherRetryPolicy.searchRegionReached(8.0));
+        assertFalse(GatherRetryPolicy.searchRegionReached(8.01));
+        assertFalse(GatherRetryPolicy.searchRegionReached(Double.NaN));
         assertTrue(GatherRetryPolicy.shouldSkipAfterUnusableTeleport(true));
         assertFalse(GatherRetryPolicy.shouldSkipAfterUnusableTeleport(false));
     }
@@ -61,7 +64,7 @@ final class GatherRetryPolicyTest {
     }
 
     @Test
-    void ordinaryAndWalkOnlyGatherStillFailAtTheBound() {
+    void unrelatedAndWalkOnlyWorkStillFailAtTheBound() {
         int skipped = GatherRetryPolicy.MAX_SKIPPED_TARGETS + 1;
         assertEquals(
             GatherRetryPolicy.Decision.FAIL_TASK,
@@ -74,6 +77,36 @@ final class GatherRetryPolicyTest {
         assertEquals(
             GatherRetryPolicy.Decision.FAIL_TASK,
             GatherRetryPolicy.afterSkipping(skipped, true, false, true)
+        );
+    }
+
+    @Test
+    void sendsAnAutomaticDirectGatherToAnotherSearchRegion() {
+        assertEquals(
+            GatherRetryPolicy.Decision.START_REMOTE_EXCURSION,
+            GatherRetryPolicy.afterSkipping(
+                GatherRetryPolicy.MAX_SKIPPED_TARGETS + 1,
+                true,
+                false,
+                true,
+                0,
+                64
+            )
+        );
+    }
+
+    @Test
+    void sendsAnAutomaticDirectOreGatherToDeepMining() {
+        assertEquals(
+            GatherRetryPolicy.Decision.START_DEEP_MINING,
+            GatherRetryPolicy.afterSkipping(
+                GatherRetryPolicy.MAX_SKIPPED_TARGETS + 1,
+                true,
+                true,
+                true,
+                0,
+                64
+            )
         );
     }
 

@@ -1410,18 +1410,16 @@ public final class NpcTaskEngine {
         }
         if (hasCraftGatherPrerequisite(work) && tickCraftGatherPrerequisite(work)) return;
         npc.absorbNearbyItems(2.5);
-        int gathered = GatherProgressPolicy.retained(
-            work.completed,
-            work.initialCount,
-            inventoryCount(itemId)
-        );
+        int gathered = currentGatherProgress(work, itemId, requested);
         work.completed = gathered;
         if (gathered >= requested) {
             clearDeepMining(work);
             work.targetBlock = null;
             work.destination = null;
             work.gatherTargets.clear();
-            complete(work, "已采集 " + gathered + " 个 " + itemId);
+            complete(work, gatherUsesInventoryTotal(work)
+                ? "背包中已有 " + gathered + " 个 " + itemId
+                : "已采集 " + gathered + " 个 " + itemId);
             return;
         }
         if (deepMiningActiveFor(work, itemId)) {
@@ -1432,7 +1430,7 @@ public final class NpcTaskEngine {
         if (work.destination != null) {
             BlockPos searchArea = BlockPos.containing(work.destination);
             maintainTaskChunkTicket(searchArea);
-            if (npc.position().distanceTo(work.destination) <= 3.5) {
+            if (GatherRetryPolicy.searchRegionReached(npc.position().distanceTo(work.destination))) {
                 npc.getNavigation().stop();
                 work.destination = null;
                 work.gatherSearchRadius = 16;
@@ -1444,7 +1442,7 @@ public final class NpcTaskEngine {
                 if (!approachGatherDestination(
                     work,
                     searchArea,
-                    3.5,
+                    GatherRetryPolicy.SEARCH_REGION_ARRIVAL_DISTANCE,
                     1.15,
                     "远程搜索区不可达，无法继续寻找 " + itemId,
                     "RESOURCE_NOT_REACHABLE"
@@ -1562,21 +1560,16 @@ public final class NpcTaskEngine {
         npc.addExhaustion(0.08F);
         work.targetBlock = null;
         work.gatherAccessTarget = false;
-        int acquiredByTask = GatherProgressPolicy.afterBreak(
-            work.completed,
-            inventoryBeforeBreak,
-            inventoryCount(itemId)
-        );
-        work.completed = GatherProgressPolicy.retained(
-            acquiredByTask,
-            work.initialCount,
-            inventoryCount(itemId)
-        );
+        work.completed = gatherProgressAfterBreak(work, itemId, requested, inventoryBeforeBreak);
         gathered = work.completed;
         progress(
             work,
             Math.min(0.99, gathered / (double) requested),
-            accessTarget ? "正在开安全矿道，继续寻找 " + itemId : "已采集 " + gathered + "/" + requested
+            accessTarget
+                ? "正在开安全矿道，继续寻找 " + itemId
+                : gatherUsesInventoryTotal(work)
+                    ? "背包储备 " + gathered + "/" + requested
+                    : "已采集 " + gathered + "/" + requested
         );
         if (work.ticks > 20 * 60 * 30) fail(work, "远程采集超时", "GATHER_TIMEOUT");
     }
@@ -2044,7 +2037,7 @@ public final class NpcTaskEngine {
         if (work.destination != null) {
             BlockPos searchArea = BlockPos.containing(work.destination);
             maintainTaskChunkTicket(searchArea);
-            if (npc.position().distanceTo(work.destination) <= 3.5) {
+            if (GatherRetryPolicy.searchRegionReached(npc.position().distanceTo(work.destination))) {
                 npc.getNavigation().stop();
                 work.destination = null;
                 work.gatherSearchRadius = 16;
@@ -2054,7 +2047,7 @@ public final class NpcTaskEngine {
                 work.lastDistance = -1;
             } else {
                 approachGatherDestination(
-                    work, searchArea, 3.5, 1.15,
+                    work, searchArea, GatherRetryPolicy.SEARCH_REGION_ARRIVAL_DISTANCE, 1.15,
                     "远程寻找羊的搜索区不可达", "BED_SHEEP_SEARCH_UNREACHABLE"
                 );
                 return;
@@ -2477,7 +2470,7 @@ public final class NpcTaskEngine {
         if (work.destination != null) {
             BlockPos searchArea = BlockPos.containing(work.destination);
             maintainTaskChunkTicket(searchArea);
-            if (npc.position().distanceTo(work.destination) <= 3.5) {
+            if (GatherRetryPolicy.searchRegionReached(npc.position().distanceTo(work.destination))) {
                 npc.getNavigation().stop();
                 work.destination = null;
                 work.gatherSearchRadius = 16;
@@ -2489,7 +2482,7 @@ public final class NpcTaskEngine {
                 if (!approachGatherDestination(
                     work,
                     searchArea,
-                    3.5,
+                    GatherRetryPolicy.SEARCH_REGION_ARRIVAL_DISTANCE,
                     1.15,
                     "制作前置材料不足，远程搜索区不可达",
                     "CRAFT_PREREQUISITE_NOT_FOUND"
@@ -4665,9 +4658,9 @@ public final class NpcTaskEngine {
         int requestedRadius = Math.max(16, integer(work.spec, "radius", 128));
         if (work.destination != null) {
             BlockPos searchArea = BlockPos.containing(work.destination);
-            if (npc.position().distanceTo(work.destination) > 3.5D) {
+            if (!GatherRetryPolicy.searchRegionReached(npc.position().distanceTo(work.destination))) {
                 if (!approachGatherDestination(
-                    work, searchArea, 3.5D, 1.15D,
+                    work, searchArea, GatherRetryPolicy.SEARCH_REGION_ARRIVAL_DISTANCE, 1.15D,
                     "远程牲畜搜索区不可达", "RANCH_SEARCH_NOT_REACHABLE"
                 )) return false;
             }
@@ -5307,7 +5300,7 @@ public final class NpcTaskEngine {
         if (work.destination != null) {
             BlockPos searchArea = BlockPos.containing(work.destination);
             maintainTaskChunkTicket(searchArea);
-            if (npc.position().distanceTo(work.destination) <= 3.5) {
+            if (GatherRetryPolicy.searchRegionReached(npc.position().distanceTo(work.destination))) {
                 npc.getNavigation().stop();
                 work.destination = null;
                 work.gatherSearchRadius = 16;
@@ -5319,7 +5312,7 @@ public final class NpcTaskEngine {
                 if (!approachGatherDestination(
                     work,
                     searchArea,
-                    3.5,
+                    GatherRetryPolicy.SEARCH_REGION_ARRIVAL_DISTANCE,
                     1.15,
                     "远程寻食区不可达",
                     "FOOD_SEARCH_NOT_REACHABLE"
@@ -6384,7 +6377,7 @@ public final class NpcTaskEngine {
         if (work.destination == null) return false;
         BlockPos searchArea = BlockPos.containing(work.destination);
         maintainTaskChunkTicket(searchArea);
-        if (npc.position().distanceTo(work.destination) <= 3.5D) {
+        if (GatherRetryPolicy.searchRegionReached(npc.position().distanceTo(work.destination))) {
             npc.getNavigation().stop();
             work.destination = null;
             work.gatherSearchRadius = 16;
@@ -6397,7 +6390,7 @@ public final class NpcTaskEngine {
         approachGatherDestination(
             work,
             searchArea,
-            3.5D,
+            GatherRetryPolicy.SEARCH_REGION_ARRIVAL_DISTANCE,
             1.15D,
             "远程寻找" + label + "的搜索区不可达",
             "ENTITY_MATERIAL_SEARCH_UNREACHABLE"
@@ -7704,6 +7697,7 @@ public final class NpcTaskEngine {
             case "follow" -> tickDragonCommand(work, target, adapter, owner, true);
             case "stay" -> tickDragonCommand(work, target, adapter, owner, false);
             case "mount" -> tickDragonMount(work, target, adapter, owner);
+            case "share-ride" -> tickDragonSharedRide(work, target, adapter, owner);
             case "recall" -> {
                 tickDragonRecall(work, target, adapter, owner);
             }
@@ -7833,6 +7827,92 @@ public final class NpcTaskEngine {
             }
         }
         if (work.ticks % 20 == 0) progress(work, 0.5D, "正在确认 NPC 已实际骑上龙");
+    }
+
+    private void tickDragonSharedRide(ActiveWork work, Entity dragon, DragonAdapter adapter, ServerPlayer owner) {
+        boolean coRiding = DragonSharedRide.isCoRiding(owner, npc, dragon) && dragon.getFirstPassenger() == owner;
+        DragonActionPolicy.Decision decision = DragonActionPolicy.mounting(
+            coRiding,
+            dragonActionElapsedTicks(work)
+        );
+        if (decision == DragonActionPolicy.Decision.COMPLETE) {
+            DragonSharedRide.positionRearSeat(npc);
+            complete(work, "玩家与 Codex 已同骑 " + dragon.getDisplayName().getString());
+            return;
+        }
+        if (decision == DragonActionPolicy.Decision.TIMED_OUT) {
+            fail(work, "共骑指令已超时，玩家与 NPC 没有稳定坐在同一只龙上", "DRAGON_SHARED_RIDE_TIMEOUT");
+            return;
+        }
+
+        double companionDistance = entityBodyGap(npc, dragon);
+        double ownerDistance = entityBodyGap(owner, dragon);
+        double distance = Math.max(companionDistance, ownerDistance);
+        if (work.startDistance < 0.0D) {
+            work.startDistance = Math.max(distance, DragonActionPolicy.MOUNT_REACH + 1.0D);
+        }
+        if (distance > DragonActionPolicy.MOUNT_REACH) {
+            if (dragon.level() != owner.level() || dragon.level() != npc.level()) {
+                fail(work, "龙位于其他维度，无法建立共骑", "DRAGON_DIMENSION_UNREACHABLE");
+                return;
+            }
+            if (companionDistance > DragonActionPolicy.MOUNT_REACH
+                && DragonActionPolicy.shouldRepathMountApproach(npc.getNavigation().isDone(), work.ticks)) {
+                navigateTowardBlock(dragon.blockPosition(), 1.15D);
+            }
+            npc.getLookControl().setLookAt(dragon, 30.0F, 30.0F);
+            npc.addExhaustion(0.002F);
+            trackDragonMountApproach(work, distance);
+            if (DragonTerrainAvoidancePolicy.shouldUseMountApproachRecovery(
+                owner.hasPermissions(2), work.stalledTicks
+            ) && adapter instanceof ReflectiveDragonAdapter reflective
+                && reflective.recoverStalledRecall(dragon, owner)) {
+                work.stalledTicks = 0;
+                work.lastDistance = -1.0D;
+                work.initialized = false;
+                npc.setStatus("共骑前龙召回受阻，已移到主人附近的安全落点");
+                return;
+            }
+            if (DragonActionPolicy.shouldIssueCommand(work.initialized, work.ticks, work.lastActionTick)) {
+                work.initialized = true;
+                work.lastActionTick = work.ticks;
+                boolean accepted = adapter.recall(dragon, owner, owner.hasPermissions(2));
+                if (distance > 12.0D) {
+                    accepted = adapter.flyTo(dragon, owner.getEyePosition(), owner) || accepted;
+                }
+                if (accepted) work.failedActions = 0;
+                else if (DragonActionPolicy.commandFailed(++work.failedActions)) {
+                    fail(work, "无法先把龙召回到玩家和 NPC 的共骑距离", "DRAGON_SHARED_RIDE_RECALL_FAILED");
+                    return;
+                }
+            }
+            if (work.ticks % 20 == 0) {
+                progress(work, DragonActionPolicy.progress(
+                    work.startDistance, distance, DragonActionPolicy.MOUNT_REACH
+                ), "正在建立共骑距离，最远距离 " + Math.round(distance) + " 格");
+            }
+            return;
+        }
+
+        npc.getNavigation().stop();
+        npc.getLookControl().setLookAt(dragon, 30.0F, 30.0F);
+        adapter.haltTravel(dragon, owner);
+        if (DragonActionPolicy.shouldIssueCommand(work.initialized, work.ticks, work.lastActionTick)) {
+            work.initialized = true;
+            work.lastActionTick = work.ticks;
+            DragonSharedRide.MountResult result = DragonSharedRide.mountTogether(owner, npc, dragon, adapter);
+            if (result.successful()) {
+                work.failedActions = 0;
+                DragonSharedRide.positionRearSeat(npc);
+            } else if (result == DragonSharedRide.MountResult.NOT_READY) {
+                fail(work, "这只龙尚未满足玩家共骑条件，请确认已驯服、成年、可骑乘且座位未锁定", "DRAGON_SHARED_RIDE_NOT_READY");
+                return;
+            } else if (DragonActionPolicy.commandFailed(++work.failedActions)) {
+                fail(work, "无法让玩家与 NPC 同骑这只龙", "DRAGON_SHARED_RIDE_FAILED");
+                return;
+            }
+        }
+        if (work.ticks % 20 == 0) progress(work, 0.6D, "正在确认玩家前座、NPC 后座的共骑状态");
     }
 
     private void trackDragonMountApproach(ActiveWork work, double distance) {
@@ -8981,17 +9061,17 @@ public final class NpcTaskEngine {
         }
         GatherRetryPolicy.Decision decision = GatherRetryPolicy.afterSkipping(
             work.skippedGatherTargets.size(),
-            hasCraftGatherPrerequisite(work),
-            hasCraftGatherPrerequisite(work) && DeepMiningPolicy.supports(work.craftGatherItemId),
+            gatherRecoverySupported(work),
+            DeepMiningPolicy.supports(activeGatherItemId(work)),
             remoteRecoveryAllowed,
             work.gatherExcursions,
             GATHER_MAX_EXCURSIONS
         );
         if (decision == GatherRetryPolicy.Decision.START_DEEP_MINING) {
-            String itemId = work.craftGatherItemId;
+            String itemId = activeGatherItemId(work);
             startDeepMining(work, itemId);
             progress(work, activeProgress(work),
-                "附近目标连续不可达，改为开掘安全矿道寻找制作前置材料 " + itemId);
+                "附近目标连续不可达，改为开掘安全矿道寻找 " + itemId);
             return;
         }
         if (decision == GatherRetryPolicy.Decision.START_REMOTE_EXCURSION) {
@@ -9006,7 +9086,7 @@ public final class NpcTaskEngine {
             work.gatherTreeCluster = false;
             work.gatherClusterReached = false;
             progress(work, activeProgress(work),
-                "本区制作材料均不可达，正在前往第 " + work.gatherExcursions + " 个搜索区继续寻找");
+                "本区采集目标连续不可达，正在前往第 " + work.gatherExcursions + " 个搜索区继续寻找");
             return;
         }
         if (decision == GatherRetryPolicy.Decision.FAIL_TASK) {
@@ -9020,6 +9100,16 @@ public final class NpcTaskEngine {
         return GatherRetryPolicy.allowsRemoteRecovery(string(work.spec, "movement", "auto"));
     }
 
+    private boolean gatherRecoverySupported(ActiveWork work) {
+        return work.kind.equals("gather") || hasCraftGatherPrerequisite(work);
+    }
+
+    private String activeGatherItemId(ActiveWork work) {
+        return hasCraftGatherPrerequisite(work)
+            ? work.craftGatherItemId
+            : work.kind.equals("gather") ? string(work.spec, "itemId", "") : "";
+    }
+
     private boolean approach(ActiveWork work, ServerPlayer target, double reach, double speed) {
         double distance = npc.distanceTo(target);
         if (distance <= reach) {
@@ -9031,9 +9121,18 @@ public final class NpcTaskEngine {
             return true;
         }
 
-        if (distance > config.npcRecallDistance && target.hasPermissions(2)) {
+        boolean ownerCanTeleport = target.hasPermissions(2);
+        if (FollowMovementPolicy.shouldRecoverTaskApproach(
+            ownerCanTeleport,
+            distance,
+            config.npcRecallDistance,
+            work.stalledTicks,
+            200
+        )) {
             NpcManager.recall(target, npc);
-            npc.setStatus("距离过远，已传送回来交付物品");
+            npc.setStatus(distance > config.npcRecallDistance
+                ? "距离过远，已传送回来交付物品"
+                : "交付路线受阻，已传送到玩家附近继续交付");
             work.stalledTicks = 0;
             work.lastDistance = -1;
             return false;
@@ -9058,6 +9157,19 @@ public final class NpcTaskEngine {
         npc.addExhaustion(0.002F);
         taskStatus(work, "正在接近 " + target.getGameProfile().getName() + " 交付物品，距离 " + Math.round(distance) + " 格");
         trackNavigation(work, distance);
+        if (FollowMovementPolicy.shouldRecoverTaskApproach(
+            ownerCanTeleport,
+            distance,
+            config.npcRecallDistance,
+            work.stalledTicks,
+            200
+        )) {
+            NpcManager.recall(target, npc);
+            npc.setStatus("交付路线受阻，已传送到玩家附近继续交付");
+            work.stalledTicks = 0;
+            work.lastDistance = -1;
+            return false;
+        }
         if (work.stalledTicks > 200) fail(work, "无法寻路到目标玩家", "PATH_NOT_FOUND");
         return false;
     }
@@ -10766,10 +10878,10 @@ public final class NpcTaskEngine {
             progress(work, activeProgress(work),
                 "深层采矿已获得 " + work.craftGatherCompleted + "/" + requested + " 个 " + itemId);
         } else {
-            int acquired = GatherProgressPolicy.afterBreak(work.completed, before, inventoryCount(itemId));
-            work.completed = GatherProgressPolicy.retained(acquired, work.initialCount, inventoryCount(itemId));
+            work.completed = gatherProgressAfterBreak(work, itemId, requested, before);
             progress(work, Math.min(0.99D, work.completed / (double) requested),
-                "深层采矿已获得 " + work.completed + "/" + requested + " 个 " + itemId);
+                (gatherUsesInventoryTotal(work) ? "深层采矿库存 " : "深层采矿已获得 ")
+                    + work.completed + "/" + requested + " 个 " + itemId);
         }
         return true;
     }
@@ -11943,6 +12055,8 @@ public final class NpcTaskEngine {
                     slot -> npc.inventory().getStackInSlot(slot),
                     output
                 )) {
+                    if (hasSuspendedDeepMining(work)
+                        && tickMiningInventoryCleanup(work, candidate, outputId)) return true;
                     fail(work, "NPC 背包没有空间接收前置材料 " + outputId, "INVENTORY_FULL");
                     return true;
                 }
@@ -13661,6 +13775,33 @@ public final class NpcTaskEngine {
         return object.has(key) && !object.get(key).isJsonNull() ? object.get(key).getAsInt() : fallback;
     }
 
+    private boolean gatherUsesInventoryTotal(ActiveWork work) {
+        return "gather".equals(work.kind)
+            && "inventory-total".equals(string(work.spec, "countMode", "acquire"));
+    }
+
+    private int currentGatherProgress(ActiveWork work, String selector, int target) {
+        int inventoryNow = inventoryCount(selector);
+        if (gatherUsesInventoryTotal(work)) {
+            return GatherProgressPolicy.inventoryTotal(target, inventoryNow);
+        }
+        return GatherProgressPolicy.retained(work.completed, work.initialCount, inventoryNow);
+    }
+
+    private int gatherProgressAfterBreak(
+        ActiveWork work,
+        String selector,
+        int target,
+        int inventoryBeforeBreak
+    ) {
+        int inventoryNow = inventoryCount(selector);
+        if (gatherUsesInventoryTotal(work)) {
+            return GatherProgressPolicy.inventoryTotal(target, inventoryNow);
+        }
+        int acquired = GatherProgressPolicy.afterBreak(work.completed, inventoryBeforeBreak, inventoryNow);
+        return GatherProgressPolicy.retained(acquired, work.initialCount, inventoryNow);
+    }
+
     /** Returns exact engine/inventory facts only while a gather phase is active. */
     private TaskProgressCounts progressCounts(ActiveWork work) {
         String selector;
@@ -13681,6 +13822,10 @@ public final class NpcTaskEngine {
             return null;
         }
         if (selector == null || selector.isBlank() || completed < 0 || target <= 0) return null;
+        if ("gather".equals(work.kind) && gatherUsesInventoryTotal(work)) {
+            int fulfilled = GatherProgressPolicy.inventoryTotal(target, inventoryCount(selector));
+            return new TaskProgressCounts(fulfilled, target, fulfilled);
+        }
         int retained = GatherProgressPolicy.retained(completed, inventoryAtStart, inventoryCount(selector));
         return new TaskProgressCounts(completed, target, retained);
     }

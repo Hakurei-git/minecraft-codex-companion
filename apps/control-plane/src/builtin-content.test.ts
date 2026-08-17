@@ -203,6 +203,7 @@ describe("offline built-in content catalog", () => {
       "dragon.bookofdragons-field-kit",
       "dragon.egg-care",
       "dragon.heal-and-follow",
+      "dragon.shared-ride",
       "dragon.saintsdragons-care-kit",
       "dragon.saintsdragons-binder",
     ];
@@ -229,6 +230,8 @@ describe("offline built-in content catalog", () => {
       .toEqual(expect.arrayContaining([expect.objectContaining({ task: expect.objectContaining({ itemId: "bookofdragons:dragon_whistle" }) })]));
     expect(skills.find((skill) => skill.id === "dragon.saintsdragons-care-kit")?.steps)
       .toEqual(expect.arrayContaining([expect.objectContaining({ task: expect.objectContaining({ itemId: "saintsdragons:hearty_dragon_meal" }) })]));
+    expect(skills.find((skill) => skill.id === "dragon.shared-ride")?.steps)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ task: expect.objectContaining({ kind: "dragon", action: "share-ride" }) })]));
     expect(skills.find((skill) => skill.id === "build.basic-shelter")?.steps)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ task: expect.objectContaining({ kind: "build" }) }),

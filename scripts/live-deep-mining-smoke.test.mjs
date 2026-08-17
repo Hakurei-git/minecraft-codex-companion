@@ -69,7 +69,7 @@ test("deep-mining smoke validates the physical restart checkpoint", () => {
 
 test("deep-mining smoke parses complete persisted fixture evidence", () => {
   const inspection = parseInspection(
-    "deep-mining:i|ok=1,l=33,t=32,p=2,d=1,b=1,s=4,r=9,x=1,k=34,o=3,g=1,v=1,w=3,j=192,n=1,e=0",
+    "deep-mining:i|ok=1,l=33,t=32,p=2,d=1,b=1,s=4,r=9,x=1,k=34,o=3,g=1,v=1,q=1,w=3,j=192,n=1,e=0",
   );
   assert.deepEqual(validateInspection(inspection), {
     ok: 1,
@@ -85,12 +85,14 @@ test("deep-mining smoke parses complete persisted fixture evidence", () => {
     diamonds: 3,
     playerDiamondPickaxes: 1,
     deliverySeen: 1,
+    taskIdStable: 1,
     discardedStoneStacks: 3,
     discardedStoneItems: 192,
     stoneDropLedgerSeen: 1,
     observationErrors: 0,
   });
   assert.throws(() => validateInspection({ ...inspection, placedTorches: 0 }));
+  assert.throws(() => validateInspection({ ...inspection, taskIdStable: 0 }));
   assert.throws(() => validateInspection({ ...inspection, stoneDropLedgerSeen: 0 }));
   assert.throws(() => parseInspection("deep-mining:i|ok=1,e=0"));
 });

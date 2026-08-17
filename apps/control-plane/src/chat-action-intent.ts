@@ -38,6 +38,7 @@ const FULL_STATUS_QUESTION = /^\s*(?:查看|汇报|告诉我|说一下)?\s*(?:�
 const ACTIVITY_QUESTION = /^\s*(?:(?:你|npc|ai|同伴)\s*)?(?:(?:现在|当前|这会儿)\s*)?(?:(?:在|正在)\s*)?(?:干什么(?:是否有动作了?)?|做什么|忙什么|执行什么|有什么动作|有没有动作|是否有动作|在执行什么任务|执行的什么任务|任务(?:进度)?(?:做到哪(?:里|儿)?|到哪(?:里|儿)?|怎么样)|做到哪(?:里|儿)?了)\s*(?:了|呢|呀|啊|吗|喵)?\s*[？?！!。.]?\s*$/iu;
 const ITEM_HISTORY_QUESTION = /(?:去哪(?:里|儿)?了?|哪去了|去了哪(?:里|儿)?|为什么(?:没有|没|不见)|怎么(?:没有|没了|不见|变成|又?合成)|不见了?|没有了?|没了|还在吗|还有吗|是不是(?:被)?(?:扔|丢|用|消耗)|是否(?:被)?(?:扔|丢|用|消耗)|被(?:扔|丢|用|消耗)|扔(?:掉|了|了吗)|丢(?:掉|了|了吗)|用(?:掉|了|了吗)|消耗(?:掉|了|了吗)|变成|又?合成)/u;
 const MOUNT_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:快|现在|先)?\s*(?:上龙|骑上龙|骑龙)(?:\s*(?:跟着我|跟我走|跟随我))?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
+const SHARE_RIDE_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:快|现在|先)?\s*(?:和我|跟我|一起|一同)?\s*(?:同骑|共骑|一起骑|一同骑|共享座位|双人骑乘|同乘)(?:\s*(?:龙|这只龙))?(?:\s*(?:跟着我|跟我走|跟随我))?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const DISMOUNT_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:从龙上)?\s*(?:下来|下龙|别骑了)(?:\s*(?:跟着我|跟我走))?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const RECALL_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:快|现在)?\s*(?:召回|叫回|喊回)(?:你)?(?:的)?龙\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const LAND_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:让龙|骑龙)?\s*(?:降落|落地)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
@@ -447,6 +448,13 @@ export function parseDeterministicChatAction(message: string, sender: string, co
       operation: "task",
       spec: { kind: "macro", skillId: "dragon.mount-and-follow", arguments: { targetId: "" }, requestedBy: sender.trim() || "player", note: message.slice(0, 500) },
       reply: "好，我去骑上你的龙跟随你。",
+    };
+  }
+  if (SHARE_RIDE_DRAGON_COMMAND.test(normalized)) {
+    return {
+      operation: "task",
+      spec: { kind: "macro", skillId: "dragon.shared-ride", arguments: { targetId: "" }, requestedBy: sender.trim() || "player", note: message.slice(0, 500) },
+      reply: "好，我会让你坐前座、我坐后座，一起骑龙；下龙前会先确认安全落地。",
     };
   }
   if (DISMOUNT_DRAGON_COMMAND.test(normalized)) {

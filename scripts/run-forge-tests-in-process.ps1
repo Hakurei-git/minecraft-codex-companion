@@ -1,10 +1,26 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1, 10000)]
-    [int]$ExpectedTestCount = 431
+    [int]$ExpectedTestCount = 434
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $resolved = [System.IO.Path]::GetFullPath($LiteralPath)
+    $stream = [System.IO.File]::OpenRead($resolved)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 $projectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $gradleHome = if ($env:GRADLE_USER_HOME) {
     [IO.Path]::GetFullPath($env:GRADLE_USER_HOME)
@@ -42,8 +58,8 @@ if ($junitSourceJars.Count -lt 8) {
 foreach ($sourceJar in $junitSourceJars) {
     $destinationJar = Join-Path $junitRuntime $sourceJar.Name
     Copy-Item -LiteralPath $sourceJar.FullName -Destination $destinationJar -Force
-    $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceJar.FullName).Hash
-    $destinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $destinationJar).Hash
+    $sourceHash = Get-Sha256Hex -LiteralPath $sourceJar.FullName
+    $destinationHash = Get-Sha256Hex -LiteralPath $destinationJar
     if ($sourceHash -ne $destinationHash) {
         throw "The isolated JUnit runtime copy failed integrity verification: $($sourceJar.Name)"
     }

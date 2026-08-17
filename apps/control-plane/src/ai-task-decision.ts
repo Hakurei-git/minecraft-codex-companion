@@ -4,6 +4,7 @@ import {
   type AiTaskDecision,
   type AiTaskDecisionResult,
   type Companion,
+  type GoalSpec,
   type InventoryItem,
   type TaskRecord,
   type TaskSpec,
@@ -177,8 +178,89 @@ export function inspectionReply(
 export interface AiDecisionCommitContext {
   companionId: string;
   requester: string;
+  message?: string | undefined;
   owner: string;
   interactionId: string;
+}
+
+function taskIntentText(spec: TaskSpec): string {
+  if (spec.kind === "macro") return spec.skillId;
+  if ("itemId" in spec && typeof spec.itemId === "string") return spec.itemId;
+  if (spec.kind === "farm") return `${spec.action} ${spec.cropId}`;
+  if (spec.kind === "ranch") return `${spec.action} ${spec.animalType}`;
+  if (spec.kind === "build") return spec.planId;
+  return spec.kind;
+}
+
+function shouldAttemptAgentGoal(spec: TaskSpec, objective: string): boolean {
+  if (spec.kind === "macro") {
+    return spec.skillId.startsWith("build.")
+      || spec.skillId.startsWith("craft.")
+      || spec.skillId.startsWith("dragon.")
+      || spec.skillId === "life.establish-ranch"
+      || spec.skillId === "life.craft-and-place-bed";
+  }
+  if (spec.kind === "craft") {
+    return spec.itemId.startsWith("minecraft:")
+      && !["minecraft:pickaxe", "minecraft:axe", "minecraft:shovel", "minecraft:hoe", "minecraft:melee_weapon"].includes(spec.itemId);
+  }
+  if (["farm", "ranch", "organize-storage", "provision-food", "dragon"].includes(spec.kind)) return true;
+  return /(?:钻石镐|diamond pickaxe|火把|torch|床|bed|农田|农场|田地|牧场|畜牧|围栏|仓库|储物|食物|肉|food|meat|装备|护甲|防具|武器|铁剑|盾牌|剪刀|水桶|桶|工作台|熔炉|建造|房子|小屋|住宅|刷石机|刷怪|树场|瞭望塔|骑龙|龙|dragon)/iu
+    .test(objective);
+}
+
+function goalTitle(objective: string, spec: TaskSpec): string {
+  const trimmed = objective.trim().replace(/\s+/gu, " ");
+  if (trimmed) return trimmed.slice(0, 160);
+  return `AI ${spec.kind} ${taskIntentText(spec)}`.slice(0, 160);
+}
+
+async function tryCommitViaAgentGoal(
+  control: MinecraftControlApi,
+  context: AiDecisionCommitContext,
+  decision: Extract<AiTaskDecision, { type: "task" | "skill" }>,
+  proposed: TaskSpec,
+  owner: string,
+): Promise<{ goalId: string; taskId?: string } | null> {
+  const objective = [
+    context.message?.trim(),
+    decision.summary.trim(),
+    taskIntentText(proposed),
+  ].filter(Boolean).join(" | ").slice(0, 500);
+  if (!shouldAttemptAgentGoal(proposed, objective)) return null;
+  const spec: GoalSpec = {
+    title: goalTitle(objective, proposed),
+    objective: objective || goalTitle("", proposed),
+    requestedBy: context.requester,
+    source: "t-chat",
+    priority: proposed.priority ?? 100,
+    mode: "smart",
+    constraints: [
+      "Route this AI decision through the local Agent WorkGraph and single-writer task executor.",
+      "Do not upload files, screenshots, provider keys, local paths, account data, prompts, logs, or raw world saves.",
+    ],
+    taskHints: [],
+    metadata: {
+      routedFrom: "mc_submit_ai_decision",
+      aiDecisionType: decision.type,
+      proposedTaskKind: proposed.kind,
+      ...(proposed.kind === "macro" ? { proposedSkillId: proposed.skillId } : {}),
+      ...("itemId" in proposed && typeof proposed.itemId === "string" ? { proposedItemId: proposed.itemId } : {}),
+    },
+  };
+  const goal = await control.submitGoal(context.companionId, spec, owner);
+  const plan = await control.getPlan(goal.id);
+  if (goal.plannedAt === null || plan.nodes.some((node) => node.id === "await_plan" && node.status === "blocked")) {
+    await control.cancelGoal(goal.id, "Local Agent planner did not recognize this AI decision; falling back to direct task.");
+    return null;
+  }
+  const advanced = await control.advanceGoal(goal.id, owner, {
+    aiDecisionInteractionId: context.interactionId,
+  });
+  return {
+    goalId: goal.id,
+    ...(advanced.task?.id ? { taskId: advanced.task.id } : {}),
+  };
 }
 
 export async function commitAiTaskDecision(
@@ -188,6 +270,7 @@ export async function commitAiTaskDecision(
 ): Promise<AiTaskDecisionResult> {
   const decision = aiTaskDecisionSchema.parse(input);
   let taskId: string | undefined;
+  let goalId: string | undefined;
   let reply = decision.reply;
   if (decision.type === "inspect") {
     const companion = await control.getCompanion(context.companionId);
@@ -220,22 +303,30 @@ export async function commitAiTaskDecision(
         });
     const companion = await control.getCompanion(context.companionId);
     const owner = companion.leaseOwner ?? context.owner;
-    const task = await control.assignTask(
-      context.companionId,
-      await bindTaskToRequester(control, proposed, context.requester),
-      owner,
-      {
-        replaceConflictingDelivery: decision.type === "task"
-          && decision.replaceConflictingDelivery === true,
-        aiDecisionInteractionId: context.interactionId,
-      },
-    );
-    taskId = task.id;
+    const bound = await bindTaskToRequester(control, proposed, context.requester);
+    const agentGoal = await tryCommitViaAgentGoal(control, context, decision, bound, owner);
+    if (agentGoal) {
+      goalId = agentGoal.goalId;
+      taskId = agentGoal.taskId;
+    } else {
+      const task = await control.assignTask(
+        context.companionId,
+        bound,
+        owner,
+        {
+          replaceConflictingDelivery: decision.type === "task"
+            && decision.replaceConflictingDelivery === true,
+          aiDecisionInteractionId: context.interactionId,
+        },
+      );
+      taskId = task.id;
+    }
   }
   return {
     ok: true,
     interactionId: context.interactionId,
     decisionType: decision.type,
+    ...(goalId ? { goalId } : {}),
     ...(taskId ? { taskId } : {}),
     reply,
   };

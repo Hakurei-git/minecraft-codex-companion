@@ -131,6 +131,19 @@ const BUILTIN_DRAFTS: unknown[] = [
     ],
   },
   {
+    id: "dragon.shared-ride",
+    name: "玩家与 NPC 共骑",
+    description: "把玩家放在前座、NPC 放在后座，同骑兼容的 Book of Dragons 或 Saints Dragons 龙；下龙前优先安全降落。",
+    parameters: [
+      { name: "targetId", description: "龙实体 UUID；留空时选择最近目标", type: "string", required: false, defaultValue: "" },
+    ],
+    steps: [
+      { label: "观察可共骑龙", task: { kind: "dragon", action: "observe", targetId: "${targetId}" } },
+      { label: "建立共骑座位", task: { kind: "dragon", action: "share-ride", targetId: "${targetId}" } },
+      { label: "切换骑龙跟随", task: { kind: "dragon", action: "follow", targetId: "${targetId}" } },
+    ],
+  },
+  {
     id: "dragon.assist-combat",
     name: "骑龙协战",
     description: "让玩家拥有的龙协助攻击玩家最近交战的有效目标。",

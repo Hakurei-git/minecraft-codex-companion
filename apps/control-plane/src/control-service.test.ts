@@ -749,6 +749,111 @@ describe("ControlService", () => {
     expect(result.reply).not.toContain("猫娘");
   });
 
+  it("routes smart AI complex task decisions through the local Agent WorkGraph", async () => {
+    const service = new ControlService();
+    service.registerBackend(new SimulatorBackend());
+    const interactionId = service.beginAiDecision({
+      sequence: 2,
+      at: "2026-08-16T00:00:00.000Z",
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "给我做一把钻石镐",
+    });
+
+    const result = await service.submitAiDecision(interactionId, {
+      type: "task",
+      reply: "好，我去准备钻石镐。",
+      summary: "制作并交付钻石镐",
+      spec: {
+        kind: "craft",
+        itemId: "minecraft:diamond_pickaxe",
+        count: 1,
+        deliverTo: "WrongPlayer",
+        requestedBy: "WrongRequester",
+      },
+    });
+
+    expect(result).toMatchObject({
+      decisionType: "task",
+      goalId: expect.any(String),
+      taskId: expect.any(String),
+      reply: "好，我去准备钻石镐。",
+    });
+    const goal = service.getGoal(result.goalId!);
+    expect(goal).toMatchObject({
+      spec: {
+        objective: expect.stringContaining("给我做一把钻石镐"),
+        requestedBy: "PlayerOne",
+        metadata: {
+          routedFrom: "mc_submit_ai_decision",
+          proposedItemId: "minecraft:diamond_pickaxe",
+        },
+      },
+      status: "running",
+    });
+    expect(service.getPlan(goal.id).nodes.map((node) => node.id)).toEqual(expect.arrayContaining([
+      "prepare_food_reserve",
+      "mine_diamonds",
+      "craft_diamond_pickaxe",
+    ]));
+    expect(service.getTask(result.taskId!)).toMatchObject({
+      spec: {
+        kind: "provision-food",
+        requestedBy: "PlayerOne",
+      },
+    });
+  });
+
+  it("continues validated Agent work after an instant task finishes inside the one-shot AI commit", async () => {
+    const service = new ControlService();
+    const backend = new MacroCaptureBackend("survival");
+    service.registerBackend(backend);
+    const interactionId = service.beginAiDecision({
+      sequence: 3,
+      at: "2026-08-17T00:00:00.000Z",
+      companionId: "codex-survival",
+      sender: "PlayerOne",
+      message: "给我制作一把钻石镐并交给我",
+    });
+
+    const result = await service.submitAiDecision(interactionId, {
+      type: "task",
+      reply: "好，我开始准备。",
+      summary: "制作并交付钻石镐",
+      spec: {
+        kind: "craft",
+        itemId: "minecraft:diamond_pickaxe",
+        count: 1,
+        deliverTo: "PlayerOne",
+        requestedBy: "PlayerOne",
+      },
+    });
+
+    const deadline = Date.now() + 2_000;
+    let goal = service.getGoal(result.goalId!);
+    while (!["succeeded", "failed", "cancelled"].includes(goal.status) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      goal = service.getGoal(result.goalId!);
+    }
+
+    expect(goal).toMatchObject({ status: "succeeded", error: null });
+    expect(service.getPlan(goal.id).nodes.every((node) => (
+      node.status === "succeeded" || node.status === "skipped"
+    ))).toBe(true);
+    expect(backend.tasks.map((task) => task.spec.kind)).toEqual([
+      "provision-food",
+      "craft",
+      "craft",
+      "craft",
+      "gather",
+      "gather",
+      "craft",
+    ]);
+    expect(service.events.recent(100).some((event) => (
+      event.type === "warning" && event.message.includes("AI_DECISION_TOOL_BLOCKED")
+    ))).toBe(false);
+  });
+
   it("publishes a body-free diagnostic when an AI decision cannot reach game chat", async () => {
     const service = new ControlService();
     service.registerBackend(new FailingChatBackend());

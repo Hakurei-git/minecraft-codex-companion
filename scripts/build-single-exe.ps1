@@ -33,6 +33,33 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments, [string]$Working
     }
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $resolved = [System.IO.Path]::GetFullPath($LiteralPath)
+    $stream = [System.IO.File]::OpenRead($resolved)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Get-AuthenticodeStatusText([string]$Executable) {
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $Executable -ErrorAction Stop
+        return $signature.Status.ToString()
+    } catch {
+        if ($RequireSignature) {
+            throw "Authenticode inspection is required but unavailable: $($_.Exception.Message)"
+        }
+        return 'Unavailable'
+    }
+}
+
 function Assert-PathUnder([string]$Path, [string]$Root, [string]$Label) {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
@@ -147,7 +174,7 @@ function Assert-PortableManifest([string]$Root) {
         Assert-True (([string]$entry.sha256) -match '^[a-fA-F0-9]{64}$') "Portable manifest contains an invalid SHA-256: $relative"
         $file = Join-Path $Root $relative.Replace('/', '\')
         Assert-True (Test-Path -LiteralPath $file -PathType Leaf) "Portable manifest file is missing: $relative"
-        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
+        $actual = Get-Sha256Hex -LiteralPath $file
         Assert-True ($actual -eq ([string]$entry.sha256).ToLowerInvariant()) "Portable manifest hash mismatch: $relative"
     }
     $extra = @(Get-ChildItem -LiteralPath $Root -File -Recurse | Where-Object {
@@ -176,7 +203,7 @@ function New-PayloadEntries([string]$Root) {
         $entries.Add([PSCustomObject][ordered]@{
             path = $relative
             size = [long]$item.Length
-            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant()
+            sha256 = Get-Sha256Hex -LiteralPath $source
             source = $source
         })
     }
@@ -379,7 +406,7 @@ function Invoke-CodeSign([string]$Executable) {
     }
     $arguments += $Executable
     Invoke-Checked $signtool $arguments $projectRoot
-    $signature = Get-AuthenticodeSignature -LiteralPath $Executable
+    $signature = Get-AuthenticodeSignature -LiteralPath $Executable -ErrorAction Stop
     Assert-True ($signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) "Installer Authenticode verification failed."
 }
 
@@ -429,7 +456,7 @@ try {
 
     # Ensure no source file changed while it was being archived.
     foreach ($entry in $entries) {
-        $currentHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.source).Hash.ToLowerInvariant()
+        $currentHash = Get-Sha256Hex -LiteralPath $entry.source
         Assert-True ($currentHash -eq $entry.sha256) "Payload changed during packaging: $($entry.path)"
     }
 
@@ -463,11 +490,11 @@ try {
         $assemblySource
     ) $projectRoot
 
-    $programHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $programSource).Hash.ToLowerInvariant()
-    $assemblyHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $assemblySource).Hash.ToLowerInvariant()
-    $iconHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $appIcon).Hash.ToLowerInvariant()
-    $indexHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $indexPath).Hash.ToLowerInvariant()
-    $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+    $programHash = Get-Sha256Hex -LiteralPath $programSource
+    $assemblyHash = Get-Sha256Hex -LiteralPath $assemblySource
+    $iconHash = Get-Sha256Hex -LiteralPath $appIcon
+    $indexHash = Get-Sha256Hex -LiteralPath $indexPath
+    $archiveHash = Get-Sha256Hex -LiteralPath $archivePath
     $seed = "mc-codex-single-exe-v2`0$packageId`0$programHash`0$assemblyHash`0$iconHash`0$indexHash`0$archiveHash"
     Normalize-ManagedExecutable $compiledPath $normalizedPath $seed
     Assert-NoEmbeddedBuildPaths $normalizedPath
@@ -511,8 +538,8 @@ try {
     $finalSelfTest = Start-Process -FilePath $outputExe -ArgumentList @('--self-test', '--quiet') -WindowStyle Hidden -Wait -PassThru
     Assert-True ($finalSelfTest.ExitCode -eq 0) "Published single EXE self-test failed with code $($finalSelfTest.ExitCode)."
 
-    $outputHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $outputExe).Hash.ToLowerInvariant()
-    $signature = Get-AuthenticodeSignature -LiteralPath $outputExe
+    $outputHash = Get-Sha256Hex -LiteralPath $outputExe
+    $authenticodeStatus = Get-AuthenticodeStatusText $outputExe
     $report = [ordered]@{
         format = 1
         artifact = $targetName
@@ -544,7 +571,7 @@ try {
             normalizedPeTimestamp = $true
             deterministicMvid = $true
         }
-        authenticodeStatus = $signature.Status.ToString()
+        authenticodeStatus = $authenticodeStatus
     }
     [System.IO.File]::WriteAllText(
         (Join-Path $OutputRoot 'single-exe-build.json'),
@@ -563,7 +590,7 @@ try {
         PackageId = $packageId
         PayloadFiles = $entries.Count
         PayloadBytes = ($entries | Measure-Object -Property size -Sum).Sum
-        Signature = $signature.Status.ToString()
+        Signature = $authenticodeStatus
     } | Format-List
 } finally {
     if (Test-Path -LiteralPath $workRoot -PathType Container) {

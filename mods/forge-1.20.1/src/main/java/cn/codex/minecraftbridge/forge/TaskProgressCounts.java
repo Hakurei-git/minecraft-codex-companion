@@ -5,10 +5,11 @@ package cn.codex.minecraftbridge.forge;
  *
  * <p>{@code completedCount} is the task engine's observed completed amount,
  * {@code targetCount} is the explicit requested amount, and
- * {@code retainedCount} is the amount acquired for this gather phase that is
- * still present beyond the inventory baseline captured at phase start. It is
- * deliberately not the NPC's total matching inventory. None of these values
- * may be reconstructed from a percentage.</p>
+ * {@code retainedCount} is the amount currently satisfying the task. For an
+ * acquire-mode gather this is the task output still present beyond the phase
+ * baseline; for an inventory-total gather it is the current matching inventory
+ * capped at the target. None of these values may be reconstructed from a
+ * percentage.</p>
  */
 public record TaskProgressCounts(int completedCount, int targetCount, int retainedCount) {
     public TaskProgressCounts {

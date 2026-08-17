@@ -14,6 +14,21 @@ function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Assertion failed: $Message" }
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $resolved = [System.IO.Path]::GetFullPath($LiteralPath)
+    $stream = [System.IO.File]::OpenRead($resolved)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Write-Utf8([string]$Path, [string]$Content) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
@@ -26,7 +41,7 @@ function New-PortableFixtureManifest([string]$PayloadRoot) {
         [ordered]@{
             path = $_.FullName.Substring($PayloadRoot.Length).TrimStart('\').Replace('\', '/')
             size = $_.Length
-            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            sha256 = Get-Sha256Hex -LiteralPath $_.FullName
         }
     })
     $manifest = [ordered]@{
@@ -143,9 +158,9 @@ public static class FixtureLauncher
     New-PortableFixtureManifest $payload
 
     $installerA = Invoke-Builder $payload $outputA
-    $hashA = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerA).Hash
+    $hashA = Get-Sha256Hex -LiteralPath $installerA
     $installerAReplaced = Invoke-Builder $payload $outputA
-    $hashAReplaced = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerAReplaced).Hash
+    $hashAReplaced = Get-Sha256Hex -LiteralPath $installerAReplaced
     Assert-True ($hashA -eq $hashAReplaced) 'replacing an existing build changed an identical deterministic EXE'
     $replacementArtifacts = @(Get-ChildItem -LiteralPath $outputA -Force -File | Where-Object {
         $_.Name -like '.MinecraftCodexCompanion-Setup.exe.*.tmp' -or
@@ -154,7 +169,7 @@ public static class FixtureLauncher
     Assert-True ($replacementArtifacts.Count -eq 0) 'existing-output replacement left temporary or backup files'
 
     $installerB = Invoke-Builder $payload $outputB
-    $hashB = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerB).Hash
+    $hashB = Get-Sha256Hex -LiteralPath $installerB
     Assert-True ($hashA -eq $hashB) 'identical staged payloads did not produce byte-identical EXEs'
 
     $selfTest = Start-Process -FilePath $installerA -ArgumentList @('--self-test', '--quiet') -WindowStyle Hidden -Wait -PassThru

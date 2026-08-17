@@ -706,6 +706,194 @@ Local: https://127.0.0.1:57422/
     expect(stored.mcpConfigFingerprint).toBe(mcpConfigFingerprint);
   });
 
+  it("fails closed when the loaded Minecraft MCP still points to an old control port", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-stale-port-"));
+    const stateDirectory = path.join(root, "state");
+    const home = path.join(root, "antigravity");
+    const logPath = path.join(root, "main.log");
+    const executable = path.join(home, "language_server.exe");
+    await mkdir(path.join(home, "bin"), { recursive: true });
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(executable, "fixture", "utf8");
+    await writeFile(path.join(home, "bin", "agentapi.bat"), `"${executable}" agentapi %*\n`, "utf8");
+    await writeFile(path.join(home, "mcp_config.json"), `${JSON.stringify({
+      mcpServers: {
+        minecraft_codex_companion: {
+          command: "node",
+          args: ["mcp-stdio.js"],
+          env: { MC_COMPANION_URL: "http://127.0.0.1:8765" },
+        },
+      },
+    })}\n`, "utf8");
+    await writeFile(logPath, `
+Starting app (v2.8.1) with dynamic port... Spawning: language_server.exe --csrf_token 22222222-2222-2222-2222-222222222222
+Local: https://127.0.0.1:57422/
+`, "utf8");
+    await writeFile(path.join(stateDirectory, "antigravity-session.json"), `${JSON.stringify({
+      version: 1,
+      conversationId: CONVERSATION_ID,
+      projectId: "outside-of-project",
+      conversationTitle: "Execute Minecraft Woodcutting Task",
+      boundAt: "2026-08-09T00:00:00.000Z",
+    })}\n`, "utf8");
+    const runner = vi.fn(async (_args: string[]) => ({
+      response: { conversationMetadata: { metadata: { projectId: "outside-of-project" } } },
+    }));
+    const ensureMcpReady = vi.fn(async () => undefined);
+    const bridge = new AntigravityAgentBridge({
+      stateDirectory,
+      antigravityHome: home,
+      antigravityLogPath: logPath,
+      controlBaseUrl: "http://127.0.0.1:8766",
+      runAgentApi: runner,
+      waitForIdle: async () => undefined,
+      ensureMcpReady,
+    });
+
+    await expect(bridge.status()).resolves.toMatchObject({
+      connected: false,
+      message: expect.stringContaining("旧控制服务"),
+    });
+    await expect(bridge.trigger({
+      sequence: 1,
+      at: new Date().toISOString(),
+      companionId: "codex-forge",
+      sender: "PlayerOne",
+      message: "在吗",
+    }, {
+      mode: "inherit",
+      displayName: "",
+      personality: "",
+      speakingStyle: "",
+      memoryNotes: "",
+    })).rejects.toMatchObject({
+      code: "TRIGGER_FAILED",
+      notifyPlayer: true,
+      message: expect.stringContaining("旧控制服务"),
+    });
+    expect(ensureMcpReady).not.toHaveBeenCalled();
+    expect(runner.mock.calls.some((call) => call[0][0] === "send-message")).toBe(false);
+  });
+
+  it("restarts the loaded MCP process whenever its configuration fingerprint changes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-refresh-loaded-mcp-"));
+    const stateDirectory = path.join(root, "state");
+    const home = path.join(root, "antigravity");
+    const logPath = path.join(root, "main.log");
+    await mkdir(home, { recursive: true });
+    await mkdir(stateDirectory, { recursive: true });
+    const configPath = path.join(home, "mcp_config.json");
+    const writeMcpConfig = async (command: string) => writeFile(configPath, `${JSON.stringify({
+      mcpServers: {
+        minecraft_codex_companion: {
+          command,
+          args: ["mcp-stdio.js"],
+          env: { MC_COMPANION_URL: "http://127.0.0.1:8766" },
+        },
+      },
+    })}\n`, "utf8");
+    await writeMcpConfig("node-v1");
+    await writeFile(logPath, `
+Starting app (v2.8.1) with dynamic port... Spawning: language_server.exe --csrf_token 22222222-2222-2222-2222-222222222222
+Local: https://127.0.0.1:57422/
+`, "utf8");
+    await writeFile(path.join(stateDirectory, "antigravity-session.json"), `${JSON.stringify({
+      version: 1,
+      conversationId: CONVERSATION_ID,
+      projectId: "outside-of-project",
+      conversationTitle: "Execute Minecraft Woodcutting Task",
+      boundAt: "2026-08-09T00:00:00.000Z",
+    })}\n`, "utf8");
+    const runner = vi.fn(async () => ({
+      response: { conversationMetadata: { metadata: { projectId: "outside-of-project" } } },
+    }));
+    const connectRunner = vi.fn(async (_endpoint, method: string, _payload: object) => {
+      if (method === "GetMcpServerStates") return JSON.stringify({
+        states: [{
+          spec: { serverName: "minecraft_codex_companion" },
+          status: "MCP_SERVER_STATUS_READY",
+          tools: [{ name: "mc_chat" }, { name: "mc_submit_ai_decision" }],
+          toolErrors: [],
+        }],
+      });
+      return "{}";
+    });
+    const bridge = new AntigravityAgentBridge({
+      stateDirectory,
+      antigravityHome: home,
+      antigravityLogPath: logPath,
+      controlBaseUrl: "http://127.0.0.1:8766",
+      runAgentApi: runner,
+      runConnectApi: connectRunner,
+      waitForIdle: async () => undefined,
+    });
+
+    await bridge.trigger({
+      sequence: 1,
+      at: new Date().toISOString(),
+      companionId: "codex-forge",
+      sender: "PlayerOne",
+      message: "在吗",
+    }, {
+      mode: "inherit",
+      displayName: "",
+      personality: "",
+      speakingStyle: "",
+      memoryNotes: "",
+    });
+
+    await bridge.trigger({
+      sequence: 2,
+      at: new Date().toISOString(),
+      companionId: "codex-forge",
+      sender: "PlayerOne",
+      message: "配置不变",
+    }, {
+      mode: "inherit",
+      displayName: "",
+      personality: "",
+      speakingStyle: "",
+      memoryNotes: "",
+    });
+
+    await writeMcpConfig("node-v2");
+    await bridge.trigger({
+      sequence: 3,
+      at: new Date().toISOString(),
+      companionId: "codex-forge",
+      sender: "PlayerOne",
+      message: "配置已变化",
+    }, {
+      mode: "inherit",
+      displayName: "",
+      personality: "",
+      speakingStyle: "",
+      memoryNotes: "",
+    });
+
+    expect(connectRunner.mock.calls.map((call) => call[1])).toEqual([
+      "ToggleMcpServer",
+      "RefreshMcpServers",
+      "ToggleMcpServer",
+      "GetMcpServerStates",
+      "SendAgentMessage",
+      "SendAgentMessage",
+      "ToggleMcpServer",
+      "RefreshMcpServers",
+      "ToggleMcpServer",
+      "GetMcpServerStates",
+      "SendAgentMessage",
+    ]);
+    expect(connectRunner.mock.calls
+      .filter((call) => call[1] === "ToggleMcpServer")
+      .map((call) => call[2])).toEqual([
+      { serverName: "minecraft_codex_companion", enabled: false },
+      { serverName: "minecraft_codex_companion", enabled: true },
+      { serverName: "minecraft_codex_companion", enabled: false },
+      { serverName: "minecraft_codex_companion", enabled: true },
+    ]);
+  });
+
   it("creates an isolated project only when the conversation size limit requires rotation", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-project-"));
     const stateDirectory = path.join(root, "state");

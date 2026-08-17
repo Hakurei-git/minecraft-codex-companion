@@ -7,7 +7,19 @@ import websocket from "@fastify/websocket";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
-import { aiProviderDraftSchema, aiTaskDecisionSchema, buildImportRequestSchema, buildPlanDraftSchema, chatSettingsDraftSchema, companionActionSchema, declarativeSkillDraftSchema, taskSpecSchema } from "@mc/protocol";
+import {
+  aiProviderDraftSchema,
+  aiTaskDecisionSchema,
+  buildImportRequestSchema,
+  buildPlanDraftSchema,
+  chatSettingsDraftSchema,
+  companionActionSchema,
+  declarativeSkillDraftSchema,
+  facilityRecordSchema,
+  goalSpecSchema,
+  knowledgeTopicSchema,
+  taskSpecSchema,
+} from "@mc/protocol";
 import { AiProviderStore } from "./ai-provider-store.js";
 import {
   AntigravityAgentBridge,
@@ -87,6 +99,7 @@ const codexDriver = new CodexDriver({
 });
 const antigravityAgent = new AntigravityAgentBridge({
   stateDirectory,
+  controlBaseUrl: `http://127.0.0.1:${port}`,
   ...(process.env.MC_ANTIGRAVITY_HOME ? { antigravityHome: process.env.MC_ANTIGRAVITY_HOME } : {}),
   ...(process.env.MC_ANTIGRAVITY_CONFIG_PATH
     ? { antigravityConfigPath: process.env.MC_ANTIGRAVITY_CONFIG_PATH }
@@ -225,6 +238,56 @@ app.post<{ Params: { interactionId: string }; Body: unknown }>(
     return service.submitAiDecision(request.params.interactionId, body.decision);
   },
 );
+app.get("/api/agent/goals", async () => ({ goals: service.listGoals() }));
+app.post<{ Body: unknown }>("/api/agent/goals", async (request, reply) => {
+  const body = z.object({
+    companionId: z.string().trim().min(1),
+    spec: goalSpecSchema,
+    owner: z.string().trim().min(1).default("dashboard"),
+  }).parse(request.body);
+  return reply.code(202).send(service.submitGoal(body.companionId, body.spec, body.owner));
+});
+app.get<{ Params: { id: string } }>("/api/agent/goals/:id", async (request) => service.getGoal(request.params.id));
+app.get<{ Params: { id: string } }>("/api/agent/goals/:id/plan", async (request) => service.getPlan(request.params.id));
+app.post<{ Params: { id: string }; Body: unknown }>("/api/agent/goals/:id/advance", async (request) => {
+  const body = z.object({
+    owner: z.string().trim().min(1).default("dashboard"),
+    aiDecisionInteractionId: z.string().trim().min(1).max(128).optional(),
+  }).parse(request.body ?? {});
+  return service.advanceGoal(request.params.id, body.owner, {
+    ...(body.aiDecisionInteractionId ? { aiDecisionInteractionId: body.aiDecisionInteractionId } : {}),
+  });
+});
+app.post<{ Params: { id: string }; Body: unknown }>("/api/agent/goals/:id/pause", async (request) => {
+  const body = z.object({ reason: z.string().min(1).max(200).default("Dashboard paused goal") }).parse(request.body ?? {});
+  return service.pauseGoal(request.params.id, body.reason);
+});
+app.post<{ Params: { id: string } }>("/api/agent/goals/:id/resume", async (request) => service.resumeGoal(request.params.id));
+app.post<{ Params: { id: string }; Body: unknown }>("/api/agent/goals/:id/cancel", async (request) => {
+  const body = z.object({ reason: z.string().min(1).max(200).default("Dashboard cancelled goal") }).parse(request.body ?? {});
+  return service.cancelGoal(request.params.id, body.reason);
+});
+app.get<{ Querystring: { query?: string; topic?: string | string[] } }>("/api/agent/knowledge", async (request) => {
+  const topics = Array.isArray(request.query.topic)
+    ? request.query.topic
+    : request.query.topic
+      ? [request.query.topic]
+      : [];
+  const parsed = z.object({
+    query: z.string().trim().max(240).default(""),
+    topics: z.array(knowledgeTopicSchema).max(16).default([]),
+  }).parse({ query: request.query.query ?? "", topics });
+  return { records: service.queryKnowledge(parsed.query, parsed.topics) };
+});
+app.get<{ Querystring: { worldId?: string } }>("/api/agent/facilities", async (request) => ({
+  facilities: service.listFacilities(request.query.worldId),
+}));
+app.post<{ Body: unknown }>("/api/agent/facilities", async (request, reply) => {
+  const input = facilityRecordSchema.omit({ id: true, createdAt: true, updatedAt: true, lastUsedAt: true }).extend({
+    id: z.string().uuid().optional(),
+  }).parse(request.body);
+  return reply.code(201).send(service.registerFacility(input));
+});
 app.get<{ Querystring: { afterSequence?: string; limit?: string } }>("/api/chat/messages", async (request) => {
   const query = z.object({
     afterSequence: z.coerce.number().int().nonnegative().default(0),

@@ -24,6 +24,7 @@ import { BuildViewport } from "./BuildViewport.js";
 import { BuildImportDialog } from "./BuildImportDialog.js";
 import { AiProviderDialog } from "./AiProviderDialog.js";
 import { SkillsSecurityPanel } from "./SkillsSecurityPanel.js";
+import { AgentPanel } from "./AgentPanel.js";
 import { npcStatusView } from "./npc-status.js";
 import {
   assignTask,
@@ -365,6 +366,8 @@ export default function App(): ReactElement {
             <button type="submit" disabled={!chat.trim() || !selected}>发送</button>
           </form>
         </section>
+
+        <AgentPanel companion={selected} />
 
         <SkillsSecurityPanel />
       </main>

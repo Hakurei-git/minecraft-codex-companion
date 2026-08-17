@@ -3,6 +3,9 @@ import {
   buildImportRequestSchema,
   buildSourceSchema,
   declarativeSkillDraftSchema,
+  facilityRecordSchema,
+  goalSpecSchema,
+  knowledgeTopicSchema,
   taskSpecSchema,
   vec3Schema,
 } from "@mc/protocol";
@@ -83,6 +86,77 @@ export function createAgentTools(control: MinecraftControlApi) {
         await control.sendChat(companionId, message, owner);
         return { ok: true };
       },
+    }),
+    mc_submit_goal: defineTool({
+      description: "Record a high-level Minecraft Agent goal and generate its initial local work graph. The existing task executor remains the only path that moves the NPC.",
+      schema: z.object({
+        companionId: z.string().min(1),
+        spec: goalSpecSchema,
+        owner: z.string().min(1).default("codex-driver"),
+      }),
+      execute: async ({ companionId, spec, owner }) => {
+        const goal = await control.submitGoal(companionId, spec, owner);
+        return { goal, plan: await control.getPlan(goal.id) };
+      },
+    }),
+    mc_get_goal: defineTool({
+      description: "Read one high-level Agent goal from the local planner journal.",
+      schema: z.object({ goalId: z.string().uuid() }),
+      execute: async ({ goalId }) => ({ goal: await control.getGoal(goalId) }),
+    }),
+    mc_get_plan: defineTool({
+      description: "Read the v2 WorkGraph for one Agent goal.",
+      schema: z.object({ goalId: z.string().uuid() }),
+      execute: async ({ goalId }) => ({ plan: await control.getPlan(goalId) }),
+    }),
+    mc_advance_goal: defineTool({
+      description: "Advance a persisted Agent WorkGraph until local nodes complete or the next real Minecraft task is queued through the single-writer executor.",
+      schema: z.object({
+        goalId: z.string().uuid(),
+        owner: z.string().min(1).default("codex-driver"),
+      }),
+      execute: async ({ goalId, owner }) => control.advanceGoal(goalId, owner),
+    }),
+    mc_pause_goal: defineTool({
+      description: "Pause one high-level Agent goal in the local planner journal.",
+      schema: z.object({
+        goalId: z.string().uuid(),
+        reason: z.string().min(1).max(200).default("AI provider paused goal"),
+      }),
+      execute: async ({ goalId, reason }) => ({ goal: await control.pauseGoal(goalId, reason) }),
+    }),
+    mc_resume_goal: defineTool({
+      description: "Resume one paused high-level Agent goal.",
+      schema: z.object({ goalId: z.string().uuid() }),
+      execute: async ({ goalId }) => ({ goal: await control.resumeGoal(goalId) }),
+    }),
+    mc_cancel_goal: defineTool({
+      description: "Cancel one high-level Agent goal in the local planner journal.",
+      schema: z.object({
+        goalId: z.string().uuid(),
+        reason: z.string().min(1).max(200).default("AI provider cancelled goal"),
+      }),
+      execute: async ({ goalId, reason }) => ({ goal: await control.cancelGoal(goalId, reason) }),
+    }),
+    mc_query_knowledge: defineTool({
+      description: "Search local gameplay knowledge. This tool never fetches public websites or uploads local files.",
+      schema: z.object({
+        query: z.string().trim().max(240).default(""),
+        topics: z.array(knowledgeTopicSchema).max(16).default([]),
+      }),
+      execute: async ({ query, topics }) => ({ records: await control.queryKnowledge(query, topics) }),
+    }),
+    mc_list_facilities: defineTool({
+      description: "List remembered homes, storage, farms, ranches, workstations, mines, builds, and other reusable facilities.",
+      schema: z.object({ worldId: z.string().trim().min(1).max(128).optional() }),
+      execute: async ({ worldId }) => ({ facilities: await control.listFacilities(worldId) }),
+    }),
+    mc_register_facility: defineTool({
+      description: "Register a reusable in-world facility after it has been observed or built. Do not include local file paths, keys, logs, or screenshots.",
+      schema: facilityRecordSchema.omit({ id: true, createdAt: true, updatedAt: true, lastUsedAt: true }).extend({
+        id: z.string().uuid().optional(),
+      }),
+      execute: async (input) => ({ facility: await control.registerFacility(input) }),
     }),
     mc_control_companion: defineTool({
       description: "Summon, recall, follow, or park the visible in-world companion NPC.",

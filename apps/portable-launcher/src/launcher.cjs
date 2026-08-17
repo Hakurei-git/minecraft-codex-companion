@@ -7,7 +7,7 @@ const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
-const { TextDecoder } = require("node:util");
+const { isDeepStrictEqual, TextDecoder } = require("node:util");
 const { spawn } = require("node:child_process");
 const { installClone, updateClone } = require("./instance-manager.cjs");
 
@@ -118,14 +118,34 @@ function discoverMinecraftRoot(environment = process.env, launcherPath = "") {
 function discoverAntigravityConfigPath(environment = process.env) {
   const home = environmentHome(environment);
   const appData = environment.APPDATA || path.join(home, "AppData", "Roaming");
-  const standard = path.join(home, ".gemini", "antigravity", "mcp_config.json");
+  const explicit = String(environment.MC_ANTIGRAVITY_CONFIG_PATH || "").trim();
+  if (explicit) return path.resolve(explicit);
+  const standard = path.join(home, ".gemini", "config", "mcp_config.json");
   const candidates = [
-    String(environment.MC_ANTIGRAVITY_CONFIG_PATH || "").trim(),
     standard,
+    path.join(home, ".gemini", "antigravity", "mcp_config.json"),
     path.join(home, ".antigravity", "mcp_config.json"),
     path.join(appData, "Antigravity", "mcp_config.json"),
-  ].filter(Boolean).map((candidate) => path.resolve(candidate));
+  ].map((candidate) => path.resolve(candidate));
   return candidates.find(existingFile) ?? path.resolve(standard);
+}
+
+function discoverAntigravityHome(environment = process.env) {
+  const explicit = String(environment.MC_ANTIGRAVITY_HOME || "").trim();
+  if (explicit) return path.resolve(explicit);
+  return path.resolve(environmentHome(environment), ".gemini", "antigravity");
+}
+
+function isLegacyDefaultAntigravityConfigPath(value, environment = process.env) {
+  if (!value || String(environment.MC_ANTIGRAVITY_CONFIG_PATH || "").trim()) return false;
+  const home = environmentHome(environment);
+  const appData = environment.APPDATA || path.join(home, "AppData", "Roaming");
+  const configured = path.resolve(String(value));
+  return [
+    path.join(home, ".gemini", "antigravity", "mcp_config.json"),
+    path.join(home, ".antigravity", "mcp_config.json"),
+    path.join(appData, "Antigravity", "mcp_config.json"),
+  ].some((candidate) => path.resolve(candidate).toLowerCase() === configured.toLowerCase());
 }
 
 function defaultConfig(environment = process.env) {
@@ -220,6 +240,10 @@ function normalizeConfig(input, environment = process.env) {
     : 512;
   result.persona = normalizePersona(result.persona);
   result.npcSkinMode = result.npcSkinMode === "custom" ? "custom" : "default";
+  if (isLegacyDefaultAntigravityConfigPath(result.antigravityConfigPath, environment)) {
+    const discovered = discoverAntigravityConfigPath(environment);
+    if (existingFile(discovered)) result.antigravityConfigPath = discovered;
+  }
   return result;
 }
 
@@ -978,7 +1002,7 @@ async function startService(config, payloadRoot, stateDirectory) {
         PORT: String(config.port),
         MC_COMPANION_STATE_DIR: stateDirectory,
         MC_MCP_URL: `http://127.0.0.1:${config.port}/mcp`,
-        MC_ANTIGRAVITY_HOME: path.dirname(config.antigravityConfigPath),
+        MC_ANTIGRAVITY_HOME: discoverAntigravityHome(),
         MC_ANTIGRAVITY_CONFIG_PATH: config.antigravityConfigPath,
         MC_ANTIGRAVITY_CONVERSATION_TITLE: config.antigravityConversationTitle,
         MC_COMPANION_SECRET_HELPER: paths.secretHelper,
@@ -1062,6 +1086,14 @@ function mergeAntigravityConfig(existing, entry) {
   return { ...root, mcpServers: servers };
 }
 
+function expectedAntigravityMcpEntry(config, paths) {
+  return {
+    command: paths.node,
+    args: [paths.mcpStdio],
+    env: { MC_COMPANION_URL: `http://127.0.0.1:${config.port}` },
+  };
+}
+
 const ANTIGRAVITY_MCP_PERMISSION_RULES = Object.freeze([
   "mcp(minecraft_codex_companion/mc_submit_ai_decision)",
   "mcp(minecraft_codex_companion/mc_chat)",
@@ -1069,13 +1101,16 @@ const ANTIGRAVITY_MCP_PERMISSION_RULES = Object.freeze([
 
 function resolveAntigravityPermissionConfigPath(mcpConfigPath) {
   const resolved = path.resolve(mcpConfigPath);
-  const antigravityDirectory = path.dirname(resolved);
-  const geminiDirectory = path.dirname(antigravityDirectory);
+  const configDirectory = path.dirname(resolved);
+  const geminiDirectory = path.dirname(configDirectory);
   if (
     path.basename(resolved).toLowerCase() !== "mcp_config.json"
-    || path.basename(antigravityDirectory).toLowerCase() !== "antigravity"
     || path.basename(geminiDirectory).toLowerCase() !== ".gemini"
   ) return null;
+  if (path.basename(configDirectory).toLowerCase() === "config") {
+    return path.join(configDirectory, "config.json");
+  }
+  if (path.basename(configDirectory).toLowerCase() !== "antigravity") return null;
   return path.join(geminiDirectory, "config", "config.json");
 }
 
@@ -1114,11 +1149,7 @@ async function installAntigravity(config, payloadRoot, resolvePaths = assertPayl
   if (fs.existsSync(configPath)) {
     existing = await readJsonIfPresent(configPath, {});
   }
-  const merged = mergeAntigravityConfig(existing, {
-    command: paths.node,
-    args: [paths.mcpStdio],
-    env: { MC_COMPANION_URL: `http://127.0.0.1:${config.port}` },
-  });
+  const merged = mergeAntigravityConfig(existing, expectedAntigravityMcpEntry(config, paths));
   const configChanged = JSON.stringify(existing) !== JSON.stringify(merged);
   if (configChanged) {
     if (fs.existsSync(configPath)) {
@@ -1152,6 +1183,23 @@ async function installAntigravity(config, payloadRoot, resolvePaths = assertPayl
     permissionsChanged,
     permissionBackupCreated: Boolean(permissionBackupPath),
   };
+}
+
+async function antigravityInstallationCurrent(config, payloadRoot, resolvePaths = assertPayload) {
+  try {
+    const paths = resolvePaths(payloadRoot);
+    const existing = await readJsonIfPresent(config.antigravityConfigPath, null);
+    const installedEntry = existing?.mcpServers?.minecraft_codex_companion;
+    if (!isDeepStrictEqual(installedEntry, expectedAntigravityMcpEntry(config, paths))) return false;
+
+    const permissionConfigPath = resolveAntigravityPermissionConfigPath(config.antigravityConfigPath);
+    if (!permissionConfigPath) return true;
+    const permissions = await readJsonIfPresent(permissionConfigPath, null);
+    return permissions !== null
+      && isDeepStrictEqual(permissions, mergeAntigravityPermissions(permissions));
+  } catch {
+    return false;
+  }
 }
 
 async function testMcp(config, payloadRoot, stateDirectory) {
@@ -1238,6 +1286,7 @@ async function runtimeBridgeHealthy(config, payloadRoot, stateDirectory, request
   const service = await serviceStatus(config.port, identity);
   if (!service.running || !service.identityVerified) return false;
   if (config.chatTarget !== "antigravity-mcp") return true;
+  if (!await antigravityInstallationCurrent(config, payloadRoot)) return false;
   try {
     const antigravity = await requestJson(`http://127.0.0.1:${config.port}/api/antigravity/status`, {
       timeout: 2_000,
@@ -1752,6 +1801,7 @@ async function main() {
 }
 
 module.exports = {
+  antigravityInstallationCurrent,
   beginAutomaticBridge,
   bindConfiguredAntigravity,
   bridgeTokenFingerprint,
@@ -1763,6 +1813,7 @@ module.exports = {
   createServer,
   defaultConfig,
   discoverAntigravityConfigPath,
+  discoverAntigravityHome,
   discoverHmclLauncherPath,
   discoverMinecraftRoot,
   findAvailableLoopbackPort,

@@ -10,12 +10,29 @@ Operate as an independent companion player. Plan and converse at human time scal
 ## Core Workflow
 
 1. Call `mc_list_companions` and choose a connected companion with the required capability.
-2. Call `mc_acquire_control` with a stable owner name. Never force takeover unless the user explicitly requests it.
-3. Call `mc_observe` before assigning work and again whenever the world may have changed materially.
-4. Call `mc_assign_task` with one typed task. Keep the request small enough to monitor and recover.
-5. Poll `mc_get_task` for meaningful work. Explain failures using the structured recovery hint.
-6. Use `mc_chat` for concise progress and questions in the player's current language; default to Simplified Chinese when the language is unclear.
-7. Call `mc_release_control` when handing the companion to another controller.
+2. For high-level survival requests, prefer the local Agent v2 route: call `mc_submit_goal`, inspect `mc_get_plan`, then call `mc_advance_goal`. This creates a recoverable WorkGraph with local knowledge and facility memory.
+3. For immediate control, safety, or one-step work, call `mc_acquire_control` with a stable owner name. Never force takeover unless the user explicitly requests it.
+4. Call `mc_observe` before assigning direct work and again whenever the world may have changed materially.
+5. Call `mc_assign_task` only for one typed low-level task, or when `mc_advance_goal` has queued the next task for you. Keep direct tasks small enough to monitor and recover.
+6. Poll `mc_get_task` only when the caller explicitly needs a manual status check. Long tasks keep running locally and send terminal progress back to Minecraft.
+7. Use `mc_chat` for concise progress and questions in the player's current language; default to Simplified Chinese when the language is unclear.
+8. Call `mc_release_control` when handing the companion to another controller.
+
+## Local Agent v2 Workflow
+
+Use Agent v2 for requests that require planning, missing-material resolution, facilities, storage, mining, building, farming, ranching, or multi-step recovery. Examples: `给我做一把钻石镐`, `建造田地`, `去找些食物`, `我要64个火把`, `箱子里有铁`, `停止目标回来`, `一起骑龙`, `继续上次失败的建造`.
+
+Recommended sequence:
+
+1. `mc_submit_goal` with a short `title`, the full player `objective`, `requestedBy`, `source`, `mode`, constraints, and optional `deliverTo`. Do not include API keys, local file paths, screenshots, logs, or provider prompts.
+2. Inspect the returned plan. If it contains `await_plan` blocked, ask a concise clarifying question or fall back to a safe direct typed task only when the user's intent is unambiguous.
+3. Call `mc_advance_goal` to run local-only nodes and queue the next real task through the single-writer executor.
+4. Use `mc_get_goal` / `mc_get_plan` for status. Use `mc_pause_goal`, `mc_resume_goal`, or `mc_cancel_goal` when the player says pause, continue, stop, or replace the objective.
+5. Use `mc_query_knowledge` for local gameplay facts and `mc_list_facilities` for remembered homes, workstations, farms, ranches, mines, storage, builds, redstone facilities, and dragon landing areas.
+
+Do not bypass Agent v2 by decomposing a complex player request into unrelated one-off `mc_assign_task` calls. The WorkGraph is responsible for prerequisites, checkpoint recovery, facility reuse, and not restarting from scratch after failure.
+
+Agent v2 currently covers local planning for diamond-pickaxe deep mining, torch preparation with nearby-coal priority, bed crafting and placement, crop farms with hoe/bucket/water prerequisites, farm maintenance, ranch establishment and operations, food/meat provisioning, storage organization and fetch/delivery, common crafting requests, iron equipment, blueprint builds, cobblestone generators, mob farms, tree farms, and Book of Dragons / Saints Dragons actions including shared riding.
 
 When the companion app reports that Antigravity automatic triggering is ready, let the local Agent bridge wake the exact bound conversation. It reuses that conversation until the configured local size limit, then rotates once and persists the new binding. Do not start a second polling loop or create a conversation per Minecraft message.
 

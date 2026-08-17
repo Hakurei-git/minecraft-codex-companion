@@ -368,6 +368,36 @@ describe("CodexDriver", () => {
     expect(smart.fake.started.policies).toHaveLength(0);
   });
 
+  it("routes complex deterministic T-chat actions through the local Agent WorkGraph without model tokens", async () => {
+    const { service, fake, driver } = await createHarness("mc-codex-agent-goal-chat-");
+    await configureChat(service, { actionMode: "stable", tokenBudget: 768 });
+
+    const request = await driver.enqueue({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "给我做一把钻石镐",
+    });
+
+    expect(request).toMatchObject({
+      status: "succeeded",
+      reply: expect.stringMatching(/^好，我开始制作 1 个钻石镐，做好就交给你。（Agent 目标：[0-9a-f-]+，任务 ID：[0-9a-f-]+）$/u),
+    });
+    expect(fake.started.prompts).toHaveLength(0);
+    const goal = service.listGoals()[0];
+    if (!goal) throw new Error("Agent goal was not recorded");
+    expect(goal).toMatchObject({
+      spec: { objective: "给我做一把钻石镐" },
+      status: "running",
+    });
+    expect(service.getPlan(goal.id).nodes.map((node) => node.id)).toEqual(expect.arrayContaining([
+      "prepare_food_reserve",
+      "prepare_spare_wood",
+      "craft_iron_pickaxe",
+      "mine_diamonds",
+      "craft_diamond_pickaxe",
+    ]));
+  });
+
   it("keeps recall local in smart mode and passes token budgets to explicit multi-agent turns", async () => {
     const { service, fake, driver } = await createHarness("mc-codex-smart-safety-");
     await configureChat(service, { actionMode: "smart", tokenBudget: 640 });
@@ -843,6 +873,37 @@ describe("CodexDriver", () => {
     expect(fake.started.prompts).toHaveLength(0);
   });
 
+  it("stops Agent goals and recalls locally for a combined natural-language command", async () => {
+    const { service, fake, driver } = await createHarness("mc-codex-stop-goal-recall-");
+    const control = vi.spyOn(service, "controlCompanion").mockResolvedValue(service.getCompanion("codex-sim"));
+    const goal = service.submitGoal("codex-sim", {
+      title: "Craft a diamond pickaxe",
+      objective: "给我做一把钻石镐",
+      requestedBy: "PlayerOne",
+      source: "t-chat",
+      priority: 100,
+      mode: "smart",
+      constraints: [],
+      taskHints: [],
+      metadata: {},
+    }, "codex-driver");
+    await service.advanceGoal(goal.id, "codex-driver");
+
+    const routed = await driver.handleInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "停止目标，回来",
+    });
+    expect(routed.request).toMatchObject({
+      status: "stopped",
+      reply: "已立即停止所有任务，并回到你身边。",
+    });
+    expect(service.getGoal(goal.id).status).toBe("cancelled");
+    expect(service.getPlan(goal.id)).toMatchObject({ status: "cancelled" });
+    expect(control).toHaveBeenCalledWith("codex-sim", "recall");
+    expect(fake.started.prompts).toHaveLength(0);
+  });
+
   it("runs deterministic tasks without waiting for a busy model turn", async () => {
     const { service, fake, driver } = await createHarness("mc-codex-fast-task-");
     const sendChat = vi.spyOn(service, "sendChat");
@@ -893,9 +954,13 @@ describe("CodexDriver", () => {
       handled: true,
       request: {
         status: "succeeded",
-        reply: expect.stringMatching(/^好，我按安全模板开始建造基础住宅。（任务 ID：[0-9a-f-]+）$/u),
+        reply: expect.stringMatching(/^好，我按安全模板开始建造基础住宅。（Agent 目标：[0-9a-f-]+，任务 ID：[0-9a-f-]+）$/u),
       },
     });
+    expect(service.listGoals()).toContainEqual(expect.objectContaining({
+      spec: expect.objectContaining({ objective: "建一个基础住宅" }),
+      status: expect.stringMatching(/^(running|succeeded)$/u),
+    }));
     expect(service.listTasks()).toContainEqual(expect.objectContaining({
       spec: expect.objectContaining({
         kind: "macro",

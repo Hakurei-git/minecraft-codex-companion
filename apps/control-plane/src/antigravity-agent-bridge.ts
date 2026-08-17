@@ -152,6 +152,7 @@ export interface AntigravityAgentBridgeOptions {
   antigravityHome?: string;
   antigravityConfigPath?: string;
   antigravityLogPath?: string;
+  controlBaseUrl?: string;
   environment?: NodeJS.ProcessEnv;
   runAgentApi?: AgentApiRunner;
   runConnectApi?: ConnectApiRunner;
@@ -428,6 +429,7 @@ export class AntigravityAgentBridge {
   readonly #home: string;
   readonly #configPath: string;
   readonly #logPath: string;
+  readonly #controlBaseUrl: string | null;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #statePath: string;
   readonly #runtimeProjectStatePath: string;
@@ -459,7 +461,9 @@ export class AntigravityAgentBridge {
     this.#configPath = path.resolve(
       options.antigravityConfigPath
         ?? this.#environment.MC_ANTIGRAVITY_CONFIG_PATH
-        ?? path.join(this.#home, "mcp_config.json"),
+        ?? (options.antigravityHome
+          ? path.join(this.#home, "mcp_config.json")
+          : path.join(os.homedir(), ".gemini", "config", "mcp_config.json")),
     );
     const roaming = this.#environment.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
     this.#logPath = path.resolve(
@@ -467,6 +471,7 @@ export class AntigravityAgentBridge {
         ?? this.#environment.MC_ANTIGRAVITY_LOG_PATH
         ?? path.join(roaming, "Antigravity", "logs", "main.log"),
     );
+    this.#controlBaseUrl = options.controlBaseUrl?.trim().replace(/\/+$/u, "") || null;
     this.#statePath = path.join(this.#stateDirectory, "antigravity-session.json");
     this.#runtimeProjectStatePath = path.join(this.#stateDirectory, RUNTIME_PROJECT_STATE_FILE);
     this.#runtimeProjectDirectory = path.join(this.#stateDirectory, RUNTIME_PROJECT_DIRECTORY);
@@ -522,10 +527,7 @@ export class AntigravityAgentBridge {
         const endpoint = await this.#endpoint();
         const session = await this.#resolveSession(endpoint, false);
         const prompt = promptFor(message, settings, context);
-        const mcpConfigFingerprint = await this.#mcpConfigFingerprint();
-        if (mcpConfigFingerprint !== null) {
-          await this.#ensureMinecraftMcpReady(endpoint, mcpConfigFingerprint);
-        }
+        const mcpConfigFingerprint = await this.#ensureCurrentMcpReady(endpoint);
         // The local sender confirms acceptance before the model/tool turn finishes.
         // Waiting on both sides prevents overlapping turns in the one bound chat.
         await this.#waitForConversationIdle(endpoint, session.conversationId);
@@ -688,6 +690,7 @@ export class AntigravityAgentBridge {
       return this.bindConversationByTitle(this.#requiredConversationTitle);
     }
     const endpoint = await this.#endpoint();
+    await this.#ensureCurrentMcpReady(endpoint);
     const session = await this.#resolveSession(endpoint, true);
     this.#clearAutomaticRetryBlock();
     return {
@@ -709,6 +712,7 @@ export class AntigravityAgentBridge {
       throw new Error(`只能绑定配置中完整标题等于“${this.#requiredConversationTitle}”的反重力会话`);
     }
     const endpoint = await this.#endpoint();
+    const mcpConfigFingerprint = await this.#ensureCurrentMcpReady(endpoint);
     const stored = await this.#readStoredSession();
     // An explicit title bind must select that exact conversation. Normal startup
     // and message delivery reuse a rotated stored session through #resolveSession;
@@ -724,7 +728,7 @@ export class AntigravityAgentBridge {
             generation: Number(stored.generation ?? 1),
             turnCount: Number(stored.turnCount ?? 0),
             promptCharacters: Number(stored.promptCharacters ?? 0),
-            mcpConfigFingerprint: stored.mcpConfigFingerprint ?? null,
+            mcpConfigFingerprint: mcpConfigFingerprint ?? stored.mcpConfigFingerprint ?? null,
             ...(stored.mcpBindingVersion ? { mcpBindingVersion: stored.mcpBindingVersion } : {}),
           },
         );
@@ -764,7 +768,7 @@ export class AntigravityAgentBridge {
         generation: 1,
         turnCount: 0,
         promptCharacters: 0,
-        mcpConfigFingerprint: await this.#mcpConfigFingerprint(),
+        mcpConfigFingerprint,
       },
     );
     this.#clearAutomaticRetryBlock();
@@ -818,6 +822,7 @@ export class AntigravityAgentBridge {
     }
     try {
       const endpoint = await this.#endpoint();
+      await this.#ensureCurrentMcpReady(endpoint);
       const session = await this.#resolveSession(endpoint, false);
       const now = this.#now();
       const blocked = now < this.#automaticRetryBlockedUntil;
@@ -852,6 +857,15 @@ export class AntigravityAgentBridge {
     this.#automaticRetryBlockCode = null;
   }
 
+  async #ensureCurrentMcpReady(endpoint: AntigravityEndpoint): Promise<string | null> {
+    const fingerprint = await this.#mcpConfigFingerprint();
+    if (this.#controlBaseUrl && fingerprint === null) {
+      throw new Error("反重力 Minecraft MCP 尚未配置；请保持 EXE 运行以自动写入本地 MCP 配置");
+    }
+    if (fingerprint !== null) await this.#ensureMinecraftMcpReady(endpoint, fingerprint);
+    return fingerprint;
+  }
+
   async #ensureMinecraftMcpReady(
     endpoint: AntigravityEndpoint,
     configFingerprint: string,
@@ -863,20 +877,28 @@ export class AntigravityAgentBridge {
       return;
     }
 
-    const enable = () => this.#connectRequest(endpoint, "ToggleMcpServer", {
+    const toggle = (enabled: boolean) => this.#connectRequest(endpoint, "ToggleMcpServer", {
       serverName: MINECRAFT_MCP_SERVER_NAME,
-      enabled: true,
+      enabled,
     }, 30);
-    try {
-      await enable();
-    } catch {
+    const restart = async () => {
+      try {
+        // Refresh once before retrying a disable when Antigravity has not loaded
+        // this server yet. An already-loaded server takes the direct path.
+        await toggle(false);
+      } catch {
+        await this.#connectRequest(endpoint, "RefreshMcpServers", {}, 30);
+        await toggle(false);
+      }
+      // Toggle off before refresh is required: RefreshMcpServers alone keeps an
+      // existing child alive with its old command, URL, and environment.
       await this.#connectRequest(endpoint, "RefreshMcpServers", {}, 30);
-      await enable();
-    }
+      await toggle(true);
+    };
+    await restart();
 
     if (!await this.#waitForMinecraftMcpReady(endpoint, 10_000)) {
-      await this.#connectRequest(endpoint, "RefreshMcpServers", {}, 30);
-      await enable();
+      await restart();
       if (!await this.#waitForMinecraftMcpReady(endpoint, 20_000)) {
         throw new Error("反重力 Minecraft MCP 未在规定时间内就绪");
       }
@@ -1275,16 +1297,21 @@ export class AntigravityAgentBridge {
   }
 
   async #mcpConfigFingerprint(): Promise<string | null> {
+    let parsed: { mcpServers?: Record<string, unknown> };
     try {
-      const parsed = JSON.parse(await readFile(this.#configPath, "utf8")) as {
+      parsed = JSON.parse(await readFile(this.#configPath, "utf8")) as {
         mcpServers?: Record<string, unknown>;
       };
-      const entry = parsed.mcpServers?.minecraft_codex_companion;
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-      return createHash("sha256").update(canonicalJson(entry), "utf8").digest("hex");
     } catch {
       return null;
     }
+    const entry = parsed.mcpServers?.minecraft_codex_companion;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const configuredUrl = (entry as { env?: { MC_COMPANION_URL?: unknown } }).env?.MC_COMPANION_URL;
+    if (this.#controlBaseUrl && configuredUrl !== this.#controlBaseUrl) {
+      throw new Error("反重力 Minecraft MCP 配置仍指向旧控制服务；请保持 EXE 运行以自动同步当前本地端口");
+    }
+    return createHash("sha256").update(canonicalJson(entry), "utf8").digest("hex");
   }
 
   async #agentApiExecutable(): Promise<string> {
