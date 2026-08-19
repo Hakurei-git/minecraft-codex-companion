@@ -16,6 +16,10 @@ const CONNECT_MESSAGE_TIMEOUT_SECONDS = 15;
 const CONVERSATION_IDLE_TIMEOUT_SECONDS = 60;
 const RECOVERY_IDLE_TIMEOUT_SECONDS = 10;
 const DEFAULT_LOCATION_FAILURE_BACKOFF_MS = 30 * 1_000;
+// Antigravity can keep its MCP loader in-flight while its provider caches are
+// waiting on the network.  Do not hammer RefreshMcpServers on every status
+// poll during that window; a later request (or manual recovery) will retry.
+const DEFAULT_MCP_LOADING_BACKOFF_MS = 30 * 1_000;
 const MAX_ANTIGRAVITY_LOG_CANDIDATES = 32;
 const MAX_ANTIGRAVITY_LOG_BYTES = 8 * 1024 * 1024;
 const DEFAULT_CONVERSATION_TITLE = "Execute Minecraft Woodcutting Task";
@@ -525,6 +529,8 @@ export class AntigravityAgentBridge {
   #automaticRetryBlockCode: AntigravityAutoTriggerError["code"] | null = null;
   #readyMcpConfigFingerprint: string | null = null;
   #mcpReadyPromise: Promise<string | null> | null = null;
+  #mcpLoadingBlockedUntil = 0;
+  #mcpLoadingBlockReason: string | null = null;
 
   constructor(options: AntigravityAgentBridgeOptions) {
     this.#stateDirectory = path.resolve(options.stateDirectory);
@@ -859,6 +865,9 @@ export class AntigravityAgentBridge {
   }
 
   async recoverBoundConversation(): Promise<AntigravityAgentBridgeStatus> {
+    // A manual recovery is an explicit request to try again immediately; it
+    // must not be held behind the automatic MCP-loading backoff.
+    this.#clearMcpLoadingBackoff();
     const endpoint = await this.#endpoint();
     const session = await this.#resolveSession(endpoint, false);
     await this.#forceStopConversation(endpoint, session.conversationId);
@@ -933,6 +942,32 @@ export class AntigravityAgentBridge {
     this.#automaticRetryBlockCode = null;
   }
 
+  #clearMcpLoadingBackoff(): void {
+    this.#mcpLoadingBlockedUntil = 0;
+    this.#mcpLoadingBlockReason = null;
+  }
+
+  #throwIfMcpLoadingBackoffActive(): void {
+    const remaining = this.#mcpLoadingBlockedUntil - this.#now();
+    if (remaining <= 0) {
+      if (this.#mcpLoadingBlockedUntil > 0) this.#clearMcpLoadingBackoff();
+      return;
+    }
+    const seconds = Math.max(1, Math.ceil(remaining / 1_000));
+    const reason = this.#mcpLoadingBlockReason
+      ? `（${this.#mcpLoadingBlockReason}）`
+      : "";
+    throw new Error(`反重力 Minecraft MCP 仍在加载中，${seconds} 秒后自动重试${reason}；也可输入“恢复反重力”立即重试`);
+  }
+
+  #markMcpLoadingBackoff(detail: string): void {
+    const redacted = redactSensitiveText(detail).replace(/\s+/gu, " ").trim().slice(0, 180);
+    this.#mcpLoadingBlockedUntil = this.#now() + DEFAULT_MCP_LOADING_BACKOFF_MS;
+    this.#mcpLoadingBlockReason = redacted.includes("loading already in progress")
+      ? "反重力报告 loading already in progress"
+      : "反重力尚未完成 MCP 加载";
+  }
+
   async #ensureCurrentMcpReady(endpoint: AntigravityEndpoint): Promise<string | null> {
     // Status polling, automatic chat delivery, and a manual recovery command
     // can all arrive at the same time.  Antigravity rejects overlapping MCP
@@ -953,7 +988,10 @@ export class AntigravityAgentBridge {
     if (this.#controlBaseUrl && fingerprint === null) {
       throw new Error("反重力 Minecraft MCP 尚未配置；请保持 EXE 运行以自动写入本地 MCP 配置");
     }
-    if (fingerprint !== null) await this.#ensureMinecraftMcpReady(endpoint, fingerprint);
+    if (fingerprint !== null) {
+      if (this.#readyMcpConfigFingerprint !== fingerprint) this.#throwIfMcpLoadingBackoffActive();
+      await this.#ensureMinecraftMcpReady(endpoint, fingerprint);
+    }
     return fingerprint;
   }
 
@@ -992,7 +1030,10 @@ export class AntigravityAgentBridge {
       } catch (caught) {
         const detail = caught instanceof Error ? caught.message : String(caught);
         if (!/loading already in progress/iu.test(detail)) throw caught;
-        if (!await waitForLoadToSettle(15_000)) throw caught;
+        if (!await waitForLoadToSettle(15_000)) {
+          this.#markMcpLoadingBackoff(detail);
+          throw caught;
+        }
       }
     };
     const restart = async () => {
@@ -1014,9 +1055,11 @@ export class AntigravityAgentBridge {
     if (!await this.#waitForMinecraftMcpReady(endpoint, 10_000)) {
       await restart();
       if (!await this.#waitForMinecraftMcpReady(endpoint, 20_000)) {
+        this.#markMcpLoadingBackoff("MCP server did not reach READY before the bounded wait expired");
         throw new Error("反重力 Minecraft MCP 未在规定时间内就绪");
       }
     }
+    this.#clearMcpLoadingBackoff();
     this.#readyMcpConfigFingerprint = configFingerprint;
   }
 
