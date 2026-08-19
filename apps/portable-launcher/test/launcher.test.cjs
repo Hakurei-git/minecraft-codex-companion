@@ -390,6 +390,43 @@ test("Antigravity MCP installation is idempotent and does not create repeat back
   assert.deepEqual((await fsp.readdir(path.dirname(configPath))).filter((name) => name.endsWith(".bak")), []);
 });
 
+test("Antigravity MCP installation synchronizes every existing known profile config", async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "mc-codex-antigravity-dual-config-"));
+  t.after(() => removeFixture(root));
+  const environment = {
+    USERPROFILE: root,
+    APPDATA: path.join(root, "AppData", "Roaming"),
+  };
+  const centralPath = path.join(root, ".gemini", "config", "mcp_config.json");
+  const runtimePath = path.join(root, ".gemini", "antigravity", "mcp_config.json");
+  await fsp.mkdir(path.dirname(centralPath), { recursive: true });
+  await fsp.mkdir(path.dirname(runtimePath), { recursive: true });
+  await fsp.writeFile(centralPath, JSON.stringify({ userSetting: "keep-central" }), "utf8");
+  await fsp.writeFile(runtimePath, JSON.stringify({ userSetting: "keep-runtime" }), "utf8");
+  const config = normalizeConfig({
+    port: 18765,
+    antigravityConfigPath: centralPath,
+  }, environment);
+  const payloadRoot = path.resolve(__dirname, "../../..");
+  const fixturePaths = () => ({ node: "runtime-node.exe", mcpStdio: "mcp-stdio.js" });
+
+  const installed = await installAntigravity(config, payloadRoot, fixturePaths, environment);
+  assert.equal(installed.synchronizedConfigCount, 2);
+  assert.equal(installed.configChanged, true);
+  const central = JSON.parse(await fsp.readFile(centralPath, "utf8"));
+  const runtime = JSON.parse(await fsp.readFile(runtimePath, "utf8"));
+  assert.deepEqual(central.mcpServers.minecraft_codex_companion, runtime.mcpServers.minecraft_codex_companion);
+  assert.equal(central.userSetting, "keep-central");
+  assert.equal(runtime.userSetting, "keep-runtime");
+  assert.equal(await antigravityInstallationCurrent(config, payloadRoot, fixturePaths, environment), true);
+
+  runtime.mcpServers.minecraft_codex_companion.env.MC_COMPANION_URL = "http://127.0.0.1:18766";
+  await fsp.writeFile(runtimePath, `${JSON.stringify(runtime, null, 2)}\n`, "utf8");
+  assert.equal(await antigravityInstallationCurrent(config, payloadRoot, fixturePaths, environment), false);
+  await installAntigravity(config, payloadRoot, fixturePaths, environment);
+  assert.equal(await antigravityInstallationCurrent(config, payloadRoot, fixturePaths, environment), true);
+});
+
 test("Antigravity bridge health rejects a stale control port or missing permission grant", async (t) => {
   const files = await fixture();
   t.after(() => removeFixture(files.root));

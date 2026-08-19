@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +16,8 @@ const CONNECT_MESSAGE_TIMEOUT_SECONDS = 15;
 const CONVERSATION_IDLE_TIMEOUT_SECONDS = 60;
 const RECOVERY_IDLE_TIMEOUT_SECONDS = 10;
 const DEFAULT_LOCATION_FAILURE_BACKOFF_MS = 30 * 1_000;
+const MAX_ANTIGRAVITY_LOG_CANDIDATES = 32;
+const MAX_ANTIGRAVITY_LOG_BYTES = 8 * 1024 * 1024;
 const DEFAULT_CONVERSATION_TITLE = "Execute Minecraft Woodcutting Task";
 const MINECRAFT_MCP_BINDING_VERSION = 1;
 const MINECRAFT_MCP_SERVER_NAME = "minecraft_codex_companion";
@@ -227,27 +229,97 @@ function conversationIdFromResult(result: AgentApiResult): string | null {
   return candidates.find((candidate) => typeof candidate === "string" && /^[0-9a-f-]{36}$/iu.test(candidate)) ?? null;
 }
 
-function lastMatch<T>(items: T[]): T | undefined {
-  return items.at(-1);
-}
-
 /** Parse only the current launch block so a stale token cannot be paired with a new port. */
 export function parseAntigravityEndpointLog(text: string): AntigravityEndpoint | null {
-  const blocks = [...text.matchAll(
+  const candidates: Array<{ index: number; endpoint: AntigravityEndpoint }> = [];
+  const legacyBlocks = [...text.matchAll(
     /Starting app \(v([^\r\n)]+)\)[\s\S]*?--csrf_token\s+([0-9a-f-]{16,})[\s\S]*?Local:\s+https:\/\/127\.0\.0\.1:(\d+)\//giu,
   )];
-  const match = lastMatch(blocks);
-  if (!match) return null;
-  const webPort = Number(match[3]);
-  if (!Number.isInteger(webPort) || webPort < 1 || webPort >= 65_535) return null;
-  return {
-    // Antigravity exposes its local Connect UI on N and its agentapi gRPC
-    // endpoint on the adjacent port N+1.
-    webAddress: `127.0.0.1:${webPort}`,
-    grpcAddress: `127.0.0.1:${webPort + 1}`,
-    csrfToken: match[2]!,
-    version: match[1]!.trim(),
-  };
+  for (const match of legacyBlocks) {
+    const webPort = Number(match[3]);
+    if (!Number.isInteger(webPort) || webPort < 1 || webPort >= 65_535) continue;
+    candidates.push({
+      index: match.index,
+      endpoint: {
+        // Older Antigravity builds printed the Connect endpoint as Local: N
+        // and exposed agentapi on the adjacent port N+1.
+        webAddress: `127.0.0.1:${webPort}`,
+        grpcAddress: `127.0.0.1:${webPort + 1}`,
+        csrfToken: match[2]!,
+        version: match[1]!.trim(),
+      },
+    });
+  }
+
+  // Current desktop builds write one ls-main.log per launch.  They no longer
+  // emit "Starting app"/"Local:"; instead they print Args followed by the
+  // explicit HTTPS (gRPC) and HTTP ports.  Keep each token inside its own Args
+  // block so a stale token can never be paired with a later launch port.
+  const tokenBlocks = [...text.matchAll(
+    /(?:^|\r?\n)[^\r\n]*\bArgs:\s+[^\r\n]*--csrf_token\s+([0-9a-f-]{16,})[^\r\n]*/giu,
+  )];
+  for (let index = 0; index < tokenBlocks.length; index += 1) {
+    const tokenMatch = tokenBlocks[index]!;
+    const start = tokenMatch.index;
+    const end = tokenBlocks[index + 1]?.index ?? text.length;
+    const block = text.slice(start, end);
+    const grpcMatch = block.match(
+      /Language server listening on random port at\s+(\d+)\s+for HTTPS\s+\(gRPC\)/iu,
+    ) ?? block.match(/\bLS started on port\s+(\d+)\b/iu);
+    if (!grpcMatch) continue;
+    const grpcPort = Number(grpcMatch[1]);
+    if (!Number.isInteger(grpcPort) || grpcPort < 1 || grpcPort >= 65_535) continue;
+    candidates.push({
+      index: start,
+      endpoint: {
+        // Connect RPC and agentapi both use the TLS gRPC listener.  The
+        // separately logged HTTP port is an internal non-TLS listener.
+        webAddress: `127.0.0.1:${grpcPort}`,
+        grpcAddress: `127.0.0.1:${grpcPort}`,
+        csrfToken: tokenMatch[1]!,
+        version: "unknown",
+      },
+    });
+  }
+
+  return candidates.sort((left, right) => left.index - right.index).at(-1)?.endpoint ?? null;
+}
+
+async function antigravityLogCandidates(logRoot: string, legacyPath: string): Promise<string[]> {
+  const paths = new Set<string>([path.resolve(legacyPath), path.join(logRoot, "ls-main.log")]);
+  const sessions = await readdir(logRoot, { withFileTypes: true }).catch(() => []);
+  for (const session of sessions
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+    .sort((left, right) => right.name.localeCompare(left.name, "en"))
+    .slice(0, MAX_ANTIGRAVITY_LOG_CANDIDATES)) {
+    paths.add(path.join(logRoot, session.name, "ls-main.log"));
+    paths.add(path.join(logRoot, session.name, "main.log"));
+  }
+  const files = await Promise.all([...paths].map(async (filePath) => {
+    const info = await stat(filePath).catch(() => null);
+    return info?.isFile() ? { filePath, modifiedAt: info.mtimeMs } : null;
+  }));
+  return files
+    .filter((entry): entry is { filePath: string; modifiedAt: number } => entry !== null)
+    .sort((left, right) => right.modifiedAt - left.modifiedAt
+      || left.filePath.localeCompare(right.filePath, "en"))
+    .slice(0, MAX_ANTIGRAVITY_LOG_CANDIDATES)
+    .map((entry) => entry.filePath);
+}
+
+async function readAntigravityLogTail(filePath: string): Promise<string | null> {
+  const handle = await open(filePath, "r").catch(() => null);
+  if (!handle) return null;
+  try {
+    const info = await handle.stat();
+    const length = Math.min(info.size, MAX_ANTIGRAVITY_LOG_BYTES);
+    if (length <= 0) return null;
+    const contents = Buffer.alloc(length);
+    await handle.read(contents, 0, length, Math.max(0, info.size - length));
+    return contents.toString("utf8");
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 function cleanConversationId(fileName: string): string | null {
@@ -430,6 +502,8 @@ export class AntigravityAgentBridge {
   readonly #home: string;
   readonly #configPath: string;
   readonly #logPath: string;
+  readonly #logRoot: string;
+  readonly #logPathExplicit: boolean;
   readonly #controlBaseUrl: string | null;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #statePath: string;
@@ -450,6 +524,7 @@ export class AntigravityAgentBridge {
   #automaticRetryBlockedUntil = 0;
   #automaticRetryBlockCode: AntigravityAutoTriggerError["code"] | null = null;
   #readyMcpConfigFingerprint: string | null = null;
+  #mcpReadyPromise: Promise<string | null> | null = null;
 
   constructor(options: AntigravityAgentBridgeOptions) {
     this.#stateDirectory = path.resolve(options.stateDirectory);
@@ -467,11 +542,11 @@ export class AntigravityAgentBridge {
           : path.join(os.homedir(), ".gemini", "config", "mcp_config.json")),
     );
     const roaming = this.#environment.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
-    this.#logPath = path.resolve(
-      options.antigravityLogPath
-        ?? this.#environment.MC_ANTIGRAVITY_LOG_PATH
-        ?? path.join(roaming, "Antigravity", "logs", "main.log"),
-    );
+    this.#logRoot = path.resolve(roaming, "Antigravity", "logs");
+    const explicitLogPath = options.antigravityLogPath
+      ?? this.#environment.MC_ANTIGRAVITY_LOG_PATH;
+    this.#logPathExplicit = Boolean(explicitLogPath?.trim());
+    this.#logPath = path.resolve(explicitLogPath ?? path.join(this.#logRoot, "main.log"));
     this.#controlBaseUrl = options.controlBaseUrl?.trim().replace(/\/+$/u, "") || null;
     this.#statePath = path.join(this.#stateDirectory, "antigravity-session.json");
     this.#runtimeProjectStatePath = path.join(this.#stateDirectory, RUNTIME_PROJECT_STATE_FILE);
@@ -859,6 +934,21 @@ export class AntigravityAgentBridge {
   }
 
   async #ensureCurrentMcpReady(endpoint: AntigravityEndpoint): Promise<string | null> {
+    // Status polling, automatic chat delivery, and a manual recovery command
+    // can all arrive at the same time.  Antigravity rejects overlapping MCP
+    // refreshes with "loading already in progress"; share one reconciliation
+    // promise instead of starting competing Toggle/Refresh requests.
+    if (this.#mcpReadyPromise) return this.#mcpReadyPromise;
+    const operation = this.#ensureCurrentMcpReadyUnlocked(endpoint);
+    this.#mcpReadyPromise = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.#mcpReadyPromise === operation) this.#mcpReadyPromise = null;
+    }
+  }
+
+  async #ensureCurrentMcpReadyUnlocked(endpoint: AntigravityEndpoint): Promise<string | null> {
     const fingerprint = await this.#mcpConfigFingerprint();
     if (this.#controlBaseUrl && fingerprint === null) {
       throw new Error("反重力 Minecraft MCP 尚未配置；请保持 EXE 运行以自动写入本地 MCP 配置");
@@ -882,18 +972,41 @@ export class AntigravityAgentBridge {
       serverName: MINECRAFT_MCP_SERVER_NAME,
       enabled,
     }, 30);
+    const waitForLoadToSettle = async (timeoutMs: number): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs;
+      do {
+        try {
+          const raw = await this.#connectRequest(endpoint, "GetMcpServerStates", {}, 10);
+          const parsed = raw ? JSON.parse(raw) as { isLoading?: boolean } : {};
+          if (parsed.isLoading !== true) return true;
+        } catch {
+          // The language server may briefly restart while MCP is loading.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      } while (Date.now() < deadline);
+      return false;
+    };
+    const refresh = async (): Promise<void> => {
+      try {
+        await this.#connectRequest(endpoint, "RefreshMcpServers", {}, 30);
+      } catch (caught) {
+        const detail = caught instanceof Error ? caught.message : String(caught);
+        if (!/loading already in progress/iu.test(detail)) throw caught;
+        if (!await waitForLoadToSettle(15_000)) throw caught;
+      }
+    };
     const restart = async () => {
       try {
         // Refresh once before retrying a disable when Antigravity has not loaded
         // this server yet. An already-loaded server takes the direct path.
         await toggle(false);
       } catch {
-        await this.#connectRequest(endpoint, "RefreshMcpServers", {}, 30);
+        await refresh();
         await toggle(false);
       }
       // Toggle off before refresh is required: RefreshMcpServers alone keeps an
       // existing child alive with its old command, URL, and environment.
-      await this.#connectRequest(endpoint, "RefreshMcpServers", {}, 30);
+      await refresh();
       await toggle(true);
     };
     await restart();
@@ -1031,12 +1144,19 @@ export class AntigravityAgentBridge {
   }
 
   async #endpoint(): Promise<AntigravityEndpoint> {
-    const log = await readFile(this.#logPath, "utf8").catch(() => {
-      throw new Error("未发现正在运行的反重力，请先启动反重力");
-    });
-    const endpoint = parseAntigravityEndpointLog(log);
-    if (!endpoint) throw new Error("无法从反重力日志识别本地 Agent API 端口");
-    return endpoint;
+    const candidates = this.#logPathExplicit
+      ? [this.#logPath]
+      : await antigravityLogCandidates(this.#logRoot, this.#logPath);
+    let foundLog = false;
+    for (const candidate of candidates) {
+      const log = await readAntigravityLogTail(candidate);
+      if (log === null) continue;
+      foundLog = true;
+      const endpoint = parseAntigravityEndpointLog(log);
+      if (endpoint) return endpoint;
+    }
+    if (!foundLog) throw new Error("未发现正在运行的反重力，请先启动反重力");
+    throw new Error("无法从反重力日志识别本地 Agent API 端口");
   }
 
   #agentEnvironment(endpoint: AntigravityEndpoint, projectId: string): NodeJS.ProcessEnv {

@@ -116,18 +116,39 @@ function discoverMinecraftRoot(environment = process.env, launcherPath = "") {
 }
 
 function discoverAntigravityConfigPath(environment = process.env) {
-  const home = environmentHome(environment);
-  const appData = environment.APPDATA || path.join(home, "AppData", "Roaming");
   const explicit = String(environment.MC_ANTIGRAVITY_CONFIG_PATH || "").trim();
   if (explicit) return path.resolve(explicit);
-  const standard = path.join(home, ".gemini", "config", "mcp_config.json");
-  const candidates = [
-    standard,
+  const candidates = defaultAntigravityConfigPaths(environment);
+  return candidates.find(existingFile) ?? path.resolve(candidates[0]);
+}
+
+function defaultAntigravityConfigPaths(environment = process.env) {
+  const home = environmentHome(environment);
+  const appData = environment.APPDATA || path.join(home, "AppData", "Roaming");
+  return [
+    path.join(home, ".gemini", "config", "mcp_config.json"),
     path.join(home, ".gemini", "antigravity", "mcp_config.json"),
     path.join(home, ".antigravity", "mcp_config.json"),
     path.join(appData, "Antigravity", "mcp_config.json"),
   ].map((candidate) => path.resolve(candidate));
-  return candidates.find(existingFile) ?? path.resolve(standard);
+}
+
+function synchronizedAntigravityConfigPaths(configPath, environment = process.env) {
+  const primary = path.resolve(configPath);
+  if (String(environment.MC_ANTIGRAVITY_CONFIG_PATH || "").trim()) return [primary];
+  const defaults = defaultAntigravityConfigPaths(environment);
+  if (!defaults.some((candidate) => candidate.toLowerCase() === primary.toLowerCase())) return [primary];
+  return uniqueResolvedPaths([primary, ...defaults.filter((candidate) => existingFile(candidate))]);
+}
+
+function uniqueResolvedPaths(paths) {
+  const seen = new Set();
+  return paths.filter(Boolean).map((candidate) => path.resolve(candidate)).filter((candidate) => {
+    const key = candidate.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function discoverAntigravityHome(environment = process.env) {
@@ -1143,63 +1164,73 @@ function mergeAntigravityPermissions(existing) {
   };
 }
 
-async function installAntigravity(config, payloadRoot, resolvePaths = assertPayload) {
+async function installAntigravity(config, payloadRoot, resolvePaths = assertPayload, environment = process.env) {
   const paths = resolvePaths(payloadRoot);
   const configPath = config.antigravityConfigPath;
-  const permissionConfigPath = resolveAntigravityPermissionConfigPath(configPath);
-  let existing = {};
-  let backupPath = null;
-  if (fs.existsSync(configPath)) {
-    existing = await readJsonIfPresent(configPath, {});
-  }
-  const merged = mergeAntigravityConfig(existing, expectedAntigravityMcpEntry(config, paths));
-  const configChanged = JSON.stringify(existing) !== JSON.stringify(merged);
-  if (configChanged) {
-    if (fs.existsSync(configPath)) {
+  const configPaths = synchronizedAntigravityConfigPaths(configPath, environment);
+  const changedConfigPaths = [];
+  const backupPaths = [];
+  for (const candidate of configPaths) {
+    let existing = {};
+    if (fs.existsSync(candidate)) existing = await readJsonIfPresent(candidate, {});
+    const merged = mergeAntigravityConfig(existing, expectedAntigravityMcpEntry(config, paths));
+    if (JSON.stringify(existing) === JSON.stringify(merged)) continue;
+    if (fs.existsSync(candidate)) {
       const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
-      backupPath = `${configPath}.${stamp}.bak`;
-      await fsp.copyFile(configPath, backupPath);
+      const backupPath = `${candidate}.${stamp}.bak`;
+      await fsp.copyFile(candidate, backupPath);
+      backupPaths.push(backupPath);
     }
-    await writeJsonAtomic(configPath, merged);
+    await writeJsonAtomic(candidate, merged);
+    changedConfigPaths.push(candidate);
   }
-  let permissionBackupPath = null;
+  const permissionConfigPaths = uniqueResolvedPaths(
+    configPaths.map((candidate) => resolveAntigravityPermissionConfigPath(candidate)),
+  );
+  const permissionBackupPaths = [];
   let permissionsChanged = false;
-  if (permissionConfigPath) {
+  for (const permissionConfigPath of permissionConfigPaths) {
     const existingPermissions = await readJsonIfPresent(permissionConfigPath, {});
     const mergedPermissions = mergeAntigravityPermissions(existingPermissions);
-    permissionsChanged = JSON.stringify(existingPermissions) !== JSON.stringify(mergedPermissions);
-    if (permissionsChanged) {
-      if (fs.existsSync(permissionConfigPath)) {
-        const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
-        permissionBackupPath = `${permissionConfigPath}.${stamp}.bak`;
-        await fsp.copyFile(permissionConfigPath, permissionBackupPath);
-      }
-      await writeJsonAtomic(permissionConfigPath, mergedPermissions);
+    if (JSON.stringify(existingPermissions) === JSON.stringify(mergedPermissions)) continue;
+    permissionsChanged = true;
+    if (fs.existsSync(permissionConfigPath)) {
+      const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+      const permissionBackupPath = `${permissionConfigPath}.${stamp}.bak`;
+      await fsp.copyFile(permissionConfigPath, permissionBackupPath);
+      permissionBackupPaths.push(permissionBackupPath);
     }
+    await writeJsonAtomic(permissionConfigPath, mergedPermissions);
   }
   return {
     installed: true,
     configPath,
-    configChanged,
-    backupCreated: Boolean(backupPath),
-    permissionsConfigured: Boolean(permissionConfigPath),
+    synchronizedConfigCount: configPaths.length,
+    configChanged: changedConfigPaths.length > 0,
+    backupCreated: backupPaths.length > 0,
+    permissionsConfigured: permissionConfigPaths.length > 0,
     permissionsChanged,
-    permissionBackupCreated: Boolean(permissionBackupPath),
+    permissionBackupCreated: permissionBackupPaths.length > 0,
   };
 }
 
-async function antigravityInstallationCurrent(config, payloadRoot, resolvePaths = assertPayload) {
+async function antigravityInstallationCurrent(config, payloadRoot, resolvePaths = assertPayload, environment = process.env) {
   try {
     const paths = resolvePaths(payloadRoot);
-    const existing = await readJsonIfPresent(config.antigravityConfigPath, null);
-    const installedEntry = existing?.mcpServers?.minecraft_codex_companion;
-    if (!isDeepStrictEqual(installedEntry, expectedAntigravityMcpEntry(config, paths))) return false;
-
-    const permissionConfigPath = resolveAntigravityPermissionConfigPath(config.antigravityConfigPath);
-    if (!permissionConfigPath) return true;
-    const permissions = await readJsonIfPresent(permissionConfigPath, null);
-    return permissions !== null
-      && isDeepStrictEqual(permissions, mergeAntigravityPermissions(permissions));
+    const configPaths = synchronizedAntigravityConfigPaths(config.antigravityConfigPath, environment);
+    for (const configPath of configPaths) {
+      const existing = await readJsonIfPresent(configPath, null);
+      const installedEntry = existing?.mcpServers?.minecraft_codex_companion;
+      if (!isDeepStrictEqual(installedEntry, expectedAntigravityMcpEntry(config, paths))) return false;
+    }
+    const permissionConfigPaths = uniqueResolvedPaths(
+      configPaths.map((candidate) => resolveAntigravityPermissionConfigPath(candidate)),
+    );
+    for (const permissionConfigPath of permissionConfigPaths) {
+      const permissions = await readJsonIfPresent(permissionConfigPath, null);
+      if (permissions === null || !isDeepStrictEqual(permissions, mergeAntigravityPermissions(permissions))) return false;
+    }
+    return true;
   } catch {
     return false;
   }

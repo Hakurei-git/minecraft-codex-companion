@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -58,6 +58,24 @@ Local:       https://127.0.0.1:57422/
       version: "2.4.3",
     });
   });
+
+  it("parses the current timestamped ls-main format without mixing launch tokens", () => {
+    const endpoint = parseAntigravityEndpointLog(`
+2026-08-20 02:20:01.000 [info] [LS Main] Args: --csrf_token 11111111-1111-1111-1111-111111111111 --extension_server_port 50000
+2026-08-20 02:20:02.000 [error] [LS Main stderr] Language server listening on random port at 51001 for HTTPS (gRPC)
+2026-08-20 02:20:02.100 [error] [LS Main stderr] Language server listening on random port at 51002 for HTTP
+2026-08-20 02:25:06.000 [info] [LS Main] Args: --csrf_token 22222222-2222-2222-2222-222222222222 --extension_server_port 60000
+2026-08-20 02:25:08.000 [error] [LS Main stderr] Language server listening on random port at 63293 for HTTPS (gRPC)
+2026-08-20 02:25:08.100 [error] [LS Main stderr] Language server listening on random port at 63294 for HTTP
+2026-08-20 02:25:09.000 [info] [LS Main] LS started on port 63293
+`);
+    expect(endpoint).toEqual({
+      webAddress: "127.0.0.1:63293",
+      grpcAddress: "127.0.0.1:63293",
+      csrfToken: "22222222-2222-2222-2222-222222222222",
+      version: "unknown",
+    });
+  });
 });
 
 describe("isAntigravityRecoveryMessage", () => {
@@ -81,6 +99,60 @@ describe("isAntigravityRecoveryMessage", () => {
 });
 
 describe("AntigravityAgentBridge", () => {
+  it("discovers the newest timestamped ls-main log when no explicit path is configured", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-current-log-"));
+    const stateDirectory = path.join(root, "state");
+    const home = path.join(root, "antigravity");
+    const appData = path.join(root, "roaming");
+    const logs = path.join(appData, "Antigravity", "logs");
+    const currentLogDirectory = path.join(logs, "20260820T022505");
+    const executable = path.join(home, "language_server.exe");
+    const legacyLog = path.join(logs, "main.log");
+    const currentLog = path.join(currentLogDirectory, "ls-main.log");
+    await mkdir(path.join(home, "bin"), { recursive: true });
+    await mkdir(stateDirectory, { recursive: true });
+    await mkdir(currentLogDirectory, { recursive: true });
+    await writeFile(executable, "fixture", "utf8");
+    await writeFile(path.join(home, "bin", "agentapi.bat"), `"${executable}" agentapi %*\n`, "utf8");
+    await writeFile(legacyLog, `
+Starting app (v2.4.1) with dynamic port... Spawning: language_server.exe --csrf_token 11111111-1111-1111-1111-111111111111
+Local: https://127.0.0.1:50000/
+`, "utf8");
+    await writeFile(currentLog, `
+2026-08-20 02:25:06.413 [info] [LS Main] Args: --csrf_token 22222222-2222-2222-2222-222222222222 --extension_server_port 63271
+2026-08-20 02:25:08.248 [error] [LS Main stderr] Language server listening on random port at 63293 for HTTPS (gRPC)
+2026-08-20 02:25:08.249 [error] [LS Main stderr] Language server listening on random port at 63294 for HTTP
+`, "utf8");
+    await utimes(legacyLog, new Date(1_000), new Date(1_000));
+    await utimes(currentLog, new Date(2_000), new Date(2_000));
+    await writeFile(path.join(stateDirectory, "antigravity-session.json"), `${JSON.stringify({
+      version: 1,
+      conversationId: CONVERSATION_ID,
+      projectId: "outside-of-project",
+      conversationTitle: "Execute Minecraft Woodcutting Task",
+      boundAt: "2026-08-09T00:00:00.000Z",
+    })}\n`, "utf8");
+    const runner = vi.fn(async (_args: string[], _environment: NodeJS.ProcessEnv) => ({
+      response: { conversationMetadata: { metadata: { projectId: "outside-of-project" } } },
+    }));
+    const bridge = new AntigravityAgentBridge({
+      stateDirectory,
+      antigravityHome: home,
+      environment: { APPDATA: appData },
+      runAgentApi: runner,
+    });
+
+    await expect(bridge.status()).resolves.toMatchObject({
+      available: true,
+      connected: true,
+      conversationId: CONVERSATION_ID,
+    });
+    expect(runner.mock.calls[0]?.[1]).toMatchObject({
+      ANTIGRAVITY_LS_ADDRESS: "127.0.0.1:63293",
+      ANTIGRAVITY_LS_VERSION: "unknown",
+    });
+  });
+
   it("keeps the exact stored binding visible while Antigravity is offline", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-offline-binding-"));
     const stateDirectory = path.join(root, "state");
@@ -893,6 +965,61 @@ Local: https://127.0.0.1:57422/
       { serverName: "minecraft_codex_companion", enabled: false },
       { serverName: "minecraft_codex_companion", enabled: true },
     ]);
+  });
+
+  it("serializes concurrent MCP readiness checks instead of overlapping refreshes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-mcp-lock-"));
+    const stateDirectory = path.join(root, "state");
+    const home = path.join(root, "antigravity");
+    const logPath = path.join(root, "main.log");
+    const configPath = path.join(root, "mcp_config.json");
+    const executable = path.join(home, "language_server.exe");
+    await mkdir(path.join(home, "bin"), { recursive: true });
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(executable, "fixture", "utf8");
+    await writeFile(path.join(home, "bin", "agentapi.bat"), `"${executable}" agentapi %*\n`, "utf8");
+    await writeFile(configPath, `${JSON.stringify({
+      mcpServers: {
+        minecraft_codex_companion: {
+          command: "node",
+          args: ["mcp-stdio.js"],
+          env: { MC_COMPANION_URL: "http://127.0.0.1:8765" },
+        },
+      },
+    })}\n`, "utf8");
+    await writeFile(logPath, `
+Starting app (v2.8.1) with dynamic port... Spawning: language_server.exe --csrf_token 22222222-2222-2222-2222-222222222222
+Local: https://127.0.0.1:57422/
+`, "utf8");
+    await writeFile(path.join(stateDirectory, "antigravity-session.json"), `${JSON.stringify({
+      version: 1,
+      conversationId: CONVERSATION_ID,
+      projectId: "outside-of-project",
+      conversationTitle: "Execute Minecraft Woodcutting Task",
+      boundAt: "2026-08-09T00:00:00.000Z",
+    })}\n`, "utf8");
+    const runner = vi.fn(async () => ({
+      response: { conversationMetadata: { metadata: { projectId: "outside-of-project" } } },
+    }));
+    let readinessCalls = 0;
+    const ensureMcpReady = vi.fn(async () => {
+      readinessCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    const bridge = new AntigravityAgentBridge({
+      stateDirectory,
+      antigravityHome: home,
+      antigravityConfigPath: configPath,
+      antigravityLogPath: logPath,
+      controlBaseUrl: "http://127.0.0.1:8765",
+      runAgentApi: runner,
+      ensureMcpReady,
+    });
+
+    const [first, second] = await Promise.all([bridge.status(), bridge.status()]);
+    expect(first.connected).toBe(true);
+    expect(second.connected).toBe(true);
+    expect(readinessCalls).toBe(1);
   });
 
   it("creates an isolated project only when the conversation size limit requires rotation", async () => {
