@@ -1022,6 +1022,102 @@ Local: https://127.0.0.1:57422/
     expect(readinessCalls).toBe(1);
   });
 
+  it("waits for an existing Antigravity MCP load before retrying the refresh", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-mcp-loading-"));
+    const stateDirectory = path.join(root, "state");
+    const home = path.join(root, "antigravity");
+    const logPath = path.join(root, "main.log");
+    const configPath = path.join(home, "mcp_config.json");
+    const executable = path.join(home, "language_server.exe");
+    await mkdir(path.join(home, "bin"), { recursive: true });
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(executable, "fixture", "utf8");
+    await writeFile(path.join(home, "bin", "agentapi.bat"), `"${executable}" agentapi %*\n`, "utf8");
+    await writeFile(configPath, `${JSON.stringify({
+      mcpServers: {
+        minecraft_codex_companion: {
+          command: "node",
+          args: ["mcp-stdio.js"],
+          env: { MC_COMPANION_URL: "http://127.0.0.1:8765" },
+        },
+      },
+    })}\n`, "utf8");
+    await writeFile(logPath, `
+Starting app (v2.8.1) with dynamic port... Spawning: language_server.exe --csrf_token 22222222-2222-2222-2222-222222222222
+Local: https://127.0.0.1:57422/
+`, "utf8");
+    await writeFile(path.join(stateDirectory, "antigravity-session.json"), `${JSON.stringify({
+      version: 1,
+      conversationId: CONVERSATION_ID,
+      projectId: "outside-of-project",
+      conversationTitle: "Execute Minecraft Woodcutting Task",
+      boundAt: "2026-08-09T00:00:00.000Z",
+    })}\n`, "utf8");
+    const runner = vi.fn(async (args: string[]) => {
+      if (args[0] === "get-conversation-metadata") {
+        return { response: { conversationMetadata: { metadata: { projectId: "outside-of-project" } } } };
+      }
+      return { response: { sendMessage: { recipientId: CONVERSATION_ID } } };
+    });
+    let toggleCalls = 0;
+    let refreshCalls = 0;
+    let stateCalls = 0;
+    const connectRunner = vi.fn(async (_endpoint, method: string) => {
+      if (method === "ToggleMcpServer") {
+        toggleCalls += 1;
+        if (toggleCalls === 1) throw new Error("反重力本地接口调用失败（HTTP 500）：{\"message\":\"loading already in progress\"}");
+        return "{}";
+      }
+      if (method === "RefreshMcpServers") {
+        refreshCalls += 1;
+        if (refreshCalls === 1) throw new Error("反重力本地接口调用失败（HTTP 500）：{\"message\":\"loading already in progress\"}");
+        return "{}";
+      }
+      if (method === "GetMcpServerStates") {
+        stateCalls += 1;
+        if (stateCalls < 3) return JSON.stringify({ isLoading: true, states: [] });
+        return JSON.stringify({
+          isLoading: false,
+          states: [{
+            spec: { serverName: "minecraft_codex_companion" },
+            status: "MCP_SERVER_STATUS_READY",
+            tools: [{ name: "mc_chat" }, { name: "mc_submit_ai_decision" }],
+            toolErrors: [],
+          }],
+        });
+      }
+      return "{}";
+    });
+    const bridge = new AntigravityAgentBridge({
+      stateDirectory,
+      antigravityHome: home,
+      antigravityConfigPath: configPath,
+      antigravityLogPath: logPath,
+      controlBaseUrl: "http://127.0.0.1:8765",
+      runAgentApi: runner,
+      runConnectApi: connectRunner,
+      waitForIdle: async () => undefined,
+    });
+
+    await bridge.trigger({
+      sequence: 1,
+      at: new Date().toISOString(),
+      companionId: "codex-forge",
+      sender: "PlayerOne",
+      message: "MCP 正在加载时仍发送一条消息",
+    }, {
+      mode: "inherit",
+      displayName: "",
+      personality: "",
+      speakingStyle: "",
+      memoryNotes: "",
+    });
+    expect(toggleCalls).toBe(3);
+    expect(refreshCalls).toBe(2);
+    expect(stateCalls).toBeGreaterThanOrEqual(3);
+    expect(connectRunner.mock.calls.some((call) => call[1] === "SendAgentMessage")).toBe(true);
+  });
+
   it("creates an isolated project only when the conversation size limit requires rotation", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-project-"));
     const stateDirectory = path.join(root, "state");
