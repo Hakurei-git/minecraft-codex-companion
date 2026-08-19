@@ -990,7 +990,19 @@ export class AntigravityAgentBridge {
     }
     if (fingerprint !== null) {
       if (this.#readyMcpConfigFingerprint !== fingerprint) this.#throwIfMcpLoadingBackoffActive();
-      await this.#ensureMinecraftMcpReady(endpoint, fingerprint);
+      try {
+        await this.#ensureMinecraftMcpReady(endpoint, fingerprint);
+      } catch (caught) {
+        // A stuck loader may surface as a socket timeout rather than the
+        // explicit "loading already in progress" response.  It is still the
+        // same bounded MCP-readiness failure; apply the same backoff so status
+        // polling and chat delivery do not create a refresh storm.
+        const detail = caught instanceof Error ? caught.message : String(caught);
+        if (/loading already in progress|MCP|反重力本地接口调用超时/iu.test(detail)) {
+          this.#markMcpLoadingBackoff(detail);
+        }
+        throw caught;
+      }
     }
     return fingerprint;
   }
