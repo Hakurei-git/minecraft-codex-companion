@@ -427,7 +427,19 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     placeAtHome: z.boolean().optional(),
   }),
   z.object({ ...taskBase, kind: z.literal("smelt"), itemId: resourceLocationSchema, count: z.number().int().min(1).max(256) }),
-  z.object({ ...taskBase, kind: z.literal("farm"), cropId: resourceLocationSchema, action: z.enum(["plant", "harvest", "cycle"]), radius: z.number().min(1).max(64).default(12) }),
+  z.object({
+    ...taskBase,
+    kind: z.literal("farm"),
+    cropId: resourceLocationSchema,
+    action: z.enum(["plant", "harvest", "cycle"]),
+    radius: z.number().min(1).max(96).default(12),
+    // Macro farm steps inherit the build anchor so a resumed task can return
+    // to the recorded facility instead of searching around the NPC's owner.
+    placementAnchor: vec3Schema.optional(),
+    // A resolved Forge build origin is authoritative for the immediately
+    // following farm step and must not be replaced by an older facility record.
+    lockPlacementAnchor: z.boolean().optional(),
+  }),
   z.object({ ...taskBase, kind: z.literal("store"), itemId: resourceSelectorSchema.optional(), count: z.number().int().min(1).max(4096).optional() }),
   z.object({ ...taskBase, kind: z.literal("retrieve"), itemId: resourceSelectorSchema, count: z.number().int().min(1).max(4096) }),
   z.object({ ...taskBase, kind: z.literal("organize-storage"), radius: z.number().int().min(8).max(64).default(24) }),
@@ -470,6 +482,7 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     placement: z.enum(["plan-origin", "companion"]).optional(),
     offset: vec3Schema.optional(),
     placementAnchor: vec3Schema.optional(),
+    sitePolicy: z.enum(["default", "outdoor"]).optional(),
     materialPreference: buildMaterialPreferenceSchema.optional(),
   }),
   z.object({
@@ -945,6 +958,9 @@ export const taskProgressDetailsSchema = z.object({
   completedCount: z.number().int().nonnegative().optional(),
   targetCount: z.number().int().positive().optional(),
   retainedCount: z.number().int().nonnegative().optional(),
+  // Forge may move a companion-relative blueprint to a safe outdoor site.
+  // Reporting the actual origin keeps later macro steps on that same facility.
+  resolvedPlacementAnchor: vec3Schema.optional(),
 });
 export type TaskProgressDetails = z.infer<typeof taskProgressDetailsSchema>;
 

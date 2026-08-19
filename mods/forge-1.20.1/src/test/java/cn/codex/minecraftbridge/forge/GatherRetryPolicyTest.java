@@ -36,6 +36,14 @@ final class GatherRetryPolicyTest {
         assertFalse(GatherRetryPolicy.targetIsUnreachable(1, 20));
         assertTrue(GatherRetryPolicy.targetIsUnreachable(GatherRetryPolicy.MAX_PATH_FAILURES, 0));
         assertTrue(GatherRetryPolicy.targetIsUnreachable(0, GatherRetryPolicy.MAX_STALLED_TICKS + 1));
+        assertFalse(GatherRetryPolicy.targetProgressTimedOut(
+            GatherRetryPolicy.MAX_TARGET_NO_PROGRESS_TICKS,
+            0
+        ));
+        assertTrue(GatherRetryPolicy.targetProgressTimedOut(
+            GatherRetryPolicy.MAX_TARGET_NO_PROGRESS_TICKS + 1,
+            0
+        ));
     }
 
     @Test
@@ -48,6 +56,9 @@ final class GatherRetryPolicyTest {
         assertFalse(GatherRetryPolicy.searchRegionReached(Double.NaN));
         assertTrue(GatherRetryPolicy.shouldSkipAfterUnusableTeleport(true));
         assertFalse(GatherRetryPolicy.shouldSkipAfterUnusableTeleport(false));
+        assertTrue(GatherRetryPolicy.isSkippableResourceTeleportTarget(false, true));
+        assertFalse(GatherRetryPolicy.isSkippableResourceTeleportTarget(true, true));
+        assertFalse(GatherRetryPolicy.isSkippableResourceTeleportTarget(false, false));
     }
 
     @Test
@@ -123,6 +134,10 @@ final class GatherRetryPolicyTest {
                 64
             )
         );
+        assertEquals(72.0D, GatherRetryPolicy.farmSeedExcursionDistance(72.0D, 1));
+        assertEquals(72.0D, GatherRetryPolicy.farmSeedExcursionDistance(72.0D, 8));
+        assertEquals(144.0D, GatherRetryPolicy.farmSeedExcursionDistance(72.0D, 9));
+        assertEquals(216.0D, GatherRetryPolicy.farmSeedExcursionDistance(72.0D, 17));
     }
 
     @Test

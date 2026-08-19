@@ -325,8 +325,8 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
       { name: "radius", description: "农务半径", type: "integer", required: false, defaultValue: 12, minimum: 1, maximum: 64 },
     ],
     steps: [
-      { label: "建造农田框架", task: { kind: "build", planId: BUILTIN_BUILD_IDS.cropFarm, ...nextToCompanion } },
-      { label: "照料农田", task: { kind: "farm", cropId: "${cropId}", action: "cycle", radius: "${radius}" } },
+      { label: "建造农田框架", task: { kind: "build", planId: BUILTIN_BUILD_IDS.cropFarm, ...nextToCompanion, sitePolicy: "outdoor" } },
+      { label: "照料并补种已有农田", task: { kind: "farm", cropId: "${cropId}", action: "plant", radius: "${radius}" } },
     ],
   },
   {

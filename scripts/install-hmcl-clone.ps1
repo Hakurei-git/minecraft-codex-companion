@@ -236,6 +236,7 @@ $bridgeConfig = [ordered]@{
     allowPvp = $false
     allowBreakingContainers = $false
     hostileEntityAllowlist = @()
+    npcMaterialMode = "survival"
 }
 Write-Utf8NoBom `
     -Path (Join-Path $targetPath "config\minecraft-codex-companion.json") `

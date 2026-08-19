@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BUILTIN_BUILD_IDS } from "./builtin-content.js";
 import { ControlService } from "./control-service.js";
 import { createMinecraftMcpServer } from "./mcp-server.js";
@@ -10,6 +10,7 @@ import { SimulatorBackend } from "./simulator-backend.js";
 const clients: Client[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(clients.splice(0).map((client) => client.close()));
 });
 
@@ -123,6 +124,8 @@ describe("Minecraft MCP server", () => {
   it("blocks direct mutating MCP tools while a smart decision is pending", async () => {
     const service = new ControlService();
     service.registerBackend(new SimulatorBackend());
+    const startedAt = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(startedAt);
     const interactionId = service.beginAiDecision({
       sequence: 2,
       at: new Date().toISOString(),
@@ -131,6 +134,10 @@ describe("Minecraft MCP server", () => {
       message: "给我 16 个肉",
     });
     const client = await createClient(service);
+
+    // A real Antigravity turn can exceed the old 60-second guard. The direct
+    // tools must remain blocked while its one-shot decision is still pending.
+    now.mockReturnValue(startedAt + 70_000);
 
     const directChat = await client.callTool({
       name: "mc_chat",
@@ -191,6 +198,7 @@ describe("Minecraft MCP server", () => {
       player: "PlayerOne",
       requestedBy: "PlayerOne",
     });
+    now.mockRestore();
   });
 
   it("rejects an unknown skill without consuming the pending smart interaction", async () => {

@@ -27,6 +27,7 @@ function observedProgressDetails(message: TaskProgress | TaskResult): TaskProgre
     completedCount: message.completedCount,
     targetCount: message.targetCount,
     retainedCount: message.retainedCount,
+    resolvedPlacementAnchor: message.resolvedPlacementAnchor,
   };
   return Object.values(details).some((value) => value !== undefined) ? details : undefined;
 }

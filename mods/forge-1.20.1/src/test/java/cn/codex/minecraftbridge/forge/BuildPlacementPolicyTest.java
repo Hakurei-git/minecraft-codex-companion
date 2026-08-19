@@ -24,6 +24,9 @@ final class BuildPlacementPolicyTest {
         assertFalse(BuildPlacementPolicy.isClickableSupport(true, true, true));
         assertFalse(BuildPlacementPolicy.isClickableSupport(false, true, false));
         assertFalse(BuildPlacementPolicy.isClickableSupport(false, false, true));
+        assertEquals(0, BuildPlacementPolicy.supportScore(false, true));
+        assertEquals(1, BuildPlacementPolicy.supportScore(true, false));
+        assertEquals(2, BuildPlacementPolicy.supportScore(true, true));
     }
 
     @Test
@@ -50,5 +53,14 @@ final class BuildPlacementPolicyTest {
             plannedOrigin,
             BuildPlacementPolicy.surfaceProbe("companion", plannedOrigin, null)
         );
+        BlockPos home = new BlockPos(100, 70, 100);
+        assertFalse(BuildPlacementPolicy.clearsHome(new BlockPos(120, 90, 100), home, 24));
+        assertTrue(BuildPlacementPolicy.clearsHome(new BlockPos(124, 70, 100), home, 24));
+        assertTrue(BuildPlacementPolicy.clearsHome(new BlockPos(100, 70, 124), home, 24));
+        assertTrue(BuildPlacementPolicy.shouldResolveOutdoorSite("outdoor", 0));
+        assertFalse(BuildPlacementPolicy.shouldResolveOutdoorSite("outdoor", 1));
+        assertFalse(BuildPlacementPolicy.shouldResolveOutdoorSite("default", 0));
+        assertTrue(BuildPlacementPolicy.terrainFits(72, 75, 3));
+        assertFalse(BuildPlacementPolicy.terrainFits(72, 76, 3));
     }
 }

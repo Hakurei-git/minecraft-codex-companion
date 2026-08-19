@@ -39,6 +39,6 @@ final class SmeltingPrerequisitePolicy {
         if (log) return 10;
         if (plank) return 20;
         if (itemId.equals("minecraft:stick") || itemId.equals("minecraft:bamboo")) return 30;
-        return 100;
+        return Integer.MAX_VALUE;
     }
 }

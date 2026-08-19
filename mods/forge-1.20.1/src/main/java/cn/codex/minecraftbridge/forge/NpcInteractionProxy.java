@@ -35,12 +35,18 @@ final class NpcInteractionProxy {
         aimAt(player, Vec3.atCenterOf(position));
         boolean broken = player.gameMode.destroyBlock(position);
         if (toolSlot >= 0) npc.inventory().setStackInSlot(toolSlot, player.getMainHandItem().copy());
+        if (broken) npc.swing(InteractionHand.MAIN_HAND, true);
         return broken;
     }
 
     InteractionResult useItemOn(BlockPos support, Direction face, ItemStack stack, int sourceSlot) {
         FakePlayer player = prepare(stack.copy());
         Vec3 hit = supportHitLocation(player.level(), support, face);
+        // LookControl updates the visible NPC at the end of the entity tick.
+        // The proxy interaction happens immediately, so copy an explicit aim
+        // now; otherwise a valid seed/hoe use can be rejected when the prior
+        // navigation yaw still faces away from the selected farm cell.
+        aimAt(player, hit);
         InteractionResult result = player.gameMode.useItemOn(
             player,
             player.level(),
@@ -49,6 +55,7 @@ final class NpcInteractionProxy {
             new BlockHitResult(hit, face, support, false)
         );
         if (sourceSlot >= 0) npc.inventory().setStackInSlot(sourceSlot, player.getMainHandItem().copy());
+        if (result.consumesAction()) npc.swing(InteractionHand.MAIN_HAND, true);
         return result;
     }
 
@@ -67,6 +74,7 @@ final class NpcInteractionProxy {
             InteractionHand.MAIN_HAND
         );
         if (sourceSlot >= 0) npc.inventory().setStackInSlot(sourceSlot, player.getMainHandItem().copy());
+        if (result.consumesAction()) npc.swing(InteractionHand.MAIN_HAND, true);
         return result;
     }
 
@@ -75,6 +83,7 @@ final class NpcInteractionProxy {
         aimAt(player, entity.getBoundingBox().getCenter());
         InteractionResult result = player.interactOn(entity, InteractionHand.MAIN_HAND);
         if (sourceSlot >= 0) npc.inventory().setStackInSlot(sourceSlot, player.getMainHandItem().copy());
+        if (result.consumesAction()) npc.swing(InteractionHand.MAIN_HAND, true);
         return result;
     }
 
@@ -99,7 +108,9 @@ final class NpcInteractionProxy {
             player.level(), player, InteractionHand.MAIN_HAND
         );
         npc.inventory().setStackInSlot(sourceSlot, result.getObject().copy());
-        return result.getResult().consumesAction() && player.fishing != null;
+        boolean cast = result.getResult().consumesAction() && player.fishing != null;
+        if (cast) npc.swing(InteractionHand.MAIN_HAND, true);
+        return cast;
     }
 
     /** Reels in and removes the visible hook while preserving rod durability. */
@@ -111,6 +122,7 @@ final class NpcInteractionProxy {
             player.level(), player, InteractionHand.MAIN_HAND
         );
         npc.inventory().setStackInSlot(sourceSlot, result.getObject().copy());
+        if (result.getResult().consumesAction()) npc.swing(InteractionHand.MAIN_HAND, true);
     }
 
     void cancelFishing() {

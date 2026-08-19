@@ -60,6 +60,9 @@ final class SmeltingPrerequisitePolicyTest {
         assertEquals(20, SmeltingPrerequisitePolicy.safeFuelPriority(
             "minecraft:oak_planks", true, false, false, true
         ));
+        assertEquals(Integer.MAX_VALUE, SmeltingPrerequisitePolicy.safeFuelPriority(
+            "minecraft:white_wool", true, false, false, false
+        ));
     }
 
     @Test

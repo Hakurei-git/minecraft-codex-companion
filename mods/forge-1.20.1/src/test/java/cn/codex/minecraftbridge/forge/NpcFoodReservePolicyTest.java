@@ -13,6 +13,10 @@ final class NpcFoodReservePolicyTest {
         assertFalse(NpcFoodReservePolicy.shouldProvision(false, 8, 8, "craft", false, false, false));
         assertFalse(NpcFoodReservePolicy.shouldProvision(true, 8, 0, "craft", false, false, false));
         assertFalse(NpcFoodReservePolicy.shouldProvision(false, 0, 0, "craft", false, false, false));
+        assertTrue(NpcFoodReservePolicy.targetWithMealBuffer(8, 20, 20) == 8);
+        assertTrue(NpcFoodReservePolicy.targetWithMealBuffer(8, 18, 20) == 9);
+        assertTrue(NpcFoodReservePolicy.targetWithMealBuffer(8, 14, 20) == 11);
+        assertTrue(NpcFoodReservePolicy.targetWithMealBuffer(64, 0, 20) == 64);
     }
 
     @Test

@@ -14,7 +14,24 @@ final class NpcLifeSkillPolicy {
     static final int MIN_SINGLE_PLAYER_REST_TICKS = 20 * 5;
     static final int SLEEP_PROGRESS_INTERVAL_TICKS = 20 * 10;
     static final int MAX_SLEEP_TICKS = 20 * 90;
-    static final int MAX_FARM_TICKS = 20 * 60 * 3;
+    // Building the field and then gathering probabilistic seeds are one
+    // recoverable work chain. Keep a bounded window long enough for the
+    // survival search to leave the home area without failing mid-cycle.
+    // Random seed drops plus a remembered outdoor farm can require several
+    // remote excursions. Keep the task bounded, but do not expire a healthy
+    // survival chain while it is still making physical gathering progress.
+    static final int MAX_FARM_TICKS = 20 * 60 * 20;
+    static final int FARM_SEARCH_INTERVAL_TICKS = 10;
+    static final int MAX_FARM_EMPTY_SEARCH_TICKS = 120;
+    static final int MAX_FARM_PLANT_REJECTIONS = 16;
+    // A farm command's radius is a search boundary, not an instruction to
+    // obtain that many random grass drops in one blocking prerequisite. A
+    // bounded starter pass gives the field real crops quickly; later commands
+    // can reuse the recorded facility and continue tending it.
+    static final int MAX_FARM_ACTIONS_PER_PASS = 8;
+    // Recorded anchors can be on a house floor, path, or irrigation edge while
+    // the outdoor field sits several blocks above/below it.
+    static final int FARM_VERTICAL_SEARCH_RADIUS = 8;
 
     enum SleepDecision {
         SLEEP,
@@ -94,7 +111,12 @@ final class NpcLifeSkillPolicy {
 
     static boolean mayTillNewGround(String action) {
         String normalized = action == null ? "" : action.trim();
-        return "plant".equalsIgnoreCase(normalized) || "cycle".equalsIgnoreCase(normalized);
+        // A maintenance cycle must stay within already prepared farmland. It
+        // used to expand onto every nearby dirt/path cell, wearing out a hoe
+        // while treating unrelated outdoor ground as part of the facility.
+        // Explicit planting (including the post-blueprint planting step) may
+        // still prepare new ground.
+        return "plant".equalsIgnoreCase(normalized);
     }
 
     static boolean farmMayReportSuccess(int completedActions) {
@@ -103,6 +125,80 @@ final class NpcLifeSkillPolicy {
 
     static boolean farmTimedOut(int taskTicks) {
         return taskTicks > MAX_FARM_TICKS;
+    }
+
+    /**
+     * A remembered farm is the return destination only after an active
+     * prerequisite excursion has finished. Otherwise the farm tick would
+     * continuously recall the NPC while it was walking out to collect seeds.
+     */
+    static boolean shouldReturnToFarmAnchor(
+        boolean gatheringPrerequisite,
+        double distance,
+        int requestedRadius
+    ) {
+        // The anchor marks the facility, not a leash point. Allow normal work
+        // anywhere inside the requested farm search area and only recall after
+        // a genuine excursion outside that area.
+        // Block scans use square rings (Chebyshev distance), whose corners are
+        // farther away in Euclidean navigation distance. A 1.5 multiplier
+        // covers those corners without turning the facility anchor into an
+        // unbounded leash.
+        double workingRadius = Math.max(8.0D, Math.min(96.0D, requestedRadius) * 1.5D);
+        return !gatheringPrerequisite && distance > workingRadius;
+    }
+
+    /** Collect a useful batch instead of making one remote round trip per seed. */
+    static int farmSeedBatchSize(int requestedActions, int completedActions) {
+        int remaining = Math.max(1, requestedActions - Math.max(0, completedActions));
+        return Math.min(MAX_FARM_ACTIONS_PER_PASS, remaining);
+    }
+
+    static int farmActionTarget(int requestedRadius) {
+        return Math.max(1, Math.min(MAX_FARM_ACTIONS_PER_PASS, requestedRadius));
+    }
+
+    static boolean isWheatSeedSurfaceGather(String itemId) {
+        return "minecraft:wheat_seeds".equals(itemId);
+    }
+
+    static boolean isSurfacePlantSource(int blockY, int surfaceY) {
+        return Math.abs(blockY - surfaceY) <= 2;
+    }
+
+    static boolean needsSurfaceRecovery(int npcBlockY, int surfaceY) {
+        return npcBlockY < surfaceY - 6;
+    }
+
+    static boolean mayTeleportToSurface(boolean ownerCanCheat, int npcBlockY, int surfaceY) {
+        return ownerCanCheat && needsSurfaceRecovery(npcBlockY, surfaceY);
+    }
+
+    static boolean farmPlantRejectionsExhausted(int consecutiveRejections) {
+        return consecutiveRejections >= MAX_FARM_PLANT_REJECTIONS;
+    }
+
+    /**
+     * Search nearby first, then expand outside houses in bounded stages. A
+     * remembered facility anchor handles truly remote farms; this local scan
+     * intentionally stops at 96 blocks to avoid an unbounded world walk.
+     */
+    static int farmSearchRadius(int requestedRadius, int emptySearchTicks) {
+        int requested = Math.max(1, Math.min(96, requestedRadius));
+        if (emptySearchTicks >= 100) return 96;
+        if (emptySearchTicks >= 80) return 80;
+        if (emptySearchTicks >= 60) return 64;
+        if (emptySearchTicks >= 40) return 48;
+        if (emptySearchTicks >= 20) return 32;
+        return Math.min(requested, 16);
+    }
+
+    static boolean shouldScanFarmNow(int emptySearchTicks) {
+        return emptySearchTicks == 0 || emptySearchTicks % FARM_SEARCH_INTERVAL_TICKS == 0;
+    }
+
+    static boolean farmLocalSearchExhausted(int emptySearchTicks) {
+        return emptySearchTicks >= MAX_FARM_EMPTY_SEARCH_TICKS;
     }
 
     /**

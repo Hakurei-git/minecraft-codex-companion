@@ -63,6 +63,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.CropBlock;
+import net.minecraft.world.level.block.DoublePlantBlock;
 import net.minecraft.world.level.block.FarmBlock;
 import net.minecraft.world.level.block.FenceBlock;
 import net.minecraft.world.level.block.FenceGateBlock;
@@ -71,6 +72,7 @@ import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.AABB;
@@ -117,6 +119,12 @@ public final class NpcTaskEngine {
     private static final int MAX_TASK_FURNACE_TRANSACTIONS = BUILD_MATERIAL_MAX_DEPTH + 4;
     private static final int BUILD_MATERIAL_STALL_TIMEOUT_TICKS = 20 * 60 * 30;
     private static final int BUILD_ROUTE_STORAGE = 1;
+    private static final int OUTDOOR_BUILD_HOME_CLEARANCE = 32;
+    private static final int OUTDOOR_BUILD_PRIMARY_SEARCH_RADIUS = 96;
+    private static final int OUTDOOR_BUILD_SEARCH_RADIUS = 160;
+    private static final int OUTDOOR_BUILD_SEARCH_STEP = 8;
+    private static final int OUTDOOR_BUILD_MAX_TERRAIN_DELTA = 3;
+    private static final int OUTDOOR_BUILD_RELAXED_TERRAIN_DELTA = 6;
     private static final double DRAGON_MOUNTED_FLIGHT_STEP = 0.55D;
     private static final TicketType<UUID> TASK_CHUNK_TICKET = TicketType.create(
         "minecraft_codex_task",
@@ -616,6 +624,7 @@ public final class NpcTaskEngine {
     private void maybeStartAutonomousFoodReserve() {
         String activeKind = active == null ? "" : active.kind;
         int reserve = safeProvisioningFoodCount();
+        int provisioningTarget = autonomousFoodProvisionTarget();
         if (!NpcFoodReservePolicy.shouldProvision(
             npc.creativeResources(),
             config.npcFoodReserveCount,
@@ -632,7 +641,7 @@ public final class NpcTaskEngine {
             ActiveWork interrupted = active;
             priority = Math.min(1000, interrupted.priority + 1);
             progress(interrupted, activeProgress(interrupted),
-                "常备口粮不足（" + reserve + "/" + foodReserveTarget() + "），先补足口粮再继续原任务");
+                "常备口粮不足（" + reserve + "/" + provisioningTarget + "），先补足口粮再继续原任务");
             pauseActive("补充 NPC 常备安全口粮");
         }
 
@@ -640,7 +649,7 @@ public final class NpcTaskEngine {
         spec.addProperty("kind", "provision-food");
         spec.addProperty("source", "auto");
         spec.addProperty("destination", "backpack");
-        spec.addProperty("count", foodReserveTarget());
+        spec.addProperty("count", provisioningTarget);
         spec.addProperty("requestedBy", "npc-food-reserve");
         spec.addProperty("priority", priority);
         active = new ActiveWork(
@@ -650,7 +659,7 @@ public final class NpcTaskEngine {
             resume
         );
         npc.setStance(Stance.WORK);
-        npc.setStatus("正在补充常备安全口粮 " + reserve + "/" + foodReserveTarget());
+        npc.setStatus("正在补充常备安全口粮 " + reserve + "/" + provisioningTarget);
     }
 
     private int foodReserveTarget() {
@@ -2075,7 +2084,7 @@ public final class NpcTaskEngine {
                     return;
                 }
                 work.gatherExcursions++;
-                work.destination = nextGatherSearchDestination(work.gatherExcursions);
+                work.destination = nextGatherSearchDestination(work, work.gatherExcursions);
                 work.gatherSearchRadius = 16;
                 work.noWorkTicks = 0;
                 work.lastSearchTick = -10;
@@ -2413,8 +2422,27 @@ public final class NpcTaskEngine {
     private boolean tickCraftGatherPrerequisite(ActiveWork work) {
         String itemId = work.craftGatherItemId;
         if (work.craftGatherStartedTick < 0) work.craftGatherStartedTick = work.ticks;
+        if (switchDeepCoalGatherToCharcoal(work, itemId)) return true;
         ResourceSelector selector = ResourceSelector.parse(itemId);
         int requested = Math.max(1, work.craftGatherCount);
+        // Wheat seeds come from surface plants. Generic cave-capable gather
+        // navigation could otherwise follow a grass target through a ravine
+        // and keep making tiny distance progress underground indefinitely.
+        // approach() still gates teleport recovery on the owner's cheat
+        // permission; without it the NPC walks back normally.
+        if (ensureFarmSeedGatherOnSurface(work, itemId)) return true;
+        // Surface plants were being broken correctly while every real seed
+        // drop stayed on the ground: a completely full backpack had no seed
+        // stack to merge into. Compacting equal stacks is attempted by the
+        // outer tick first; if that cannot release space, discard exactly one
+        // whole low-value terrain stack before breaking any more plants.
+        Item gatheredItem = selector.firstItem();
+        if (!npc.creativeResources()
+            && work.kind.equals("farm")
+            && NpcLifeSkillPolicy.isWheatSeedSurfaceGather(itemId)
+            && gatheredItem != Items.AIR
+            && !canInsert(new ItemStack(gatheredItem))
+            && tickMiningInventoryCleanup(work, null, itemId, 1)) return true;
         npc.absorbNearbyItems(2.5);
         int gathered = GatherProgressPolicy.includingExternalSupply(
             work.craftGatherCompleted,
@@ -2506,7 +2534,7 @@ public final class NpcTaskEngine {
                 work.lastSearchTick = work.ticks;
                 BlockPos seed = DeepMiningPolicy.supports(itemId)
                     ? findExposedGatherBlock(selector, work.gatherSearchRadius, 24, work.skippedGatherTargets)
-                    : findGatherBlock(selector, work.gatherSearchRadius, 24, work.skippedGatherTargets);
+                    : findCraftGatherBlock(work, itemId, selector, work.gatherSearchRadius);
                 if (seed != null) {
                     enqueueConnectedResources(work, seed, selector);
                     work.targetBlock = pollGatherTarget(work, selector);
@@ -2542,7 +2570,7 @@ public final class NpcTaskEngine {
                         return true;
                     }
                     work.gatherExcursions++;
-                    work.destination = nextGatherSearchDestination(work.gatherExcursions);
+                    work.destination = nextGatherSearchDestination(work, work.gatherExcursions);
                     work.gatherSearchRadius = 16;
                     work.noWorkTicks = 0;
                     work.lastSearchTick = -10;
@@ -2607,6 +2635,146 @@ public final class NpcTaskEngine {
         if (work.ticks - work.craftGatherStartedTick > CRAFT_PREREQUISITE_TIMEOUT_TICKS) {
             fail(work, "制作前置采集超时", "CRAFT_PREREQUISITE_TIMEOUT");
         }
+        return true;
+    }
+
+    private boolean ensureFarmSeedGatherOnSurface(ActiveWork work, String itemId) {
+        if (!work.kind.equals("farm") || !NpcLifeSkillPolicy.isWheatSeedSurfaceGather(itemId)
+            || !(npc.level() instanceof ServerLevel level)) return false;
+        // Once a real surface plant has been selected, keep walking to that
+        // fixed resource. Re-running the heightmap recovery at every step can
+        // alternate between a tree/overhang top and the grass target below,
+        // continuously resetting the shared navigation progress counters.
+        if (isCurrentSurfacePlantGatherTarget(work, itemId, level)) return false;
+        BlockPos current = npc.blockPosition();
+        int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, current.getX(), current.getZ());
+        if (!NpcLifeSkillPolicy.needsSurfaceRecovery(current.getY(), surfaceY)) return false;
+        BlockPos surfaceTarget = new BlockPos(current.getX(), surfaceY, current.getZ());
+        ServerPlayer owner = npc.owner();
+        if (NpcLifeSkillPolicy.mayTeleportToSurface(
+            owner != null && owner.hasPermissions(2),
+            current.getY(),
+            surfaceY
+        )) {
+            BlockPos destination = safeTaskPositionNear(level, surfaceTarget);
+            double destinationDistance = Vec3.atCenterOf(destination).distanceTo(Vec3.atCenterOf(surfaceTarget));
+            if (GatherRetryPolicy.teleportDestinationIsUseful(destinationDistance)) {
+                npc.getNavigation().stop();
+                maintainTaskChunkTicket(destination);
+                npc.teleportTo(destination.getX() + 0.5D, destination.getY(), destination.getZ() + 0.5D);
+                npc.setDeltaMovement(Vec3.ZERO);
+                npc.fallDistance = 0.0F;
+                work.lastTeleportTarget = surfaceTarget.immutable();
+                work.stalledTicks = 0;
+                work.lastDistance = -1.0D;
+                work.targetBlock = null;
+                work.gatherTargets.clear();
+                work.gatherSearchRadius = 16;
+                work.lastSearchTick = -10;
+                resetGatherTargetProgress(work);
+                progress(work, activeProgress(work), "已使用玩家开启的作弊权限返回地表，继续从草丛搜集小麦种子");
+                return true;
+            }
+        }
+        boolean reached = approach(work, surfaceTarget, 3.0D, 1.15D);
+        if (active != work) return true;
+        if (!reached) {
+            taskStatus(work, "搜集小麦种子前正在从地下返回地表");
+            return true;
+        }
+        work.targetBlock = null;
+        work.gatherTargets.clear();
+        work.gatherSearchRadius = 16;
+        work.lastSearchTick = -10;
+        progress(work, activeProgress(work), "已返回地表，继续从草丛搜集小麦种子");
+        return false;
+    }
+
+    private boolean isCurrentSurfacePlantGatherTarget(
+        ActiveWork work,
+        String itemId,
+        ServerLevel level
+    ) {
+        if (work.targetBlock == null) return false;
+        ResourceSelector selector = ResourceSelector.parse(itemId);
+        if (!matchesGatherBlock(work.targetBlock, selector, bestToolStack())) return false;
+        int surfaceY = level.getHeight(
+            Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+            work.targetBlock.getX(),
+            work.targetBlock.getZ()
+        );
+        return NpcLifeSkillPolicy.isSurfacePlantSource(work.targetBlock.getY(), surfaceY);
+    }
+
+    private BlockPos findCraftGatherBlock(
+        ActiveWork work,
+        String itemId,
+        ResourceSelector selector,
+        int radius
+    ) {
+        if (!work.kind.equals("farm") || !NpcLifeSkillPolicy.isWheatSeedSurfaceGather(itemId)
+            || !(npc.level() instanceof ServerLevel level)) {
+            return findGatherBlock(selector, radius, 24, work.skippedGatherTargets);
+        }
+        BlockPos current = npc.blockPosition();
+        int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, current.getX(), current.getZ());
+        BlockPos origin = new BlockPos(current.getX(), surfaceY, current.getZ());
+        return findBlockAt(origin, position -> {
+            if (!level.hasChunkAt(position) || work.skippedGatherTargets.contains(position)
+                || !isSafeGatherSeed(position, selector)
+                || !hasSafeGatherStand(position, GATHER_INTERACTION_REACH)) return false;
+            int candidateSurfaceY = level.getHeight(
+                Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                position.getX(),
+                position.getZ()
+            );
+            return NpcLifeSkillPolicy.isSurfacePlantSource(position.getY(), candidateSurfaceY);
+        }, radius, 4);
+    }
+
+    private boolean switchDeepCoalGatherToCharcoal(ActiveWork work, String gatherSelector) {
+        BuildMaterialGoal goal = work.buildMaterialGoals.peekFirst();
+        if (goal == null
+            || !"minecraft:coal".equals(goal.itemId)
+            || !("#minecraft:coals".equals(goal.selector)
+                || "minecraft:coal".equals(goal.selector))
+            || !("#minecraft:coals".equals(gatherSelector)
+                || "minecraft:coal".equals(gatherSelector))
+            || !deepMiningActiveFor(work, gatherSelector)) return false;
+        int available = inventoryCount(goal.selector);
+        int deficit = Math.max(1, goal.targetCount - available);
+        String replacementId = BuildMaterialPrerequisitePolicy.preferredCoalAcquisition(
+            "#minecraft:coals",
+            goal.materialContextId,
+            deficit,
+            inventoryCount("#minecraft:logs")
+        );
+        if (!"minecraft:charcoal".equals(replacementId)) return false;
+
+        clearDeepMining(work);
+        clearCraftGatherPrerequisite(work);
+        work.buildMaterialGoals.removeFirst();
+        BuildMaterialGoal replacement = new BuildMaterialGoal(
+            replacementId,
+            "#minecraft:coals",
+            goal.materialContextId,
+            goal.targetCount,
+            available,
+            work.ticks,
+            goal.suspendedGatherItemId,
+            goal.suspendedGatherCount,
+            goal.suspendedGatherInitialCount,
+            goal.suspendedGatherCompleted,
+            goal.suspendedGatherStartedTick,
+            goal.suspendedDeepMining
+        );
+        replacement.attemptedRoutes = goal.attemptedRoutes;
+        work.buildMaterialGoals.addFirst(replacement);
+        resetBuildMaterialTransient(work);
+        work.buildPhase = "storage";
+        work.buildLastProgressTick = work.ticks;
+        progress(work, activeProgress(work),
+            "附近煤炭不足，保留已有 " + available + " 个煤炭并改用备用原木烧制 " + deficit + " 个木炭");
         return true;
     }
 
@@ -2714,6 +2882,16 @@ public final class NpcTaskEngine {
                     "烧炼缺少原料，先去采集 " + missingInput + " 个 " + inputId);
                 return;
             }
+        }
+        if (work.workstation == null) {
+            int outputPerInput = Math.max(1, work.recipe.getResultItem(npc.level().registryAccess()).getCount());
+            work.workstation = findReusableTaskFurnace(
+                work,
+                inputId,
+                work.outputItemId,
+                outputPerInput
+            );
+            work.smeltingWorkstationClaimed = work.workstation != null;
         }
         if (work.workstation == null) {
             work.workstation = findClaimableSmeltingWorkstation(work, workstationId);
@@ -2962,7 +3140,7 @@ public final class NpcTaskEngine {
             && furnaceClaimMatches(furnace, transaction);
     }
 
-    private BlockPos findReusableBuildMaterialFurnace(
+    private BlockPos findReusableTaskFurnace(
         ActiveWork work,
         String inputItemId,
         String outputItemId,
@@ -3403,14 +3581,29 @@ public final class NpcTaskEngine {
         int radius = (int) number(work.spec, "radius", 12);
         if (!work.initialized) {
             work.initialized = true;
-            work.requestedCount = Math.max(1, radius);
+            work.requestedCount = NpcLifeSkillPolicy.farmActionTarget(radius);
         }
         if (NpcLifeSkillPolicy.farmTimedOut(work.ticks)) {
             fail(work, "农务任务执行超时，已处理 " + work.completed + " 处", "FARM_TIMEOUT");
             return;
         }
+        // A seed/material excursion is part of the farm task.  Do not pull the
+        // NPC back to the remembered field on every tick while that excursion
+        // is active; doing so made every outdoor search bounce straight back
+        // to the farm before a resource could be reached.
         if (hasCraftGatherPrerequisite(work)) {
             tickCraftGatherPrerequisite(work);
+            return;
+        }
+        BlockPos farmAnchor = farmAnchor(work);
+        if (farmAnchor != null && NpcLifeSkillPolicy.shouldReturnToFarmAnchor(
+            false,
+            npc.position().distanceTo(Vec3.atCenterOf(farmAnchor)),
+            radius
+        )) {
+            if (approach(work, farmAnchor, 5.0D, 1.10D)) {
+                progress(work, activeProgress(work), "已返回记录的农田位置，准备继续农务");
+            }
             return;
         }
         if (NpcLifeSkillPolicy.mayTillNewGround(action)
@@ -3418,20 +3611,33 @@ public final class NpcTaskEngine {
             && findHoeSlot() < 0
             && !prepareFarmHoe(work)) return;
         if (work.targetBlock == null) {
-            work.targetBlock = findFarmTarget(cropId, action, radius);
+            int searchRadius = NpcLifeSkillPolicy.farmSearchRadius(radius, work.noWorkTicks);
+            if (NpcLifeSkillPolicy.shouldScanFarmNow(work.noWorkTicks)) {
+                work.targetBlock = findFarmTarget(work, cropId, action, searchRadius);
+                if (work.targetBlock == null && work.noWorkTicks > 0
+                    && work.noWorkTicks % 20 == 0) {
+                    progress(work, activeProgress(work), "正在把农田搜索范围扩大到 " + searchRadius + " 格");
+                }
+            }
             if (work.targetBlock == null) {
-                if (++work.noWorkTicks >= 40) {
+                work.noWorkTicks++;
+                if (NpcLifeSkillPolicy.farmLocalSearchExhausted(work.noWorkTicks)) {
                     if (NpcLifeSkillPolicy.farmMayReportSuccess(work.completed)) {
                         complete(work, "本轮农务已完成，共处理 " + work.completed + " 处");
                     } else {
-                        fail(work, "指定范围内没有可执行的农务目标", "FARM_TARGET_NOT_FOUND");
+                        fail(work, "已扩大到 " + searchRadius + " 格，仍未找到可执行的农务目标", "FARM_TARGET_NOT_FOUND");
                     }
                 }
                 return;
             }
             work.noWorkTicks = 0;
         }
-        if (!approach(work, work.targetBlock, 3.2, 1.05)) return;
+        // Farm cells are often on terraces or beside irrigation channels. A
+        // center-distance-only walk can stop below/behind the field and let the
+        // FakePlayer right-click be rejected repeatedly. Navigate to a real
+        // interaction stand with line of sight to the crop or supporting
+        // farmland, just like resource gathering does.
+        if (!approachFarmTarget(work, work.targetBlock, 2.8D, 1.05D)) return;
         if (work.ticks - work.lastActionTick < 8) return;
         work.lastActionTick = work.ticks;
         BlockState state = npc.level().getBlockState(work.targetBlock);
@@ -3459,6 +3665,16 @@ public final class NpcTaskEngine {
                 npc.getLookControl().setLookAt(Vec3.atCenterOf(ground));
                 InteractionResult result = proxy.useItemOn(ground, Direction.UP, hoe, hoeSlot);
                 handled = result.consumesAction() && npc.level().getBlockState(ground).getBlock() instanceof FarmBlock;
+                if (handled) {
+                    // Match a real player's two-step interaction: finish the
+                    // hoe action first, then plant on a later task tick. Two
+                    // FakePlayer right-clicks in one server tick can make the
+                    // second (seed) interaction return PASS even though the
+                    // newly-created farmland is otherwise valid.
+                    work.failedActions = 0;
+                    progress(work, activeProgress(work), "已完成耕地动作，下一步播种");
+                    return;
+                }
             } else {
                 handled = true;
             }
@@ -3469,18 +3685,57 @@ public final class NpcTaskEngine {
         }
         if (!handled) work.failedActions++;
         else {
+            work.failedActions = 0;
             work.completed++;
             npc.swing(InteractionHand.MAIN_HAND);
             npc.addExhaustion(0.04F);
+            if (work.completed >= work.requestedCount) {
+                complete(work, "本轮农务已完成，共处理 " + work.completed + " 处");
+                return;
+            }
         }
         work.targetBlock = null;
         progress(work, Math.min(0.95, work.completed / (double) Math.max(1, radius)), "已处理 " + work.completed + " 处农作物");
     }
 
+    private BlockPos farmAnchor(ActiveWork work) {
+        if (!work.spec.has("placementAnchor") || !work.spec.get("placementAnchor").isJsonObject()) return null;
+        return block(work.spec.getAsJsonObject("placementAnchor"));
+    }
+
+    private boolean approachFarmTarget(ActiveWork work, BlockPos cropPosition, double reach, double speed) {
+        BlockPos interactionTarget = npc.level().getBlockState(cropPosition).isAir()
+            ? cropPosition.below()
+            : cropPosition;
+        return approachGatherTarget(work, interactionTarget, reach, speed);
+    }
+
+    private boolean isSkippedFarmTarget(ActiveWork work, BlockPos cropPosition) {
+        return work.skippedFarmTargets.contains(cropPosition)
+            || work.skippedGatherTargets.contains(cropPosition)
+            || work.skippedGatherTargets.contains(cropPosition.below());
+    }
+
     private void handleFarmPlantFailure(ActiveWork work, String cropId) {
         String seedId = NpcLifeSkillPolicy.seedItemId(cropId);
         if (npc.creativeResources() || inventoryCount(seedId) > 0) {
-            fail(work, "播种交互被世界保护或其他模组拒绝：" + seedId, "CROP_PLANT_DENIED");
+            // A single prepared cell can be hidden behind leaves, occupied
+            // between scan and interaction, or rejected by a local block hook.
+            // Keep the physical farm task alive and try another cell instead
+            // of discarding the entire remembered-facility workflow.
+            if (work.targetBlock != null) {
+                work.skippedFarmTargets.add(work.targetBlock.immutable());
+            }
+            work.targetBlock = null;
+            work.noWorkTicks = 0;
+            work.stalledTicks = 0;
+            work.lastDistance = -1;
+            work.failedActions++;
+            if (NpcLifeSkillPolicy.farmPlantRejectionsExhausted(work.failedActions)) {
+                fail(work, "连续多个农田位置无法播种：" + seedId, "CROP_PLANT_DENIED");
+            } else {
+                progress(work, activeProgress(work), "当前播种位置不可交互，已跳过并寻找下一处农田");
+            }
             return;
         }
         prepareFarmSeedPrerequisite(work, seedId);
@@ -3494,7 +3749,9 @@ public final class NpcTaskEngine {
         }
         BuildMaterialPrerequisitePolicy.MaterialPlan plan = BuildMaterialPrerequisitePolicy.plan(seedId);
         if (plan.action() == BuildMaterialPrerequisitePolicy.Action.GATHER) {
-            beginCraftGather(work, plan.gatherSelector(), 1, "种子用完，正在补充 " + seedId);
+            int seedBatch = NpcLifeSkillPolicy.farmSeedBatchSize(work.requestedCount, work.completed);
+            beginCraftGather(work, plan.gatherSelector(), seedBatch,
+                "种子用完，正在批量补充 " + seedBatch + " 个 " + seedId);
             return;
         }
         if (plan.action() == BuildMaterialPrerequisitePolicy.Action.CRAFT) {
@@ -3541,6 +3798,8 @@ public final class NpcTaskEngine {
         }
         List<Integer> ingredients = allocateIngredients(work.recipe.getIngredients());
         if (ingredients == null) {
+            String hoeId = itemId(work.recipe.getResultItem(npc.level().registryAccess()));
+            if (prepareCraftPrerequisite(work, hoeId, work.recipe)) return false;
             if (craftMissingIngredient(work, work.recipe, 0, new HashSet<>())) return false;
             fail(work, "缺少制作锄头所需的真实材料", "HOE_MATERIALS_MISSING");
             return false;
@@ -4948,6 +5207,12 @@ public final class NpcTaskEngine {
             work.lastSearchTick = -10;
             work.completed = Math.min(work.requestedCount, provisioningFoodCount(work));
         }
+        if ("npc-food-reserve".equals(string(work.spec, "requestedBy", ""))) {
+            // Upgrade persisted local reserve tasks too. Hunger can fall while
+            // travelling, so include the meal that runs immediately after the
+            // interrupted task resumes instead of entering a 7 -> 8 -> eat -> 7 loop.
+            work.requestedCount = Math.max(work.requestedCount, autonomousFoodProvisionTarget());
+        }
         if (hasCraftGatherPrerequisite(work)) {
             tickCraftGatherPrerequisite(work);
             return;
@@ -5120,6 +5385,11 @@ public final class NpcTaskEngine {
         if (work.workstation != null && !hasTaskFurnaceClaim(work, work.workstation)) {
             work.workstation = null;
             work.smeltingWorkstationClaimed = false;
+        }
+        if (work.workstation == null) {
+            int outputPerInput = Math.max(1, recipe.getResultItem(npc.level().registryAccess()).getCount());
+            work.workstation = findReusableTaskFurnace(work, inputId, outputId, outputPerInput);
+            work.smeltingWorkstationClaimed = work.workstation != null;
         }
         if (work.workstation == null) {
             work.workstation = findClaimableSmeltingWorkstation(work, workstationId);
@@ -5374,10 +5644,12 @@ public final class NpcTaskEngine {
     }
 
     private boolean isSurvivalReserveProvision(ActiveWork work) {
-        return work != null
-            && "provision-food".equals(work.kind)
-            && Set.of("deep-mining-survival", "npc-food-reserve")
-                .contains(string(work.spec, "requestedBy", ""));
+        if (work == null || !"provision-food".equals(work.kind)) return false;
+        if (Set.of("deep-mining-survival", "npc-food-reserve")
+            .contains(string(work.spec, "requestedBy", ""))) return true;
+        return "auto".equals(string(work.spec, "source", "auto"))
+            && "backpack".equals(string(work.spec, "destination", "backpack"))
+            && integer(work.spec, "count", 0) >= DeepMiningPolicy.REQUIRED_FOOD_RESERVE;
     }
 
     /**
@@ -5635,8 +5907,10 @@ public final class NpcTaskEngine {
             animal -> isSupportedFoodAnimal(animal)
                 && !work.skippedFoodAnimalTargets.contains(animal.getUUID())
         );
+        boolean survivalFallback = isSurvivalReserveProvision(work)
+            && work.gatherExcursions >= 8;
         return candidates.stream()
-            .filter(animal -> maySelectFoodAnimal(animal, candidates))
+            .filter(animal -> maySelectFoodAnimal(animal, candidates, survivalFallback))
             .filter(animal -> npc.getNavigation().createPath(animal, 0) != null)
             .min(Comparator.comparingDouble(npc::distanceToSqr))
             .orElse(null);
@@ -5651,7 +5925,11 @@ public final class NpcTaskEngine {
         return null;
     }
 
-    private boolean maySelectFoodAnimal(Animal animal, List<Animal> candidates) {
+    private boolean maySelectFoodAnimal(
+        Animal animal,
+        List<Animal> candidates,
+        boolean survivalFallback
+    ) {
         int nearbyAdults = (int) candidates.stream()
             .filter(other -> other.getType() == animal.getType() && !other.isBaby())
             .count();
@@ -5661,7 +5939,8 @@ public final class NpcTaskEngine {
             animal instanceof TamableAnimal tamable && tamable.isTame(),
             animal.isLeashed(),
             isNearOwnerHome(animal.blockPosition(), 32),
-            nearbyAdults
+            nearbyAdults,
+            survivalFallback
         );
     }
 
@@ -5930,32 +6209,51 @@ public final class NpcTaskEngine {
             work.buildOrigin = restoredOrigin == null
                 ? block(work.plan.getAsJsonObject("origin"))
                 : restoredOrigin;
-            if (restoredOrigin == null && npc.level() instanceof ServerLevel level) {
+            if (npc.level() instanceof ServerLevel level) {
                 String placement = string(work.spec, "placement", "plan-origin");
+                String sitePolicy = string(work.spec, "sitePolicy", "default");
                 BlockPos placementAnchor = work.spec.has("placementAnchor")
                     && work.spec.get("placementAnchor").isJsonObject()
                     ? block(work.spec.getAsJsonObject("placementAnchor"))
                     : null;
-                BlockPos surfaceProbe = BuildPlacementPolicy.surfaceProbe(
-                    placement,
-                    work.buildOrigin,
-                    placementAnchor
-                );
-                int surfaceY = level.getHeight(
-                    Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
-                    surfaceProbe.getX(),
-                    surfaceProbe.getZ()
-                );
-                int offsetY = work.spec.has("offset") && work.spec.get("offset").isJsonObject()
-                    ? integer(work.spec.getAsJsonObject("offset"), "y", 0)
-                    : 0;
-                int originY = BuildPlacementPolicy.originY(
-                    placement,
-                    work.buildOrigin.getY(),
-                    surfaceY,
-                    offsetY
-                );
-                work.buildOrigin = new BlockPos(work.buildOrigin.getX(), originY, work.buildOrigin.getZ());
+                if (restoredOrigin == null) {
+                    BlockPos surfaceProbe = BuildPlacementPolicy.surfaceProbe(
+                        placement,
+                        work.buildOrigin,
+                        placementAnchor
+                    );
+                    int surfaceY = level.getHeight(
+                        Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                        surfaceProbe.getX(),
+                        surfaceProbe.getZ()
+                    );
+                    int offsetY = work.spec.has("offset") && work.spec.get("offset").isJsonObject()
+                        ? integer(work.spec.getAsJsonObject("offset"), "y", 0)
+                        : 0;
+                    int originY = BuildPlacementPolicy.originY(
+                        placement,
+                        work.buildOrigin.getY(),
+                        surfaceY,
+                        offsetY
+                    );
+                    work.buildOrigin = new BlockPos(work.buildOrigin.getX(), originY, work.buildOrigin.getZ());
+                }
+                if (BuildPlacementPolicy.shouldResolveOutdoorSite(sitePolicy, work.buildIndex)) {
+                    BlockPos outdoorOrigin = findOutdoorBuildOrigin(level, work.buildOrigin, work.plan);
+                    if (outdoorOrigin == null) {
+                        // Do not persist the unvalidated request anchor as if it
+                        // were a locked construction checkpoint. A later retry
+                        // must perform the outdoor/house-boundary search again.
+                        work.buildOrigin = null;
+                        fail(
+                            work,
+                            "当前房屋外没有找到可安全施工的露天位置；未在屋内放置任何农田方块",
+                            "OUTDOOR_BUILD_SITE_NOT_FOUND"
+                        );
+                        return;
+                    }
+                    work.buildOrigin = outdoorOrigin;
+                }
             }
             BuildMaterialPaletteResolver.CachedResult cachedPalette =
                 BuildMaterialPaletteResolver.validateCachedMetadata((ServerLevel) npc.level(), work.plan);
@@ -6113,6 +6411,138 @@ public final class NpcTaskEngine {
         }
         if (!applyExactBuildState(work, work.targetBlock, entry)) return;
         finishBuildBlock(work, 0.025F);
+    }
+
+    /**
+     * Resolves an outdoor build checkpoint without ever falling back to the
+     * owner's current house. The control service supplies a preferred outdoor
+     * anchor; Forge remains authoritative because it can verify the real
+     * terrain, open sky, fluids, world border and the player's saved home.
+     */
+    private BlockPos findOutdoorBuildOrigin(ServerLevel level, BlockPos preferred, JsonObject plan) {
+        JsonArray blocks = plan.getAsJsonArray("blocks");
+        if (blocks == null || blocks.isEmpty()) return null;
+
+        int minX = 0;
+        int maxX = 0;
+        int minZ = 0;
+        int maxZ = 0;
+        boolean first = true;
+        for (int index = 0; index < blocks.size(); index++) {
+            JsonObject entry = blocks.get(index).getAsJsonObject();
+            if (!entry.has("position") || !entry.get("position").isJsonObject()) continue;
+            BlockPos relative = block(entry.getAsJsonObject("position"));
+            if (first) {
+                minX = maxX = relative.getX();
+                minZ = maxZ = relative.getZ();
+                first = false;
+            } else {
+                minX = Math.min(minX, relative.getX());
+                maxX = Math.max(maxX, relative.getX());
+                minZ = Math.min(minZ, relative.getZ());
+                maxZ = Math.max(maxZ, relative.getZ());
+            }
+        }
+        if (first || maxX - minX > 32 || maxZ - minZ > 32) return null;
+
+        BlockPos home = null;
+        ServerPlayer owner = npc.owner();
+        if (owner != null) {
+            NpcHomeStorage.Home homeState = NpcHomeStorage.resolve(owner);
+            if (homeState.dimension().equals(level.dimension())) home = homeState.position();
+        }
+
+        // First prefer a genuinely flat field close to the requested outdoor
+        // anchor. Mountain/forest homes then get a bounded wider pass which
+        // accepts a modest terrace; construction still never crosses the home
+        // exclusion radius and never overwrites an existing crop field.
+        for (int pass = 0; pass < 2; pass++) {
+            int searchRadius = pass == 0 ? OUTDOOR_BUILD_PRIMARY_SEARCH_RADIUS : OUTDOOR_BUILD_SEARCH_RADIUS;
+            int maximumTerrainDelta = pass == 0
+                ? OUTDOOR_BUILD_MAX_TERRAIN_DELTA
+                : OUTDOOR_BUILD_RELAXED_TERRAIN_DELTA;
+            int startingRadius = pass == 0 ? 0 : OUTDOOR_BUILD_PRIMARY_SEARCH_RADIUS + OUTDOOR_BUILD_SEARCH_STEP;
+            for (int radius = startingRadius; radius <= searchRadius; radius += OUTDOOR_BUILD_SEARCH_STEP) {
+                for (int dx = -radius; dx <= radius; dx += OUTDOOR_BUILD_SEARCH_STEP) {
+                    for (int dz = -radius; dz <= radius; dz += OUTDOOR_BUILD_SEARCH_STEP) {
+                        if (radius > 0 && Math.abs(dx) != radius && Math.abs(dz) != radius) continue;
+                        int originX = preferred.getX() + dx;
+                        int originZ = preferred.getZ() + dz;
+                        BlockPos resolved = validateOutdoorBuildOrigin(
+                            level,
+                            originX,
+                            originZ,
+                            minX,
+                            maxX,
+                            minZ,
+                            maxZ,
+                            home,
+                            maximumTerrainDelta
+                        );
+                        if (resolved != null) return resolved;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private BlockPos validateOutdoorBuildOrigin(
+        ServerLevel level,
+        int originX,
+        int originZ,
+        int minX,
+        int maxX,
+        int minZ,
+        int maxZ,
+        BlockPos home,
+        int maximumTerrainDelta
+    ) {
+        int minimumSurface = Integer.MAX_VALUE;
+        int maximumSurface = Integer.MIN_VALUE;
+        int firstSurface = Integer.MIN_VALUE;
+        for (int relativeX = minX; relativeX <= maxX; relativeX++) {
+            for (int relativeZ = minZ; relativeZ <= maxZ; relativeZ++) {
+                int x = originX + relativeX;
+                int z = originZ + relativeZ;
+                BlockPos horizontalProbe = new BlockPos(x, preferredBuildProbeY(level), z);
+                if (!level.getWorldBorder().isWithinBounds(horizontalProbe)) return null;
+                if (!BuildPlacementPolicy.clearsHome(horizontalProbe, home, OUTDOOR_BUILD_HOME_CLEARANCE)) return null;
+
+                ChunkPos chunk = new ChunkPos(x >> 4, z >> 4);
+                level.getChunkSource().addRegionTicket(TASK_CHUNK_TICKET, chunk, 2, npc.getUUID());
+                level.getChunk(chunk.x, chunk.z);
+                int surface = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+                BlockPos buildCell = new BlockPos(x, surface, z);
+                BlockPos support = buildCell.below();
+                BlockState buildState = level.getBlockState(buildCell);
+                BlockState supportState = level.getBlockState(support);
+                if (!level.getWorldBorder().isWithinBounds(buildCell)
+                    || !level.canSeeSky(buildCell)
+                    || !level.getFluidState(buildCell).isEmpty()
+                    || !level.getFluidState(support).isEmpty()
+                    || level.getBlockEntity(buildCell) != null
+                    || level.getBlockEntity(support) != null
+                    || buildState.getBlock() instanceof CropBlock
+                    || supportState.getBlock() instanceof FarmBlock
+                    || !supportState.isFaceSturdy(level, support, Direction.UP)) return null;
+                if (relativeX == minX && relativeZ == minZ) firstSurface = surface;
+                minimumSurface = Math.min(minimumSurface, surface);
+                maximumSurface = Math.max(maximumSurface, surface);
+                if (!BuildPlacementPolicy.terrainFits(minimumSurface, maximumSurface, maximumTerrainDelta)) return null;
+            }
+        }
+        // Blueprint blocks are ordered from their minimum X/Z corner. Requiring
+        // that first placement to sit on the highest local surface gives the
+        // survival builder real support; later cells can attach to the growing
+        // platform instead of spawning a floating block.
+        return maximumSurface == Integer.MIN_VALUE || firstSurface != maximumSurface
+            ? null
+            : new BlockPos(originX, maximumSurface, originZ);
+    }
+
+    private int preferredBuildProbeY(ServerLevel level) {
+        return Mth.clamp(npc.blockPosition().getY(), level.getMinBuildHeight(), level.getMaxBuildHeight() - 1);
     }
 
     /** Clears an ordinary obstacle through Forge's normal break hooks, then retries the same blueprint index. */
@@ -6781,7 +7211,7 @@ public final class NpcTaskEngine {
         int outputPerBatch = Math.max(1, recipe.getResultItem(npc.level().registryAccess()).getCount());
         String furnaceId = "minecraft:furnace";
         if (goal.ownedFurnace == null) {
-            goal.ownedFurnace = findReusableBuildMaterialFurnace(
+            goal.ownedFurnace = findReusableTaskFurnace(
                 work,
                 inputId,
                 goal.itemId,
@@ -8742,7 +9172,7 @@ public final class NpcTaskEngine {
             work.lastDistance = -1;
             return true;
         }
-        if (teleportNearTaskTargetWhenAllowed(work, target, distance, "距离过远，已传送到任务目标附近")) return false;
+        if (teleportNearTaskTargetWhenAllowed(work, target, distance, "距离过远，已传送到任务目标附近", false)) return false;
         Path currentPath = npc.getNavigation().getPath();
         boolean navigationInProgress = !npc.getNavigation().isDone() && currentPath != null;
         if (GatherRetryPolicy.shouldRepathDestination(
@@ -8778,7 +9208,7 @@ public final class NpcTaskEngine {
             work.lastDistance = -1;
             return true;
         }
-        if (teleportNearTaskTargetWhenAllowed(work, target, distance, "距离过远，已传送到任务目标附近")) return false;
+        if (teleportNearTaskTargetWhenAllowed(work, target, distance, "距离过远，已传送到任务目标附近", false)) return false;
         navigateTowardBlock(target, speed);
         npc.addExhaustion(0.002F);
         taskStatus(work, "正在前往资源搜索区，距离 " + Math.round(distance) + " 格");
@@ -8789,7 +9219,7 @@ public final class NpcTaskEngine {
                 fail(work, exhaustedMessage, exhaustedCode);
             } else {
                 work.gatherExcursions++;
-                work.destination = nextGatherSearchDestination(work.gatherExcursions);
+                work.destination = nextGatherSearchDestination(work, work.gatherExcursions);
                 work.gatherSearchRadius = 16;
                 work.noWorkTicks = 0;
                 work.lastSearchTick = -10;
@@ -8814,10 +9244,15 @@ public final class NpcTaskEngine {
             work.lastDistance = -1;
             work.lastGatherPathAttemptTick = -1;
             work.gatherStandPathCursor = 0;
+            resetGatherTargetProgress(work);
             return true;
         }
         double distance = npc.position().distanceTo(targetCenter);
-        if (teleportNearTaskTargetWhenAllowed(work, target, distance, "资源距离过远，已传送到采集点附近")) return false;
+        if (gatherTargetProgressTimedOut(work, target, distance)) {
+            skipGatherTarget(work, target);
+            return false;
+        }
+        if (teleportNearTaskTargetWhenAllowed(work, target, distance, "资源距离过远，已传送到采集点附近", true)) return false;
         Path path = npc.getNavigation().getPath();
         boolean pathStarted = false;
         boolean pathAttempted = false;
@@ -8909,7 +9344,13 @@ public final class NpcTaskEngine {
         return Math.min(directNodeDistance, centeredNodeDistance) <= reach;
     }
 
-    private boolean teleportNearTaskTargetWhenAllowed(ActiveWork work, BlockPos target, double distance, String status) {
+    private boolean teleportNearTaskTargetWhenAllowed(
+        ActiveWork work,
+        BlockPos target,
+        double distance,
+        String status,
+        boolean skippableResourceTarget
+    ) {
         ServerPlayer owner = npc.owner();
         if (!gatherAllowsRemoteRecovery(work)) return false;
         double verticalDistance = Math.abs(npc.getY() - (target.getY() + 0.5D));
@@ -8920,7 +9361,10 @@ public final class NpcTaskEngine {
                 work.stalledTicks
             ) || owner == null || !owner.hasPermissions(2)
             || !(npc.level() instanceof ServerLevel level)) return false;
-        boolean skippableResourceTarget = work.kind.equals("gather") || hasCraftGatherPrerequisite(work);
+        // The caller knows whether this block is a disposable resource target.
+        // Surface recovery, search regions, farm anchors and workstations must
+        // never be inserted into skippedGatherTargets merely because a farm or
+        // craft prerequisite happens to be active at the same time.
         if (target.equals(work.lastTeleportTarget)) {
             // Never loop a teleport against the same bad target. Resource work
             // can switch targets; workstation, delivery and other task targets
@@ -8971,7 +9415,7 @@ public final class NpcTaskEngine {
         BlockState floor = npc.level().getBlockState(candidate.below());
         BlockState feet = npc.level().getBlockState(candidate);
         BlockState head = npc.level().getBlockState(candidate.above());
-        return floor.isSolidRender(npc.level(), candidate.below())
+        return (floor.isSolidRender(npc.level(), candidate.below()) || floor.getBlock() instanceof FarmBlock)
             && feet.getCollisionShape(npc.level(), candidate).isEmpty()
             && head.getCollisionShape(npc.level(), candidate.above()).isEmpty()
             && npc.level().getFluidState(candidate).isEmpty()
@@ -9049,6 +9493,7 @@ public final class NpcTaskEngine {
         work.lastDistance = -1;
         work.lastGatherPathAttemptTick = -1;
         work.gatherStandPathCursor = 0;
+        resetGatherTargetProgress(work);
         work.noWorkTicks = 0;
         boolean remoteRecoveryAllowed = gatherAllowsRemoteRecovery(work);
         if (!remoteRecoveryAllowed) {
@@ -9076,7 +9521,7 @@ public final class NpcTaskEngine {
         }
         if (decision == GatherRetryPolicy.Decision.START_REMOTE_EXCURSION) {
             work.gatherExcursions++;
-            work.destination = nextGatherSearchDestination(work.gatherExcursions);
+            work.destination = nextGatherSearchDestination(work, work.gatherExcursions);
             work.gatherTargets.clear();
             work.skippedGatherTargets.clear();
             work.gatherSearchRadius = 16;
@@ -9098,6 +9543,28 @@ public final class NpcTaskEngine {
 
     private boolean gatherAllowsRemoteRecovery(ActiveWork work) {
         return GatherRetryPolicy.allowsRemoteRecovery(string(work.spec, "movement", "auto"));
+    }
+
+    private boolean gatherTargetProgressTimedOut(ActiveWork work, BlockPos target, double distance) {
+        if (work.gatherTimedTarget == null || !work.gatherTimedTarget.equals(target)) {
+            work.gatherTimedTarget = target.immutable();
+            work.gatherTargetBestDistance = distance;
+            work.gatherTargetLastProgressTick = work.ticks;
+            return false;
+        }
+        if (Double.isFinite(distance)
+            && (work.gatherTargetBestDistance < 0.0D
+                || distance < work.gatherTargetBestDistance - NavigationProgressPolicy.MIN_PROGRESS_PER_SAMPLE)) {
+            work.gatherTargetBestDistance = distance;
+            work.gatherTargetLastProgressTick = work.ticks;
+        }
+        return GatherRetryPolicy.targetProgressTimedOut(work.ticks, work.gatherTargetLastProgressTick);
+    }
+
+    private void resetGatherTargetProgress(ActiveWork work) {
+        work.gatherTimedTarget = null;
+        work.gatherTargetBestDistance = -1.0D;
+        work.gatherTargetLastProgressTick = -1;
     }
 
     private boolean gatherRecoverySupported(ActiveWork work) {
@@ -9285,7 +9752,7 @@ public final class NpcTaskEngine {
         }
 
         double distance = npc.position().distanceTo(Vec3.atCenterOf(target));
-        if (teleportNearTaskTargetWhenAllowed(work, target, distance, "建筑目标距离过远，已传送到附近")) {
+        if (teleportNearTaskTargetWhenAllowed(work, target, distance, "建筑目标距离过远，已传送到附近", false)) {
             return false;
         }
         maintainTaskChunkTicket(target);
@@ -9648,6 +10115,20 @@ public final class NpcTaskEngine {
     }
 
     private boolean tickMiningInventoryCleanup(ActiveWork work, Recipe<?> recipe, String outputItemId) {
+        return tickMiningInventoryCleanup(
+            work,
+            recipe,
+            outputItemId,
+            MiningInventoryCleanupPolicy.TARGET_FREE_SLOTS
+        );
+    }
+
+    private boolean tickMiningInventoryCleanup(
+        ActiveWork work,
+        Recipe<?> recipe,
+        String outputItemId,
+        int requiredFreeSlots
+    ) {
         List<MiningInventoryCleanupPolicy.InventorySlot> inventory = new ArrayList<>();
         for (int slot = 0; slot < CodexNpcEntity.BACKPACK_SIZE; slot++) {
             ItemStack stack = npc.inventory().getStackInSlot(slot);
@@ -9699,10 +10180,11 @@ public final class NpcTaskEngine {
             taskItemIds,
             recipe == null ? List.of() : recipeIngredientOptions(recipe)
         );
-        List<MiningInventoryCleanupPolicy.Drop> planned = MiningInventoryCleanupPolicy.plan(
+        List<MiningInventoryCleanupPolicy.Drop> planned = MiningInventoryCleanupPolicy.planForFreeSlots(
             CodexNpcEntity.BACKPACK_SIZE,
             inventory,
-            protectedItems
+            protectedItems,
+            requiredFreeSlots
         );
         if (planned.isEmpty()) return false;
 
@@ -10605,15 +11087,23 @@ public final class NpcTaskEngine {
         }
         Vec3 originPoint = Vec3.atBottomCenterOf(origin);
         double distance = npc.position().distanceTo(originPoint);
-        // Navigation commonly stops one collision-width short of the centre of
-        // a one-block branch junction.  The tunnel is already excavated, so use
-        // the same collision-checked short physical step as descent movement to
-        // cross the final block boundary instead of waiting forever at ~1.27 m.
-        if (!DeepMiningPolicy.reachedStand(npc.position(), origin)
-            && distance <= 3.2D
-            && isSafeGatherStand(origin)) {
-            Vec3 step = DeepMiningPolicy.closeRangeStep(npc.position(), originPoint);
+        // Return through the already-excavated corridor one stand at a time.
+        // Vanilla navigation can be cancelled out indefinitely by a water
+        // current in a one-block tunnel even though the corridor is passable.
+        // Direct entity movement still obeys collision, so it can overcome the
+        // current without crossing a wall or an unsafe floor.
+        if (!DeepMiningPolicy.reachedStand(npc.position(), origin)) {
+            BlockPos nextStand = distance <= 3.2D
+                ? origin
+                : DeepMiningPolicy.nextReturnStand(current, origin);
+            Vec3 stepTarget = distance <= 3.2D
+                ? originPoint
+                : Vec3.atBottomCenterOf(nextStand);
+            Vec3 step = canTraverseDeepMiningReturnStand(nextStand)
+                ? DeepMiningPolicy.closeRangeStep(npc.position(), stepTarget)
+                : Vec3.ZERO;
             if (step.lengthSqr() > 0.000001D) {
+                npc.getNavigation().stop();
                 npc.move(MoverType.SELF, step);
                 current = npc.blockPosition();
                 distance = npc.position().distanceTo(originPoint);
@@ -10643,6 +11133,13 @@ public final class NpcTaskEngine {
         }
         npc.getNavigation().moveTo(originPoint.x, originPoint.y, originPoint.z, 1.05D);
         if (work.ticks % 40 == 0) npc.setStatus("正在沿已开掘矿道返回主矿道");
+    }
+
+    private boolean canTraverseDeepMiningReturnStand(BlockPos stand) {
+        if (stand == null || !hasSolidSafeMiningFloor(stand.below())) return false;
+        return npc.level().getBlockState(stand).getCollisionShape(npc.level(), stand).isEmpty()
+            && npc.level().getBlockState(stand.above())
+                .getCollisionShape(npc.level(), stand.above()).isEmpty();
     }
 
     private BlockPos nextHorizontalStep(BlockPos from, BlockPos to) {
@@ -10751,6 +11248,30 @@ public final class NpcTaskEngine {
                     work.stalledTicks = 0;
                     work.lastDistance = -1;
                     return true;
+                }
+            }
+        }
+        BlockPos currentStand = npc.blockPosition();
+        boolean alignedHorizontalCorridor = currentStand.getY() == desiredStand.getY()
+            && (currentStand.getX() == desiredStand.getX()
+                || currentStand.getZ() == desiredStand.getZ());
+        if (distance > 3.2D && alignedHorizontalCorridor) {
+            BlockPos nextStand = DeepMiningPolicy.nextReturnStand(currentStand, desiredStand);
+            if (canTraverseDeepMiningReturnStand(nextStand)) {
+                Vec3 step = DeepMiningPolicy.closeRangeStep(
+                    npc.position(),
+                    Vec3.atBottomCenterOf(nextStand)
+                );
+                if (step.lengthSqr() > 0.000001D) {
+                    npc.getNavigation().stop();
+                    npc.move(MoverType.SELF, step);
+                    distance = npc.position().distanceTo(Vec3.atBottomCenterOf(desiredStand));
+                    if (DeepMiningPolicy.reachedStand(npc.position(), desiredStand)
+                        && isSafeGatherStand(desiredStand)) {
+                        work.stalledTicks = 0;
+                        work.lastDistance = -1;
+                        return true;
+                    }
                 }
             }
         }
@@ -11353,10 +11874,39 @@ public final class NpcTaskEngine {
     }
 
     private Vec3 nextGatherSearchDestination(int excursion) {
+        return nextGatherSearchDestinationFrom(npc.blockPosition(), excursion);
+    }
+
+    private Vec3 nextGatherSearchDestination(ActiveWork work, int excursion) {
+        String itemId = activeGatherItemId(work);
+        BlockPos rememberedFarm = work.kind.equals("farm")
+            && NpcLifeSkillPolicy.isWheatSeedSurfaceGather(itemId)
+            ? farmAnchor(work)
+            : null;
+        BlockPos origin = rememberedFarm == null ? npc.blockPosition() : rememberedFarm;
+        double distance = rememberedFarm == null
+            ? GATHER_EXCURSION_DISTANCE
+            : GatherRetryPolicy.farmSeedExcursionDistance(GATHER_EXCURSION_DISTANCE, excursion);
+        return nextGatherSearchDestinationFrom(origin, excursion, distance);
+    }
+
+    private int autonomousFoodProvisionTarget() {
+        return NpcFoodReservePolicy.targetWithMealBuffer(
+            foodReserveTarget(),
+            npc.foodLevel(),
+            20
+        );
+    }
+
+    private Vec3 nextGatherSearchDestinationFrom(BlockPos origin, int excursion) {
+        return nextGatherSearchDestinationFrom(origin, excursion, GATHER_EXCURSION_DISTANCE);
+    }
+
+    private Vec3 nextGatherSearchDestinationFrom(BlockPos origin, int excursion, double distance) {
         ServerLevel level = (ServerLevel) npc.level();
         double angle = excursion * Math.PI * (3.0 - Math.sqrt(5.0));
-        int targetX = (int) Math.floor(npc.getX() + Math.cos(angle) * GATHER_EXCURSION_DISTANCE);
-        int targetZ = (int) Math.floor(npc.getZ() + Math.sin(angle) * GATHER_EXCURSION_DISTANCE);
+        int targetX = (int) Math.floor(origin.getX() + Math.cos(angle) * distance);
+        int targetZ = (int) Math.floor(origin.getZ() + Math.sin(angle) * distance);
         ChunkPos targetChunk = new ChunkPos(targetX >> 4, targetZ >> 4);
         level.getChunkSource().addRegionTicket(TASK_CHUNK_TICKET, targetChunk, 2, npc.getUUID());
         level.getChunk(targetChunk.x, targetChunk.z);
@@ -11391,6 +11941,9 @@ public final class NpcTaskEngine {
         String requestedSelector = (selector.parsed.tag() ? "#" : "") + selector.parsed.resourceId();
         String blockId = id(state.getBlock());
         if (!GatherCandidatePolicy.mayProduce(requestedSelector, blockId, state.is(BlockTags.LOGS))) return false;
+        boolean upperHalf = state.hasProperty(DoublePlantBlock.HALF)
+            && state.getValue(DoublePlantBlock.HALF) == DoubleBlockHalf.UPPER;
+        if (!GatherCandidatePolicy.harvestablePlantHalf(requestedSelector, blockId, upperHalf)) return false;
         if (GatherCandidatePolicy.isProbabilisticKnownSource(requestedSelector, blockId)) return true;
         if (npc.creativeResources() && selector.matches(state)) return true;
         try {
@@ -11422,16 +11975,23 @@ public final class NpcTaskEngine {
         return fallback == Items.AIR ? ItemStack.EMPTY : new ItemStack(fallback);
     }
 
-    private BlockPos findFarmTarget(String cropId, String action, int radius) {
-        BlockPos existing = findBlockAt(position -> {
+    private BlockPos findFarmTarget(ActiveWork work, String cropId, String action, int radius) {
+        // Facility maintenance must stay centered on the remembered farm.
+        // Searching around the NPC made the scan origin drift after every
+        // movement and eventually selected unrelated dirt deep in the jungle.
+        BlockPos searchOrigin = farmAnchor(work);
+        if (searchOrigin == null) searchOrigin = npc.blockPosition();
+        BlockPos existing = findBlockAt(searchOrigin, position -> {
+            if (isSkippedFarmTarget(work, position)) return false;
             BlockState state = npc.level().getBlockState(position);
             if (state.getBlock() instanceof CropBlock crop) {
                 return !action.equals("plant") && id(state.getBlock()).equals(cropId) && crop.isMaxAge(state);
             }
             return !action.equals("harvest") && state.isAir() && npc.level().getBlockState(position.below()).getBlock() instanceof FarmBlock;
-        }, radius, 3);
+        }, radius, NpcLifeSkillPolicy.FARM_VERTICAL_SEARCH_RADIUS);
         if (existing != null || !NpcLifeSkillPolicy.mayTillNewGround(action)) return existing;
-        return findBlockAt(position -> stateAllowsTilling(position, action), radius, 3);
+        return findBlockAt(searchOrigin, position -> !isSkippedFarmTarget(work, position)
+            && stateAllowsTilling(position, action), radius, NpcLifeSkillPolicy.FARM_VERTICAL_SEARCH_RADIUS);
     }
 
     private boolean stateAllowsTilling(BlockPos cropPosition, String action) {
@@ -11558,14 +12118,42 @@ public final class NpcTaskEngine {
         if (local != null) return local;
         ServerPlayer owner = npc.owner();
         if (owner != null && npc.level() instanceof ServerLevel level) {
+            boolean sameDimension = owner.level().dimension().equals(level.dimension());
+            if (sameDimension) {
+                BlockPos ownerTable = NpcHomeStorage.findCraftingTable(
+                    level,
+                    new NpcHomeStorage.Home(level.dimension(), owner.blockPosition(), true),
+                    CRAFT_WORKSTATION_SEARCH_RADIUS
+                );
+                if (canSelectKnownCraftingTable(work, ownerTable, sameDimension, owner)) {
+                    return ownerTable;
+                }
+            }
             BlockPos homeTable = NpcHomeStorage.findCraftingTable(
                 level,
                 NpcHomeStorage.resolve(owner),
                 HomeStoragePolicy.MAX_RADIUS
             );
-            if (homeTable != null && isReachableCraftingTable(work, homeTable)) return homeTable;
+            if (canSelectKnownCraftingTable(work, homeTable, true, owner)) return homeTable;
         }
         return null;
+    }
+
+    private boolean canSelectKnownCraftingTable(
+        ActiveWork work,
+        BlockPos position,
+        boolean sameDimension,
+        ServerPlayer owner
+    ) {
+        if (position == null || work.skippedWorkstationTargets.contains(position)
+            || !id(npc.level().getBlockState(position).getBlock()).equals("minecraft:crafting_table")) {
+            return false;
+        }
+        return WorkstationNavigationPolicy.canSelectKnownWorkstation(
+            isReachableCraftingTable(work, position),
+            sameDimension,
+            owner.hasPermissions(2)
+        );
     }
 
     private boolean isReachableCraftingTable(ActiveWork work, BlockPos position) {
@@ -11764,7 +12352,8 @@ public final class NpcTaskEngine {
             work,
             target,
             distance,
-            "\u5de5\u4f5c\u53f0\u8ddd\u79bb\u8fc7\u8fdc\uff0c\u5df2\u4f20\u9001\u5230\u9644\u8fd1"
+            "\u5de5\u4f5c\u53f0\u8ddd\u79bb\u8fc7\u8fdc\uff0c\u5df2\u4f20\u9001\u5230\u9644\u8fd1",
+            false
         )) return false;
         maintainTaskChunkTicket(target);
         Path path = npc.getNavigation().getPath();
@@ -11880,6 +12469,9 @@ public final class NpcTaskEngine {
                 work.deepMiningRegionIndex
             );
             addPassageBody(passage, origin);
+            if (work.deepMiningPhase.equals("returning")) {
+                addPassageBody(passage, DeepMiningPolicy.nextReturnStand(npc.blockPosition(), origin));
+            }
             addPassageBody(passage, DeepMiningPolicy.branchStand(
                 work.deepMiningLanding,
                 work.deepMiningDirection,
@@ -13140,7 +13732,15 @@ public final class NpcTaskEngine {
     }
 
     private BlockPos findBlockAt(Predicate<BlockPos> predicate, int radius, int verticalRadius) {
-        BlockPos origin = npc.blockPosition();
+        return findBlockAt(npc.blockPosition(), predicate, radius, verticalRadius);
+    }
+
+    private BlockPos findBlockAt(
+        BlockPos origin,
+        Predicate<BlockPos> predicate,
+        int radius,
+        int verticalRadius
+    ) {
         for (int ring = 0; ring <= radius; ring++) {
             BlockPos best = null;
             double bestDistance = Double.MAX_VALUE;
@@ -13162,16 +13762,27 @@ public final class NpcTaskEngine {
     }
 
     private Direction findSupport(BlockPos target) {
+        Direction best = null;
+        int bestScore = 0;
         for (Direction direction : Direction.values()) {
             BlockPos support = target.relative(direction);
             BlockState state = npc.level().getBlockState(support);
-            if (BuildPlacementPolicy.isClickableSupport(
+            boolean clickable = BuildPlacementPolicy.isClickableSupport(
                 state.isAir(),
                 state.canBeReplaced(),
                 state.getCollisionShape(npc.level(), support).isEmpty()
-            )) return direction;
+            );
+            int score = BuildPlacementPolicy.supportScore(
+                clickable,
+                clickable && state.isFaceSturdy(npc.level(), support, direction.getOpposite())
+            );
+            if (score > bestScore) {
+                best = direction;
+                bestScore = score;
+                if (score >= 2) break;
+            }
         }
-        return null;
+        return best;
     }
 
     private int bestToolSlot(BlockState state) {
@@ -13832,7 +14443,19 @@ public final class NpcTaskEngine {
 
     private void sendProgressUpdate(ActiveWork work, double value, String message, String phase) {
         if (work.id.startsWith("local:")) return;
-        CodexNetwork.sendProgress(npc, work.id, value, message, phase, progressCounts(work));
+        CodexNetwork.sendProgress(
+            npc,
+            work.id,
+            value,
+            message,
+            phase,
+            progressCounts(work),
+            resolvedPlacementAnchor(work)
+        );
+    }
+
+    private BlockPos resolvedPlacementAnchor(ActiveWork work) {
+        return "build".equals(work.kind) ? work.buildOrigin : null;
     }
 
     private void progress(ActiveWork work, double value, String message) {
@@ -13858,7 +14481,17 @@ public final class NpcTaskEngine {
         if (recoverableBuild == work) recoverableBuild = null;
         npc.getNavigation().stop();
         npc.setStatus(message);
-        if (!work.id.startsWith("local:")) CodexNetwork.sendResult(npc, work.id, true, message, null, finalCounts);
+        if (!work.id.startsWith("local:")) {
+            CodexNetwork.sendResult(
+                npc,
+                work.id,
+                true,
+                message,
+                null,
+                finalCounts,
+                resolvedPlacementAnchor(work)
+            );
+        }
         if (resumePausedWork()) return;
         Stance resume = work.resumeStance == Stance.WORK ? Stance.FOLLOW : work.resumeStance;
         setStance(resume);
@@ -13890,7 +14523,17 @@ public final class NpcTaskEngine {
         npc.getNavigation().stop();
         npc.setTarget(null);
         npc.setStatus(message);
-        if (!work.id.startsWith("local:")) CodexNetwork.sendResult(npc, work.id, false, message, code);
+        if (!work.id.startsWith("local:")) {
+            CodexNetwork.sendResult(
+                npc,
+                work.id,
+                false,
+                message,
+                code,
+                progressCounts(work),
+                resolvedPlacementAnchor(work)
+            );
+        }
         if (resumePausedWork()) return;
         Stance resume = work.resumeStance == Stance.WORK ? Stance.FOLLOW : work.resumeStance;
         setStance(resume);
@@ -13921,6 +14564,8 @@ public final class NpcTaskEngine {
         checkpoint.addProperty("gatherPathFailures", work.gatherPathFailures);
         checkpoint.addProperty("lastGatherPathAttemptTick", work.lastGatherPathAttemptTick);
         checkpoint.addProperty("gatherStandPathCursor", work.gatherStandPathCursor);
+        checkpoint.addProperty("gatherTargetLastProgressTick", work.gatherTargetLastProgressTick);
+        checkpoint.addProperty("gatherTargetBestDistance", work.gatherTargetBestDistance);
         checkpoint.addProperty("buildPathFailures", work.buildPathFailures);
         checkpoint.addProperty("lastBuildPathAttemptTick", work.lastBuildPathAttemptTick);
         checkpoint.addProperty("buildStandPathCursor", work.buildStandPathCursor);
@@ -14014,6 +14659,7 @@ public final class NpcTaskEngine {
         putVector(checkpoint, "destination", work.destination);
         putBlock(checkpoint, "targetBlock", work.targetBlock);
         putBlock(checkpoint, "lastTeleportTarget", work.lastTeleportTarget);
+        putBlock(checkpoint, "gatherTimedTarget", work.gatherTimedTarget);
         putBlock(checkpoint, "workstation", work.workstation);
         putBlock(checkpoint, "taskOwnedWorkstation", work.taskOwnedWorkstation);
         if (work.taskOwnedWorkstationId != null) {
@@ -14029,6 +14675,7 @@ public final class NpcTaskEngine {
         putBlock(checkpoint, "deepMiningResourceTimedTarget", work.deepMiningResourceTimedTarget);
         if (work.bedPlacementFacing != null) checkpoint.addProperty("bedPlacementFacing", work.bedPlacementFacing.getName());
         checkpoint.add("skippedGatherTargets", blocks(work.skippedGatherTargets));
+        checkpoint.add("skippedFarmTargets", blocks(work.skippedFarmTargets));
         checkpoint.add("skippedStorageTargets", blocks(work.skippedStorageTargets));
         checkpoint.add("skippedWorkstationTargets", blocks(work.skippedWorkstationTargets));
         checkpoint.add("gatherTargets", blocks(work.gatherTargets));
@@ -14072,6 +14719,8 @@ public final class NpcTaskEngine {
         work.gatherPathFailures = integer(value, "gatherPathFailures", 0);
         work.lastGatherPathAttemptTick = integer(value, "lastGatherPathAttemptTick", -1);
         work.gatherStandPathCursor = Math.max(0, integer(value, "gatherStandPathCursor", 0));
+        work.gatherTargetLastProgressTick = integer(value, "gatherTargetLastProgressTick", -1);
+        work.gatherTargetBestDistance = number(value, "gatherTargetBestDistance", -1.0D);
         work.buildPathFailures = integer(value, "buildPathFailures", 0);
         work.lastBuildPathAttemptTick = integer(value, "lastBuildPathAttemptTick", -1);
         work.buildStandPathCursor = integer(value, "buildStandPathCursor", 0);
@@ -14192,6 +14841,7 @@ public final class NpcTaskEngine {
         work.destination = readVector(value, "destination");
         work.targetBlock = readBlock(value, "targetBlock");
         work.lastTeleportTarget = readBlock(value, "lastTeleportTarget");
+        work.gatherTimedTarget = readBlock(value, "gatherTimedTarget");
         work.workstation = readBlock(value, "workstation");
         work.taskOwnedWorkstation = readBlock(value, "taskOwnedWorkstation");
         work.taskOwnedWorkstationId = string(value, "taskOwnedWorkstationId", null);
@@ -14205,6 +14855,7 @@ public final class NpcTaskEngine {
         work.deepMiningResourceTimedTarget = readBlock(value, "deepMiningResourceTimedTarget");
         work.bedPlacementFacing = Direction.byName(string(value, "bedPlacementFacing", ""));
         readBlocks(value, "skippedGatherTargets", work.skippedGatherTargets);
+        readBlocks(value, "skippedFarmTargets", work.skippedFarmTargets);
         readBlocks(value, "skippedStorageTargets", work.skippedStorageTargets);
         readBlocks(value, "skippedWorkstationTargets", work.skippedWorkstationTargets);
         readBlocks(value, "gatherTargets", work.gatherTargets);
@@ -14573,6 +15224,7 @@ public final class NpcTaskEngine {
         private int gatherPathFailures;
         private int lastGatherPathAttemptTick = -1;
         private int gatherStandPathCursor;
+        private int gatherTargetLastProgressTick = -1;
         private int buildPathFailures;
         private int lastBuildPathAttemptTick = -1;
         private int buildStandPathCursor;
@@ -14606,6 +15258,7 @@ public final class NpcTaskEngine {
         private int buildLastProgressTick;
         private double startDistance = -1;
         private double lastDistance = -1;
+        private double gatherTargetBestDistance = -1;
         private double dragonCareHealth = -1;
         private double dragonCareFood = -1;
         private double dragonCareHappiness = -1;
@@ -14662,6 +15315,7 @@ public final class NpcTaskEngine {
         private Vec3 destination;
         private BlockPos targetBlock;
         private BlockPos lastTeleportTarget;
+        private BlockPos gatherTimedTarget;
         private BlockPos workstation;
         private BlockPos taskOwnedWorkstation;
         private BlockPos pendingWorkstationPlacement;
@@ -14678,6 +15332,7 @@ public final class NpcTaskEngine {
         private Recipe<?> recipe;
         private JsonArray buildBlocks;
         private final Set<BlockPos> skippedGatherTargets = new HashSet<>();
+        private final Set<BlockPos> skippedFarmTargets = new HashSet<>();
         private final Set<BlockPos> skippedStorageTargets = new HashSet<>();
         private final Set<BlockPos> skippedWorkstationTargets = new HashSet<>();
         private final Deque<BlockPos> gatherTargets = new ArrayDeque<>();

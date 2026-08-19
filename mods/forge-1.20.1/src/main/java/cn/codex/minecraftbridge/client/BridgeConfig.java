@@ -35,7 +35,8 @@ public final class BridgeConfig {
     public int npcRecoveryTicks = 200;
     /** Number of ordinary safe food items the NPC keeps in its backpack. Set to 0 to disable. */
     public int npcFoodReserveCount = 8;
-    public String npcMaterialMode = "owner";
+    /** NPC resources are survival by default even when the owner observes in creative mode. */
+    public String npcMaterialMode = "survival";
     public String npcSkinPath = "config/minecraft-codex-companion-skin.png";
     public boolean keepSingleplayerRunningInBackground = true;
 
@@ -170,7 +171,7 @@ public final class BridgeConfig {
         if (npcRecoveryTicks > 1200) npcRecoveryTicks = 1200;
         if (npcFoodReserveCount < 0) npcFoodReserveCount = 0;
         if (npcFoodReserveCount > 64) npcFoodReserveCount = 64;
-        if (!List.of("owner", "survival", "creative").contains(npcMaterialMode)) npcMaterialMode = "owner";
+        if (!List.of("owner", "survival", "creative").contains(npcMaterialMode)) npcMaterialMode = "survival";
         if (npcSkinPath == null || npcSkinPath.isBlank()) npcSkinPath = "config/minecraft-codex-companion-skin.png";
         if (hostileEntityAllowlist == null) hostileEntityAllowlist = new ArrayList<>();
         if (companionId == null || companionId.isBlank()) companionId = "codex-forge";

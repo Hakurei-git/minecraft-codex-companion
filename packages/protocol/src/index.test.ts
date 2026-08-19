@@ -433,6 +433,27 @@ describe("protocol schemas", () => {
     expect(() => taskSpecSchema.parse({ kind: "gather", itemId: "minecraft:stone", count: 5000 })).toThrow();
   });
 
+  it("accepts a locked remote farm anchor across the full outdoor scan radius", () => {
+    expect(taskSpecSchema.parse({
+      kind: "farm",
+      cropId: "minecraft:wheat",
+      action: "plant",
+      radius: 96,
+      placementAnchor: { x: -87, y: 73, z: -138 },
+      lockPlacementAnchor: true,
+    })).toMatchObject({
+      radius: 96,
+      placementAnchor: { x: -87, y: 73, z: -138 },
+      lockPlacementAnchor: true,
+    });
+    expect(() => taskSpecSchema.parse({
+      kind: "farm",
+      cropId: "minecraft:wheat",
+      action: "plant",
+      radius: 97,
+    })).toThrow();
+  });
+
   it("keeps macro step progress and observed item counts distinct from parent progress", () => {
     const progress = {
       currentStepIndex: 0,
@@ -483,6 +504,16 @@ describe("protocol schemas", () => {
       message: "invalid estimated count",
       completedCount: 26.5,
     })).toThrow();
+    expect(bridgeMessageSchema.parse({
+      type: "task-progress",
+      companionId: "codex-forge",
+      taskId: "00000000-0000-4000-8000-000000000065",
+      progress: 1,
+      message: "outdoor build complete",
+      resolvedPlacementAnchor: { x: -87, y: 73, z: -138 },
+    })).toMatchObject({
+      resolvedPlacementAnchor: { x: -87, y: 73, z: -138 },
+    });
   });
 
   it("accepts reliable bridge chat IDs while preserving legacy clients", () => {

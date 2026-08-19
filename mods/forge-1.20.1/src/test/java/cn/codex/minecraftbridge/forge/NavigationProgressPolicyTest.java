@@ -26,4 +26,17 @@ final class NavigationProgressPolicyTest {
 
         assertTrue(sample.stalledTicks() < 60);
     }
+
+    @Test
+    void collisionWobbleCannotEraseStallTimeWithoutARecordDistanceImprovement() {
+        NavigationProgressPolicy.Sample sample = new NavigationProgressPolicy.Sample(0, -1.0D);
+        double[] wobble = { 50.1D, 49.9D, 50.1D, 49.9D, 50.1D, 49.9D, 50.1D, 49.9D,
+            50.1D, 49.9D, 50.1D, 49.9D, 50.1D, 49.9D };
+        for (double distance : wobble) {
+            sample = NavigationProgressPolicy.sample(sample.stalledTicks(), sample.lastDistance(), distance);
+        }
+
+        assertTrue(sample.stalledTicks() > 200);
+        assertTrue(sample.lastDistance() <= 49.9D);
+    }
 }

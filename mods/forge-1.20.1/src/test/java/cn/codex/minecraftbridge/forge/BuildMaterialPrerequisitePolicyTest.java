@@ -657,6 +657,22 @@ final class BuildMaterialPrerequisitePolicyTest {
     }
 
     @Test
+    void prefersRenewableCharcoalForTorchDeficitsWhenLogsCoverInputAndFuel() {
+        assertEquals("minecraft:charcoal", BuildMaterialPrerequisitePolicy.preferredCoalAcquisition(
+            "#minecraft:coals", "minecraft:torch", 5, 9
+        ));
+        assertEquals("", BuildMaterialPrerequisitePolicy.preferredCoalAcquisition(
+            "#minecraft:coals", "minecraft:torch", 5, 8
+        ));
+        assertEquals("", BuildMaterialPrerequisitePolicy.preferredCoalAcquisition(
+            "#minecraft:coals", "minecraft:campfire", 5, 64
+        ));
+        assertEquals("", BuildMaterialPrerequisitePolicy.preferredCoalAcquisition(
+            "minecraft:coal", "minecraft:torch", 5, 64
+        ));
+    }
+
+    @Test
     void rejectsInvalidRequests() {
         assertThrows(IllegalArgumentException.class,
             () -> BuildMaterialPrerequisitePolicy.decide("", 1, Map.of()));

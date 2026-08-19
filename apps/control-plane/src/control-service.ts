@@ -117,7 +117,16 @@ const MAX_START_REPLY_DEDUP_ENTRIES = 512;
 const RANCH_CHAT_FIXTURE_TTL_MS = 30_000;
 const RANCH_CHAT_FIXTURE_TAG = "CodexAcceptanceRanchAnimal";
 const BUILD_FAILURE_AUTO_RESUME_WINDOW_MS = 3 * 60_000;
-const AI_DECISION_TTL_MS = 60_000;
+// A house-local 12/32-block scan misses fields placed outside a larger home
+// compound.  Remembered facilities may be much farther away; this value only
+// controls the bounded block scan after the NPC reaches the recorded anchor.
+const MIN_OUTDOOR_FARM_SCAN_RADIUS = 96;
+const FARM_FACILITY_CLUSTER_RADIUS = 96;
+const OUTDOOR_FARM_HOME_CLEARANCE = 48;
+// Antigravity can spend 60 seconds waiting for a turn and another recovery
+// cycle before it reaches the MCP call. Keep the one-shot decision guard alive
+// for the whole turn so a late model cannot bypass it with a direct chat reply.
+const AI_DECISION_TTL_MS = 3 * 60_000;
 const MAX_PENDING_AI_DECISIONS = 128;
 
 interface PendingAiDecision {
@@ -195,6 +204,7 @@ const TASK_PROGRESS_DETAIL_KEYS = [
   "completedCount",
   "targetCount",
   "retainedCount",
+  "resolvedPlacementAnchor",
 ] as const satisfies ReadonlyArray<keyof TaskProgressDetails>;
 
 /** A `count` in the validated child spec is an authoritative requested target. */
@@ -217,6 +227,7 @@ function macroStepProgressDetails(
     completedCount: reported?.completedCount,
     targetCount: reported?.targetCount ?? explicitTaskTargetCount(spec),
     retainedCount: reported?.retainedCount,
+    resolvedPlacementAnchor: reported?.resolvedPlacementAnchor,
   };
 }
 
@@ -295,7 +306,13 @@ export class ControlService {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     for (const task of unfinished) {
       if (task.status === "queued") runtime.queue.push(task.id);
-      else if (backend.resumeTask) void this.#executeTask(runtime, task, true);
+      else if (backend.resumeTask) {
+        // A task persisted by an older release may still contain the player's
+        // underground request position instead of the observed outdoor farm.
+        // Re-resolve it after the live snapshot has synchronized facilities.
+        if (task.spec.kind === "farm") task.spec = this.#prepareFarmSpec(runtime, task.spec);
+        void this.#executeTask(runtime, task, true);
+      }
       else this.#markRecoveryUnsupported(task);
     }
     for (const task of this.#tasks.values()) {
@@ -656,9 +673,17 @@ export class ControlService {
   }
 
   cancelGoal(id: string, reason = "Goal cancelled"): GoalRecord {
+    const linkedTaskIds = new Set<string>();
+    for (const graph of this.#agentState.workGraphs.filter((entry) => entry.goalId === id)) {
+      for (const node of graph.nodes) {
+        const taskId = node.checkpoint.taskId;
+        if (typeof taskId === "string" && taskId.trim()) linkedTaskIds.add(taskId);
+      }
+    }
     const goal = this.#mutateGoal(id, (record, now) => {
       if (["succeeded", "failed", "cancelled"].includes(record.status)) return;
       record.status = "cancelled";
+      record.activeWorkNodeId = null;
       record.message = reason.slice(0, 500);
       record.finishedAt = now;
       for (const graph of this.#agentState.workGraphs.filter((entry) => entry.goalId === id)) {
@@ -669,6 +694,12 @@ export class ControlService {
         }
       }
     });
+    for (const taskId of linkedTaskIds) {
+      const task = this.#tasks.get(taskId);
+      if (task && !["succeeded", "failed", "cancelled"].includes(task.status)) {
+        this.cancelTask(taskId, reason.slice(0, 500));
+      }
+    }
     this.events.publish({ type: "system", companionId: goal.companionId, message: `Agent goal cancelled: ${goal.spec.title}`, data: { goalId: id } });
     return goal;
   }
@@ -830,6 +861,12 @@ export class ControlService {
       properties: {
         ...facility.properties,
         source: "snapshot.observedFacilities",
+        // A fresh in-world observation is stronger evidence than a previous
+        // failed work scan. Without this reset, one temporary miss poisoned a
+        // real outdoor field forever because upsert merges old properties.
+        ...(facility.type === "farm" && facility.tags.includes("crop") && facility.tags.includes("farmland")
+          ? { invalidForCropWork: false, physicallyObservedAt: snapshot.capturedAt }
+          : {}),
       },
     };
   }
@@ -1026,7 +1063,11 @@ export class ControlService {
     this.#assertAiDecisionMutationAllowed(companionId, options.aiDecisionInteractionId);
     const runtime = this.#requireCompanion(companionId);
     this.#assertLease(runtime, owner);
-    const resolvedSpec: TaskSpec = spec.kind === "macro" ? this.#prepareMacroSpec(runtime, spec) : spec;
+    const resolvedSpec: TaskSpec = spec.kind === "macro"
+      ? this.#prepareMacroSpec(runtime, spec)
+      : spec.kind === "farm"
+        ? this.#prepareFarmSpec(runtime, spec)
+        : spec;
     if (isBuildTask(resolvedSpec) && options.replaceConflictingDelivery) {
       for (const candidate of [...this.#tasks.values()]) {
         if (candidate.companionId !== companionId
@@ -1155,7 +1196,10 @@ export class ControlService {
       const steps = this.#resolveMacroSteps(task.spec);
       steps.forEach((step) => this.#assertTaskAllowed(runtime, step.task));
       this.#macroSteps.set(task.id, steps);
-    } else this.#assertTaskAllowed(runtime, task.spec);
+    } else {
+      if (task.spec.kind === "farm") task.spec = this.#prepareFarmSpec(runtime, task.spec);
+      this.#assertTaskAllowed(runtime, task.spec);
+    }
     task.status = "queued";
     task.message = `等待从失败点恢复（${Math.round(task.progress * 100)}%）`;
     task.startedAt = null;
@@ -1165,6 +1209,7 @@ export class ControlService {
     this.#terminalNotifications.delete(task.id);
     runtime.queue = runtime.queue.filter((id) => id !== task.id);
     runtime.queue.push(task.id);
+    this.#syncAgentGoalsLinkedToTask(task, new Date().toISOString());
     this.#persistTaskState();
     this.events.publish({
       type: "task",
@@ -1174,6 +1219,18 @@ export class ControlService {
     });
     void this.#pump(runtime);
     return task;
+  }
+
+  #syncAgentGoalsLinkedToTask(task: TaskRecord, now: string): void {
+    let changed = false;
+    for (const graph of this.#agentState.workGraphs) {
+      if (!graph.nodes.some((node) => this.#checkpointString(node, "taskId") === task.id)) continue;
+      const goal = this.#agentState.goals.find((candidate) => candidate.id === graph.goalId);
+      if (!goal) continue;
+      this.#syncWorkGraphFromTasks(goal, graph, now);
+      changed = true;
+    }
+    if (changed) this.#persistAgentState();
   }
 
   async sendChat(
@@ -1400,13 +1457,211 @@ export class ControlService {
     spec: Extract<TaskSpec, { kind: "macro" }>,
   ): Extract<TaskSpec, { kind: "macro" }> {
     const snapshot = runtime.backend.snapshot();
+    const placementAnchor = spec.placementAnchor
+      ?? (spec.skillId === "build.crop-farm"
+        ? this.#outdoorFarmBuildAnchor(snapshot)
+        : snapshot.position);
     return {
       ...spec,
-      placementAnchor: spec.placementAnchor ?? snapshot.position,
+      placementAnchor,
       materialMode: spec.materialMode
         ?? snapshot.materialMode
         ?? (snapshot.gameMode === "creative" ? "creative" : "survival"),
     };
+  }
+
+  /**
+   * A newly-created field belongs outside the current house. Prefer a point
+   * beyond the remembered home/build/storage cluster; Forge performs the final
+   * terrain and open-sky validation before placing the blueprint.
+   */
+  #outdoorFarmBuildAnchor(snapshot: WorldSnapshot): FacilityDraft["position"] {
+    const base = snapshot.homeState?.dimension === snapshot.dimension
+      ? snapshot.homeState.position
+      : snapshot.ownerPosition ?? snapshot.position;
+    const diagonal = Math.round(OUTDOOR_FARM_HOME_CLEARANCE / Math.sqrt(2));
+    const offsets = [
+      { x: OUTDOOR_FARM_HOME_CLEARANCE, z: 0 },
+      { x: -OUTDOOR_FARM_HOME_CLEARANCE, z: 0 },
+      { x: 0, z: OUTDOOR_FARM_HOME_CLEARANCE },
+      { x: 0, z: -OUTDOOR_FARM_HOME_CLEARANCE },
+      { x: diagonal, z: diagonal },
+      { x: diagonal, z: -diagonal },
+      { x: -diagonal, z: diagonal },
+      { x: -diagonal, z: -diagonal },
+    ];
+    const residential = this.#agentState.facilities
+      .filter((facility) => facility.worldId === snapshot.worldId)
+      .filter((facility) => facility.dimension === snapshot.dimension)
+      .filter((facility) => ["home", "build", "storage"].includes(facility.type));
+    const candidates = offsets.map((offset, order) => {
+      const position = { x: base.x + offset.x, y: base.y, z: base.z + offset.z };
+      const overlapsExpandedBounds = residential.some((facility) => {
+        if (!facility.bounds) return false;
+        const margin = 12;
+        return position.x >= facility.bounds.min.x - margin
+          && position.x <= facility.bounds.max.x + margin
+          && position.z >= facility.bounds.min.z - margin
+          && position.z <= facility.bounds.max.z + margin;
+      });
+      const nearestResidentialDistance = residential.length === 0
+        ? Number.POSITIVE_INFINITY
+        : Math.min(...residential.map((facility) => (
+          (facility.position.x - position.x) ** 2
+          + (facility.position.z - position.z) ** 2
+        )));
+      const travelDistance = (snapshot.position.x - position.x) ** 2
+        + (snapshot.position.z - position.z) ** 2;
+      return { position, overlapsExpandedBounds, nearestResidentialDistance, travelDistance, order };
+    });
+    candidates.sort((left, right) => {
+      if (left.overlapsExpandedBounds !== right.overlapsExpandedBounds) {
+        return left.overlapsExpandedBounds ? 1 : -1;
+      }
+      if (left.nearestResidentialDistance !== right.nearestResidentialDistance) {
+        return right.nearestResidentialDistance - left.nearestResidentialDistance;
+      }
+      if (left.travelDistance !== right.travelDistance) return left.travelDistance - right.travelDistance;
+      return left.order - right.order;
+    });
+    return candidates[0]!.position;
+  }
+
+  /**
+   * Routes farm work back to a remembered field instead of limiting every
+   * maintenance pass to the NPC's current room. Horizontal distance is used
+   * deliberately: build placement can lift an underground request anchor to
+   * the safe surface while preserving the original X/Z coordinates.
+   */
+  #prepareFarmSpec(
+    runtime: RuntimeCompanion,
+    spec: Extract<TaskSpec, { kind: "farm" }>,
+  ): Extract<TaskSpec, { kind: "farm" }> {
+    const snapshot = runtime.backend.snapshot();
+    if (spec.lockPlacementAnchor && spec.placementAnchor) {
+      return {
+        ...spec,
+        radius: Math.max(MIN_OUTDOOR_FARM_SCAN_RADIUS, spec.radius),
+      };
+    }
+    const reference = spec.placementAnchor ?? snapshot.position;
+    const candidates = this.#agentState.facilities
+      .filter((facility) => facility.worldId === snapshot.worldId)
+      .filter((facility) => facility.dimension === snapshot.dimension)
+      .filter((facility) => facility.type === "farm")
+      .filter((facility) => facility.properties.invalidForCropWork !== true)
+      // Crop work must not accidentally route to a remembered tree farm. Old
+      // records without subtype tags remain eligible for backwards
+      // compatibility, while explicit crop/farmland records are preferred by
+      // the distance and recency ordering below.
+      .filter((facility) => !facility.tags.includes("tree-farm")
+        || facility.tags.includes("crop")
+        || facility.tags.includes("farmland"))
+      .sort((left, right) => {
+        const leftDistance = (left.position.x - reference.x) ** 2
+          + (left.position.z - reference.z) ** 2;
+        const rightDistance = (right.position.x - reference.x) ** 2
+          + (right.position.z - reference.z) ** 2;
+        if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+        return (right.lastUsedAt ?? right.updatedAt).localeCompare(left.lastUsedAt ?? left.updatedAt);
+      });
+    const nearest = candidates[0];
+    // Old macro builds could record an underground request anchor even after
+    // Minecraft had observed real farmland on the surface. If an actually
+    // observed crop block belongs to the same horizontal facility cluster,
+    // prefer that source-backed coordinate over the inferred record.
+    const observedInNearestCluster = nearest
+      ? candidates
+        .filter((facility) => this.#isObservedCropFarmland(facility))
+        .filter((facility) => (
+          (facility.position.x - nearest.position.x) ** 2
+          + (facility.position.z - nearest.position.z) ** 2
+        ) <= FARM_FACILITY_CLUSTER_RADIUS ** 2)
+        .sort((left, right) => {
+          const leftDistance = (left.position.x - reference.x) ** 2
+            + (left.position.z - reference.z) ** 2;
+          const rightDistance = (right.position.x - reference.x) ** 2
+            + (right.position.z - reference.z) ** 2;
+          return leftDistance - rightDistance;
+        })[0]
+      : undefined;
+    const remembered = observedInNearestCluster ?? nearest;
+    if (remembered) {
+      const now = new Date().toISOString();
+      remembered.lastUsedAt = now;
+      remembered.updatedAt = now;
+      this.#persistAgentState();
+    }
+    return {
+      ...spec,
+      // A 12/32-block room-local scan was too small for fields outside a house
+      // or compound. The remembered anchor has no distance cap within the same
+      // world/dimension, so a remote outdoor farm is reached first; this radius
+      // then covers the complete field around that anchor.
+      radius: Math.max(MIN_OUTDOOR_FARM_SCAN_RADIUS, spec.radius),
+      ...(remembered
+        ? { placementAnchor: remembered.position }
+        : spec.placementAnchor
+          ? { placementAnchor: spec.placementAnchor }
+          : {}),
+    };
+  }
+
+  #prepareMacroStepTask(runtime: RuntimeCompanion, task: TaskSpec): TaskSpec {
+    return task.kind === "farm" ? this.#prepareFarmSpec(runtime, task) : task;
+  }
+
+  #isObservedCropFarmland(facility: FacilityRecord): boolean {
+    return facility.type === "farm"
+      && facility.properties.source === "snapshot.observedFacilities"
+      && facility.tags.includes("crop")
+      && facility.tags.includes("farmland");
+  }
+
+  #isInvalidCropFarm(facility: FacilityRecord): boolean {
+    return facility.type === "farm" && facility.properties.invalidForCropWork === true;
+  }
+
+  /** Persist the resolved outdoor facility anchor on the parent macro. */
+  #rememberResolvedFarmAnchor(parent: TaskRecord, stepTask: TaskSpec): void {
+    if (parent.spec.kind !== "macro" || stepTask.kind !== "farm" || !stepTask.placementAnchor) return;
+    parent.spec = {
+      ...parent.spec,
+      placementAnchor: stepTask.placementAnchor,
+    };
+  }
+
+  /**
+   * Forge can relocate an outdoor blueprint after terrain validation. Keep the
+   * exact physical build origin on the parent and lock every following farm
+   * child to it, otherwise an old facility record or the request position can
+   * send the NPC away from the field it has just built.
+   */
+  #rememberResolvedMacroBuildAnchor(
+    parent: TaskRecord,
+    steps: Array<{ label: string; task: TaskSpec }>,
+    currentIndex: number,
+    details?: TaskProgressDetails,
+  ): void {
+    if (parent.spec.kind !== "macro" || parent.spec.skillId !== "build.crop-farm") return;
+    if (steps[currentIndex]?.task.kind !== "build" || !details?.resolvedPlacementAnchor) return;
+    const placementAnchor = details.resolvedPlacementAnchor;
+    parent.spec = {
+      ...parent.spec,
+      placementAnchor,
+    };
+    for (let index = currentIndex + 1; index < steps.length; index += 1) {
+      const step = steps[index]!;
+      if (step.task.kind !== "farm") continue;
+      steps[index] = {
+        ...step,
+        task: {
+          ...step.task,
+          placementAnchor,
+          lockPlacementAnchor: true,
+        },
+      };
+    }
   }
 
   #resolveMacroSteps(
@@ -1416,6 +1671,15 @@ export class ControlService {
     const resolved = this.skills.resolve(spec.skillId, spec.arguments)
       .filter((step) => step.whenMaterialMode === "always" || step.whenMaterialMode === spec.materialMode)
       .map((step) => {
+        if (step.task.kind === "farm") {
+          return {
+            label: step.label,
+            task: {
+              ...step.task,
+              placementAnchor: step.task.placementAnchor ?? spec.placementAnchor,
+            },
+          };
+        }
         if (step.task.kind !== "build") return { label: step.label, task: step.task };
         return {
           label: step.label,
@@ -1472,21 +1736,26 @@ export class ControlService {
       const scaledProgress = parent.progress * steps.length;
       const atStepBoundary = Math.abs(scaledProgress - Math.round(scaledProgress)) < 1e-6;
       const step = steps[index]!;
-      const child = this.#macroChild(parent, step.label, step.task);
+      const stepTask = this.#prepareMacroStepTask(runtime, step.task);
+      this.#rememberResolvedFarmAnchor(parent, stepTask);
+      const child = this.#macroChild(parent, step.label, stepTask);
       try {
         const result = await runtime.backend.resumeTask(child, {
-          onProgress: (progress, message, phase, details) => callbacks.onProgress(
-            (index + Math.max(0, Math.min(1, progress))) / steps.length,
-            `${step.label}：${message}`,
-            phase,
-            macroStepProgressDetails(index, step.task, Math.max(0, Math.min(1, progress)), details),
-          ),
+          onProgress: (progress, message, phase, details) => {
+            this.#rememberResolvedMacroBuildAnchor(parent, steps, index, details);
+            callbacks.onProgress(
+              (index + Math.max(0, Math.min(1, progress))) / steps.length,
+              `${step.label}：${message}`,
+              phase,
+              macroStepProgressDetails(index, stepTask, Math.max(0, Math.min(1, progress)), details),
+            );
+          },
         }, signal);
         callbacks.onProgress(
           (index + 1) / steps.length,
           `${step.label}：${result}`,
           undefined,
-          macroStepProgressDetails(index, step.task, 1),
+          macroStepProgressDetails(index, stepTask, 1),
         );
         index += 1;
       } catch (caught) {
@@ -1497,20 +1766,25 @@ export class ControlService {
     for (; index < steps.length; index += 1) {
       if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("技能已取消");
       const step = steps[index]!;
-      const child = this.#macroChild(parent, step.label, step.task);
+      const stepTask = this.#prepareMacroStepTask(runtime, step.task);
+      this.#rememberResolvedFarmAnchor(parent, stepTask);
+      const child = this.#macroChild(parent, step.label, stepTask);
       const result = await runtime.backend.runTask(child, {
-        onProgress: (progress, message, phase, details) => callbacks.onProgress(
-          (index + Math.max(0, Math.min(1, progress))) / steps.length,
-          `${step.label}：${message}`,
-          phase,
-          macroStepProgressDetails(index, step.task, Math.max(0, Math.min(1, progress)), details),
-        ),
+        onProgress: (progress, message, phase, details) => {
+          this.#rememberResolvedMacroBuildAnchor(parent, steps, index, details);
+          callbacks.onProgress(
+            (index + Math.max(0, Math.min(1, progress))) / steps.length,
+            `${step.label}：${message}`,
+            phase,
+            macroStepProgressDetails(index, stepTask, Math.max(0, Math.min(1, progress)), details),
+          );
+        },
       }, signal);
       callbacks.onProgress(
         (index + 1) / steps.length,
         `${step.label}：${result}`,
         undefined,
-        macroStepProgressDetails(index, step.task, 1),
+        macroStepProgressDetails(index, stepTask, 1),
       );
     }
     return `声明式技能 ${parent.spec.skillId} 已完成`;
@@ -1711,14 +1985,140 @@ export class ControlService {
     };
   }
 
+  /**
+   * A remembered field is only a hint until Minecraft can physically find
+   * farmland there. On a source-backed miss, invalidate that record once and
+   * reopen the prerequisite/build branch so the Agent creates one new outdoor
+   * field instead of repeatedly searching the house or failing the whole goal.
+   */
+  #recoverMissingRememberedFarm(
+    goal: GoalRecord,
+    graph: WorkGraph,
+    node: WorkNode,
+    task: TaskRecord,
+    now: string,
+  ): boolean {
+    if (node.id !== "operate_crop_farm"
+      || task.status !== "failed"
+      || task.error?.code !== "FARM_TARGET_NOT_FOUND"
+      || this.#checkpointBoolean(node, "outdoorFallbackAttempted")) return false;
+
+    const queryNodeId = this.#checkpointString(node, "preferredFacilityQueryNodeId")
+      ?? "query_existing_farm";
+    const queryNode = graph.nodes.find((candidate) => candidate.id === queryNodeId);
+    const invalidIds = new Set<string>();
+    const activeDimension = this.#companions.get(goal.companionId)?.backend.snapshot().dimension;
+    const queriedFacilityId = queryNode ? this.#checkpointString(queryNode, "firstFacilityId") : undefined;
+    if (queriedFacilityId) invalidIds.add(queriedFacilityId);
+    if (task.spec.kind === "farm" && task.spec.placementAnchor) {
+      const anchor = task.spec.placementAnchor;
+      // Observed farmland is recorded per block. Invalidate only the selected
+      // field cluster, not every separate outdoor field inside the old 64-block
+      // search area. Other real farms must remain eligible for the next pass.
+      const failedSearchRadius = Math.max(8, Math.min(16, task.spec.radius));
+      for (const facility of this.#agentState.facilities) {
+        if (facility.worldId !== goal.worldId || facility.type !== "farm") continue;
+        if (activeDimension && facility.dimension !== activeDimension) continue;
+        const clusterDistance = (facility.position.x - anchor.x) ** 2
+          + (facility.position.z - anchor.z) ** 2;
+        if (clusterDistance <= failedSearchRadius ** 2) invalidIds.add(facility.id);
+      }
+    }
+    for (const facility of this.#agentState.facilities) {
+      if (!invalidIds.has(facility.id)) continue;
+      facility.updatedAt = now;
+      facility.properties = {
+        ...facility.properties,
+        invalidForCropWork: true,
+        validationFailureCode: "FARM_TARGET_NOT_FOUND",
+        validationFailedAt: now,
+      };
+    }
+
+    if (queryNode) {
+      queryNode.status = "succeeded";
+      queryNode.progress = 1;
+      queryNode.checkpoint = {
+        ...queryNode.checkpoint,
+        facilityIds: [],
+        facilityCount: 0,
+        invalidFacilityIds: [...invalidIds].slice(0, 32),
+        fallbackToOutdoorBuildAt: now,
+      };
+      delete queryNode.checkpoint.firstFacilityId;
+      delete queryNode.checkpoint.firstFacilityName;
+      delete queryNode.checkpoint.firstFacilityType;
+      delete queryNode.checkpoint.firstFacilityPosition;
+    }
+
+    const reopenIds = new Set([
+      "find_or_craft_hoe",
+      "find_or_craft_bucket",
+      "build_crop_farm",
+      "verify_farm_memory",
+      "operate_crop_farm",
+    ]);
+    for (const candidate of graph.nodes) {
+      if (!reopenIds.has(candidate.id)) continue;
+      candidate.status = "pending";
+      candidate.progress = 0;
+      delete candidate.checkpoint.taskId;
+      delete candidate.checkpoint.taskStatus;
+      delete candidate.checkpoint.taskMessage;
+      delete candidate.checkpoint.reusedFacilityId;
+      delete candidate.checkpoint.reusedFacilityName;
+      delete candidate.checkpoint.skippedAt;
+      delete candidate.checkpoint.skippedReason;
+      if (candidate.id === "operate_crop_farm") {
+        candidate.checkpoint = {
+          ...candidate.checkpoint,
+          outdoorFallbackAttempted: true,
+          invalidFacilityIds: [...invalidIds].slice(0, 32),
+          previousFailedTaskId: task.id,
+          previousFailureCode: task.error.code,
+        };
+      }
+    }
+
+    graph.status = "ready";
+    graph.updatedAt = now;
+    goal.status = "planning";
+    goal.finishedAt = null;
+    goal.activeWorkNodeId = null;
+    goal.error = null;
+    goal.message = "Remembered farm was not found; preparing one new outdoor farm";
+    // The recovery can be discovered while the task executor itself is
+    // unwinding. In that re-entrant path the current advance pass may settle
+    // the graph as merely ready. Schedule one guarded follow-up so the newly
+    // reopened prerequisite/build branch starts without another player chat.
+    const continuationOwner = this.#checkpointString(node, "owner") ?? "agent-goal";
+    const continuation = setTimeout(() => {
+      const currentGoal = this.#agentState.goals.find((candidate) => candidate.id === goal.id);
+      const currentGraph = this.#agentState.workGraphs.find((candidate) => candidate.goalId === goal.id);
+      if (currentGoal?.status !== "planning" || currentGraph?.status !== "ready") return;
+      void this.advanceGoal(goal.id, continuationOwner).catch((caught) => {
+        this.events.publish({
+          type: "warning",
+          companionId: goal.companionId,
+          message: `Outdoor farm fallback continuation failed: ${caught instanceof Error ? redactSensitiveText(caught.message) : "unknown error"}`,
+          data: { goalId: goal.id, failedTaskId: task.id },
+        });
+      });
+    }, 0);
+    continuation.unref();
+    return true;
+  }
+
   #syncWorkGraphFromTasks(goal: GoalRecord, graph: WorkGraph, now: string): void {
     if (["cancelled", "succeeded"].includes(goal.status) || ["cancelled", "succeeded"].includes(graph.status)) return;
     let activeNodeId: string | null = null;
+    let recoveredFailedTaskNode = false;
     for (const node of graph.nodes) {
       const taskId = this.#checkpointString(node, "taskId");
       if (!taskId) continue;
       const task = this.#tasks.get(taskId);
       if (!task) continue;
+      const wasFailed = node.status === "failed";
       node.progress = task.progress;
       node.checkpoint = {
         ...node.checkpoint,
@@ -1737,6 +2137,7 @@ export class ControlService {
         node.progress = 1;
         this.#registerCompletedFacilityIfRequested(goal, node, task, now);
       } else if (task.status === "failed" || task.status === "cancelled") {
+        if (this.#recoverMissingRememberedFarm(goal, graph, node, task, now)) continue;
         node.status = "failed";
         graph.status = "failed";
         graph.updatedAt = now;
@@ -1752,11 +2153,34 @@ export class ControlService {
           ...(task.error?.suggestedRecovery ? { suggestedRecovery: task.error.suggestedRecovery } : {}),
         };
       }
+      if (wasFailed && ["queued", "running", "paused", "succeeded"].includes(task.status)) {
+        recoveredFailedTaskNode = true;
+        node.checkpoint = {
+          ...node.checkpoint,
+          recoveredAt: now,
+        };
+      }
     }
     const progress = graph.nodes.length === 0
       ? 0
       : graph.nodes.reduce((sum, node) => sum + node.progress, 0) / graph.nodes.length;
     goal.progress = Math.max(0, Math.min(1, progress));
+    if (recoveredFailedTaskNode && !graph.nodes.some((node) => node.status === "failed")) {
+      goal.finishedAt = null;
+      goal.error = null;
+      graph.updatedAt = now;
+      if (activeNodeId) {
+        graph.status = "running";
+        goal.status = "running";
+        goal.activeWorkNodeId = activeNodeId;
+        goal.message = "Recovered failed work node and resumed the same task";
+      } else {
+        graph.status = "ready";
+        goal.status = "planning";
+        goal.activeWorkNodeId = null;
+        goal.message = "Recovered task completed; goal is ready for the remaining work nodes";
+      }
+    }
     if (goal.status === "failed" || graph.status === "failed") return;
     if (activeNodeId) {
       goal.activeWorkNodeId = activeNodeId;
@@ -1768,10 +2192,31 @@ export class ControlService {
 
   #registerCompletedFacilityIfRequested(goal: GoalRecord, node: WorkNode, task: TaskRecord, now: string): void {
     if (!this.#checkpointBoolean(node, "shouldRegisterFacilityAfterBuild")) return;
-    if (this.#checkpointString(node, "registeredFacilityId")) return;
     const type = this.#facilityTypeForCompletedNode(node, task);
     const snapshot = this.#companions.get(goal.companionId)?.backend.snapshot();
     const position = this.#facilityPositionForCompletedTask(task, snapshot);
+    const registeredFacilityId = this.#checkpointString(node, "registeredFacilityId");
+    if (registeredFacilityId) {
+      const existing = this.#agentState.facilities.find((facility) => facility.id === registeredFacilityId);
+      if (existing && type === "farm" && position
+        && (existing.position.x !== position.x
+          || existing.position.y !== position.y
+          || existing.position.z !== position.z)) {
+        existing.position = position;
+        existing.updatedAt = now;
+        existing.properties = {
+          ...existing.properties,
+          correctedFromLegacyAnchor: true,
+          correctedAt: now,
+        };
+        node.checkpoint = {
+          ...node.checkpoint,
+          correctedFacilityPosition: position,
+          correctedFacilityAt: now,
+        };
+      }
+      return;
+    }
     if (!position || !snapshot?.dimension) {
       node.checkpoint = {
         ...node.checkpoint,
@@ -1857,6 +2302,41 @@ export class ControlService {
   }
 
   #facilityPositionForCompletedTask(task: TaskRecord, snapshot?: WorldSnapshot): FacilityDraft["position"] | null {
+    if (task.spec.kind === "macro" && task.spec.skillId === "build.crop-farm" && snapshot) {
+      const reference = task.spec.placementAnchor ?? snapshot.position;
+      const observed = this.#agentState.facilities
+        .filter((facility) => facility.worldId === snapshot.worldId)
+        .filter((facility) => facility.dimension === snapshot.dimension)
+        .filter((facility) => this.#isObservedCropFarmland(facility))
+        .filter((facility) => (
+          (facility.position.x - reference.x) ** 2
+          + (facility.position.z - reference.z) ** 2
+        ) <= FARM_FACILITY_CLUSTER_RADIUS ** 2)
+        .sort((left, right) => {
+          const leftDistance = (left.position.x - reference.x) ** 2
+            + (left.position.z - reference.z) ** 2;
+          const rightDistance = (right.position.x - reference.x) ** 2
+            + (right.position.z - reference.z) ** 2;
+          return leftDistance - rightDistance;
+        })[0];
+      if (observed) return observed.position;
+      // New farm macros carry a control-selected outdoor anchor. Keep that
+      // coordinate when its elevation agrees with the post-build snapshot;
+      // legacy underground request anchors are rejected by the vertical check.
+      const anchor = task.spec.placementAnchor;
+      if (anchor && Math.abs(anchor.y - snapshot.position.y) <= 16) {
+        const home = snapshot.homeState?.dimension === snapshot.dimension
+          ? snapshot.homeState.position
+          : snapshot.ownerPosition;
+        const outsideCurrentHouse = !home || (
+          (anchor.x - home.x) ** 2 + (anchor.z - home.z) ** 2
+        ) >= (OUTDOOR_FARM_HOME_CLEARANCE / 2) ** 2;
+        if (outsideCurrentHouse) return anchor;
+      }
+      // Immediately after a real farm task the NPC is normally standing at the
+      // field, which is still safer than persisting a legacy underground Y.
+      return snapshot.position;
+    }
     if (task.spec.kind === "macro" && task.spec.placementAnchor) return task.spec.placementAnchor;
     if (task.spec.kind === "build" && task.spec.placementAnchor) return task.spec.placementAnchor;
     return snapshot?.position ?? null;
@@ -1988,13 +2468,17 @@ export class ControlService {
         return undefined;
       }
       case "chat": {
-        await this.sendChat(goal.companionId, action.message, owner);
+        await this.sendChat(goal.companionId, action.message, owner, {
+          ...(options.aiDecisionInteractionId
+            ? { interactionId: options.aiDecisionInteractionId }
+            : {}),
+        });
         this.#markWorkNodeSucceeded(node, { chatDelivered: true });
         graph.updatedAt = new Date().toISOString();
         return undefined;
       }
       case "control": {
-        await this.controlCompanion(goal.companionId, action.action);
+        await this.controlCompanion(goal.companionId, action.action, options);
         this.#markWorkNodeSucceeded(node, { controlAction: action.action });
         graph.updatedAt = new Date().toISOString();
         return undefined;
@@ -2047,6 +2531,7 @@ export class ControlService {
       .filter((facility) => facility.worldId === worldId)
       .filter((facility) => !action.dimension || facility.dimension === action.dimension)
       .filter((facility) => !action.type || facility.type === action.type)
+      .filter((facility) => !this.#isInvalidCropFarm(facility))
       .filter((facility) => !action.owner || facility.owner === action.owner)
       .filter((facility) => tags.size === 0 || action.tags.every((tag) => facility.tags.includes(tag)))
       .sort((left, right) => (

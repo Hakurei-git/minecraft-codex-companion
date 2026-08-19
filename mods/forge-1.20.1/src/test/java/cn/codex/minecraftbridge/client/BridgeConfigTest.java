@@ -12,6 +12,7 @@ final class BridgeConfigTest {
         BridgeConfig config = new BridgeConfig();
         assertEquals("Codex", config.name);
         assertEquals("", config.ownerName);
+        assertEquals("survival", config.npcMaterialMode);
     }
 
     @Test

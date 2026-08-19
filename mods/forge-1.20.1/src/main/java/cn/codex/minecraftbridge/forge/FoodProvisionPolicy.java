@@ -62,8 +62,20 @@ final class FoodProvisionPolicy {
         boolean nearHome,
         int nearbyAdults
     ) {
+        return mayHunt(adult, named, tamed, leashed, nearHome, nearbyAdults, false);
+    }
+
+    static boolean mayHunt(
+        boolean adult,
+        boolean named,
+        boolean tamed,
+        boolean leashed,
+        boolean nearHome,
+        int nearbyAdults,
+        boolean survivalFallback
+    ) {
         if (!adult || named || tamed || leashed || nearHome) return false;
-        return nearbyAdults > BREEDING_RESERVE;
+        return nearbyAdults > (survivalFallback ? 0 : BREEDING_RESERVE);
     }
 
     static int nextSearchRadius(int current) {

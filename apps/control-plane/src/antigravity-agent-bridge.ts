@@ -384,6 +384,7 @@ function promptFor(
       "task 用于一个 TaskSpec；skill 用于已安装的声明式动作链。缺少前置材料、工具、工作台、熔炉和远程搜索由本地任务执行器处理，不要拆成多次工具调用。",
       "玩家询问你在做什么、状态、生命、饱食度、背包或装备时，提交 type=inspect 和正确 scope；decision.reply 只写一小句符合当前继承/自定义人格的自然开场，不得编造任何状态数值。本地服务会把真实快照事实追加到这句人格台词后。",
       "玩家要肉时使用 provision-food，foodCategory=meat、source=hunt；明确‘给我’时 destination=player。不得用西瓜或植物食物替代肉。",
+      "玩家要求照料、播种或收割农田时可提交 life.crop-cycle 或 farm；本地 Agent 会先查询同世界已记录的室外农田并扩大范围验证，识别不到才在房屋外建立并登记一块新农田。当前房屋本身绝不是农田，禁止把室内地面当作农田。",
       "大规模或破坏性建造若不是已审查的内置 Skill，返回 clarify 要求确认。不要虚构任务已完成。",
       `本轮可见输出 token 预算为 ${settings.tokenBudget}；这是反重力外部会话的软预算，请只做一次简短决策。`,
       `玩家：${JSON.stringify(safe(message.sender))}`,

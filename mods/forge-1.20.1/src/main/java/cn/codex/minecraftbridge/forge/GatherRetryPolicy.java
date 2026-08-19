@@ -4,6 +4,7 @@ final class GatherRetryPolicy {
     static final int MAX_SKIPPED_TARGETS = 24;
     static final int MAX_PATH_FAILURES = 4;
     static final int MAX_STALLED_TICKS = 80;
+    static final int MAX_TARGET_NO_PROGRESS_TICKS = 200;
     static final double SEARCH_REGION_ARRIVAL_DISTANCE = 8.0;
     static final int REPATH_INTERVAL_TICKS = 10;
     static final int MAX_STAND_PATH_CANDIDATES_PER_ATTEMPT = 24;
@@ -61,6 +62,12 @@ final class GatherRetryPolicy {
         return consecutivePathFailures >= MAX_PATH_FAILURES || stalledTicks > MAX_STALLED_TICKS;
     }
 
+    static boolean targetProgressTimedOut(int currentTick, int lastProgressTick) {
+        return currentTick >= 0
+            && lastProgressTick >= 0
+            && currentTick - lastProgressTick > MAX_TARGET_NO_PROGRESS_TICKS;
+    }
+
     static boolean teleportDestinationIsUseful(double distanceToTarget) {
         return searchRegionReached(distanceToTarget);
     }
@@ -87,6 +94,10 @@ final class GatherRetryPolicy {
 
     static boolean shouldSkipAfterUnusableTeleport(boolean skippableResourceTarget) {
         return skippableResourceTarget;
+    }
+
+    static boolean isSkippableResourceTeleportTarget(boolean searchRegionTarget, boolean resourceWork) {
+        return !searchRegionTarget && resourceWork;
     }
 
     static boolean allowsRemoteRecovery(String movement) {
@@ -146,6 +157,17 @@ final class GatherRetryPolicy {
             && !activeTarget
             && noWorkTicks > 40
             && searchRadius >= localSearchRadius;
+    }
+
+    /**
+     * A remembered outdoor field can be surrounded by a large unsuitable
+     * biome. Search successive eight-point rings instead of revisiting the
+     * same fixed 72-block circle for every seed excursion.
+     */
+    static double farmSeedExcursionDistance(double baseDistance, int excursion) {
+        double normalizedBase = Math.max(1.0D, baseDistance);
+        int ring = Math.max(1, (Math.max(1, excursion) - 1) / 8 + 1);
+        return normalizedBase * ring;
     }
 
     static int candidateAttemptCount(int candidateCount) {

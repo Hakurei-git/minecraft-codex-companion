@@ -6,6 +6,7 @@ import cn.codex.minecraftbridge.forge.client.ForgeNpcActor;
 import com.mojang.logging.LogUtils;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
@@ -102,6 +103,18 @@ public final class CodexNetwork {
         String phase,
         TaskProgressCounts counts
     ) {
+        sendProgress(npc, taskId, progress, message, phase, counts, null);
+    }
+
+    public static void sendProgress(
+        CodexNpcEntity npc,
+        String taskId,
+        double progress,
+        String message,
+        String phase,
+        TaskProgressCounts counts,
+        BlockPos resolvedPlacementAnchor
+    ) {
         ServerPlayer owner = npc.owner();
         if (owner == null) return;
         JsonObject payload = new JsonObject();
@@ -114,6 +127,7 @@ public final class CodexNetwork {
             payload.addProperty("targetCount", counts.targetCount());
             payload.addProperty("retainedCount", counts.retainedCount());
         }
+        appendResolvedPlacementAnchor(payload, resolvedPlacementAnchor);
         send(owner, "task-progress", payload);
     }
 
@@ -129,6 +143,18 @@ public final class CodexNetwork {
         String code,
         TaskProgressCounts counts
     ) {
+        sendResult(npc, taskId, ok, message, code, counts, null);
+    }
+
+    public static void sendResult(
+        CodexNpcEntity npc,
+        String taskId,
+        boolean ok,
+        String message,
+        String code,
+        TaskProgressCounts counts,
+        BlockPos resolvedPlacementAnchor
+    ) {
         ServerPlayer owner = npc.owner();
         if (owner == null) return;
         JsonObject payload = new JsonObject();
@@ -141,7 +167,17 @@ public final class CodexNetwork {
             payload.addProperty("targetCount", counts.targetCount());
             payload.addProperty("retainedCount", counts.retainedCount());
         }
+        appendResolvedPlacementAnchor(payload, resolvedPlacementAnchor);
         send(owner, "task-result", payload);
+    }
+
+    private static void appendResolvedPlacementAnchor(JsonObject payload, BlockPos anchor) {
+        if (anchor == null) return;
+        JsonObject value = new JsonObject();
+        value.addProperty("x", anchor.getX());
+        value.addProperty("y", anchor.getY());
+        value.addProperty("z", anchor.getZ());
+        payload.add("resolvedPlacementAnchor", value);
     }
 
     public static void sendSpeech(ServerPlayer player, String message) {

@@ -33,7 +33,7 @@ const BUILTIN_DRAFTS: unknown[] = [
       { name: "radius", description: "农务半径", type: "integer", required: false, defaultValue: 12, minimum: 1, maximum: 64 },
     ],
     steps: [
-      { label: "照料农田", task: { kind: "farm", cropId: "${cropId}", action: "cycle", radius: "${radius}" } },
+      { label: "照料并补种已有室外农田", task: { kind: "farm", cropId: "${cropId}", action: "plant", radius: "${radius}" } },
       { label: "整理收获", task: { kind: "store", itemId: "${cropId}" } },
     ],
   },

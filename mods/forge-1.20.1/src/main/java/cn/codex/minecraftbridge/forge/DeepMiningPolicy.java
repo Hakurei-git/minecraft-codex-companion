@@ -223,6 +223,13 @@ final class DeepMiningPolicy {
         return new BlockPos(current.getX(), origin.getY(), current.getZ());
     }
 
+    static BlockPos nextReturnStand(BlockPos current, BlockPos origin) {
+        if (current == null || origin == null) return current;
+        int dx = Integer.compare(origin.getX(), current.getX());
+        int dz = dx == 0 ? Integer.compare(origin.getZ(), current.getZ()) : 0;
+        return current.offset(dx, 0, dz);
+    }
+
     static boolean reachedReturnOrigin(Vec3 current, BlockPos origin) {
         if (current == null || origin == null) return false;
         BlockPos feet = BlockPos.containing(current);

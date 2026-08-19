@@ -357,8 +357,22 @@ function Normalize-ManagedExecutable([string]$Source, [string]$Destination, [str
     Assert-True ($peOffset -gt 0 -and $peOffset + 12 -lt $bytes.Length) "Compiled installer has an invalid PE header."
     Assert-True ($bytes[$peOffset] -eq 0x50 -and $bytes[$peOffset + 1] -eq 0x45) "Compiled installer lacks a PE signature."
 
-    $assembly = [System.Reflection.Assembly]::ReflectionOnlyLoad($bytes)
-    $oldMvid = $assembly.ManifestModule.ModuleVersionId.ToByteArray()
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        $stream = [System.IO.MemoryStream]::new($bytes, $false)
+        $peReader = [System.Reflection.PortableExecutable.PEReader]::new($stream)
+        try {
+            Assert-True $peReader.HasMetadata "Compiled installer has no managed metadata."
+            $metadata = [System.Reflection.Metadata.PEReaderExtensions]::GetMetadataReader($peReader)
+            $module = $metadata.GetModuleDefinition()
+            $oldMvid = $metadata.GetGuid($module.Mvid).ToByteArray()
+        } finally {
+            $peReader.Dispose()
+            $stream.Dispose()
+        }
+    } else {
+        $assembly = [System.Reflection.Assembly]::ReflectionOnlyLoad($bytes)
+        $oldMvid = $assembly.ManifestModule.ModuleVersionId.ToByteArray()
+    }
     $mvidOffsets = @(Find-ByteSequence $bytes $oldMvid)
     Assert-True ($mvidOffsets.Count -eq 1) "Could not uniquely locate the managed module identifier."
 

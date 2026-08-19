@@ -197,6 +197,7 @@ function shouldAttemptAgentGoal(spec: TaskSpec, objective: string): boolean {
     return spec.skillId.startsWith("build.")
       || spec.skillId.startsWith("craft.")
       || spec.skillId.startsWith("dragon.")
+      || spec.skillId === "life.crop-cycle"
       || spec.skillId === "life.establish-ranch"
       || spec.skillId === "life.craft-and-place-bed";
   }

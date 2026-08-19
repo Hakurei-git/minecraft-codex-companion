@@ -19,6 +19,19 @@ final class FoodProvisionPolicyTest {
     }
 
     @Test
+    void permitsOnlyUnprotectedAdultsForTheRemoteSurvivalFallback() {
+        assertTrue(FoodProvisionPolicy.mayHunt(
+            true, false, false, false, false, 1, true
+        ));
+        assertFalse(FoodProvisionPolicy.mayHunt(
+            true, false, false, false, true, 4, true
+        ));
+        assertFalse(FoodProvisionPolicy.mayHunt(
+            true, true, false, false, false, 4, true
+        ));
+    }
+
+    @Test
     void boundsReserveAndSearchProgress() {
         assertFalse(FoodProvisionPolicy.shouldComplete(7, 8));
         assertTrue(FoodProvisionPolicy.shouldComplete(8, 8));

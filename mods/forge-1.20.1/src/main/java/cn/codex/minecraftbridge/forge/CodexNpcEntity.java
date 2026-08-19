@@ -66,6 +66,7 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
     public static final int FEET_SLOT = 32;
     public static final int INVENTORY_SIZE = 33;
     private static final int DRAGON_DISMOUNT_PROTECTION_TICKS = 40;
+    private static final int WORK_ANIMATION_DURATION_TICKS = 12;
 
     private static final EntityDataAccessor<Optional<UUID>> OWNER = SynchedEntityData.defineId(CodexNpcEntity.class, EntityDataSerializers.OPTIONAL_UUID);
     private static final EntityDataAccessor<Byte> STANCE = SynchedEntityData.defineId(CodexNpcEntity.class, EntityDataSerializers.BYTE);
@@ -78,6 +79,8 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
     private static final EntityDataAccessor<Integer> PAUSED_TASKS = SynchedEntityData.defineId(CodexNpcEntity.class, EntityDataSerializers.INT);
     private static final EntityDataAccessor<String> PAUSE_REASON = SynchedEntityData.defineId(CodexNpcEntity.class, EntityDataSerializers.STRING);
     private static final EntityDataAccessor<String> MATERIAL_MODE = SynchedEntityData.defineId(CodexNpcEntity.class, EntityDataSerializers.STRING);
+    private static final EntityDataAccessor<Integer> WORK_ANIMATION_SEQUENCE = SynchedEntityData.defineId(CodexNpcEntity.class, EntityDataSerializers.INT);
+    private static final EntityDataAccessor<Byte> WORK_ANIMATION_HAND = SynchedEntityData.defineId(CodexNpcEntity.class, EntityDataSerializers.BYTE);
 
     private static final BridgeConfig CONFIG = BridgeConfig.load();
 
@@ -99,6 +102,8 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
     private String lastEatenName = "";
     private boolean automaticEatingUntilFull;
     private int clientSpeechTicks;
+    private int observedWorkAnimationSequence;
+    private int clientWorkAnimationTicks;
     private int dragonDismountProtectionTicks;
     private long lastServerCompanionGameTime = Long.MIN_VALUE;
     private String inventoryTransactionTaskOverride = "";
@@ -118,6 +123,28 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
         setCanPickUpLoot(true);
         setCustomName(Component.literal(CONFIG.name));
         setCustomNameVisible(true);
+    }
+
+    @Override
+    public double getPassengersRidingOffset() {
+        // Keep an observer player's eyes inside a two-block-high mining
+        // corridor instead of placing them in the ceiling above the NPC.
+        return 0.0D;
+    }
+
+    @Override
+    public void swing(InteractionHand hand) {
+        swing(hand, false);
+    }
+
+    @Override
+    public void swing(InteractionHand hand, boolean updateSelf) {
+        if (!level().isClientSide) {
+            entityData.set(WORK_ANIMATION_HAND, (byte) (hand == InteractionHand.OFF_HAND ? 1 : 0));
+            int sequence = entityData.get(WORK_ANIMATION_SEQUENCE);
+            entityData.set(WORK_ANIMATION_SEQUENCE, sequence == Integer.MAX_VALUE ? 1 : sequence + 1);
+        }
+        super.swing(hand, updateSelf);
     }
 
     public static AttributeSupplier.Builder createAttributes() {
@@ -151,6 +178,8 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
         entityData.define(PAUSED_TASKS, 0);
         entityData.define(PAUSE_REASON, "");
         entityData.define(MATERIAL_MODE, "生存");
+        entityData.define(WORK_ANIMATION_SEQUENCE, 0);
+        entityData.define(WORK_ANIMATION_HAND, (byte) 0);
     }
 
     public void setOwner(ServerPlayer player) {
@@ -318,6 +347,18 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
         return entityData.get(MATERIAL_MODE);
     }
 
+    public float clientWorkAnimationProgress() {
+        if (clientWorkAnimationTicks <= 0) return 0.0F;
+        return (WORK_ANIMATION_DURATION_TICKS - clientWorkAnimationTicks + 1.0F)
+            / WORK_ANIMATION_DURATION_TICKS;
+    }
+
+    public InteractionHand clientWorkAnimationHand() {
+        return entityData.get(WORK_ANIMATION_HAND) == 1
+            ? InteractionHand.OFF_HAND
+            : InteractionHand.MAIN_HAND;
+    }
+
     public void addExhaustion(float amount) {
         if (creativeResources()) return;
         exhaustion += Math.max(0, amount);
@@ -346,7 +387,18 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
     @Override
     public void tick() {
         super.tick();
+        if (level().isClientSide) tickClientWorkAnimation();
         tickServerCompanion();
+    }
+
+    private void tickClientWorkAnimation() {
+        int sequence = entityData.get(WORK_ANIMATION_SEQUENCE);
+        if (sequence != observedWorkAnimationSequence) {
+            observedWorkAnimationSequence = sequence;
+            clientWorkAnimationTicks = WORK_ANIMATION_DURATION_TICKS;
+        } else if (clientWorkAnimationTicks > 0) {
+            clientWorkAnimationTicks--;
+        }
     }
 
     @Override

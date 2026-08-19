@@ -45,9 +45,9 @@ final class NpcLifeSkillPolicyTest {
     }
 
     @Test
-    void expandsPreparedFarmLandForPlantingAndCycleTasks() {
+    void expandsPreparedFarmLandOnlyForExplicitPlantingTasks() {
         assertTrue(NpcLifeSkillPolicy.mayTillNewGround("plant"));
-        assertTrue(NpcLifeSkillPolicy.mayTillNewGround("cycle"));
+        assertFalse(NpcLifeSkillPolicy.mayTillNewGround("cycle"));
         assertFalse(NpcLifeSkillPolicy.mayTillNewGround("harvest"));
         assertTrue(NpcLifeSkillPolicy.isPreparedFarmGround("minecraft:dirt"));
         assertTrue(NpcLifeSkillPolicy.isPreparedFarmGround("minecraft:coarse_dirt"));
@@ -61,9 +61,53 @@ final class NpcLifeSkillPolicyTest {
     }
 
     @Test
-    void farmTimeoutIsStrictAndIndependentOfCompletedWork() {
+    void farmTimeoutIsStrictAndBoundedForBuildAndSeedSearch() {
         assertFalse(NpcLifeSkillPolicy.farmTimedOut(NpcLifeSkillPolicy.MAX_FARM_TICKS));
         assertTrue(NpcLifeSkillPolicy.farmTimedOut(NpcLifeSkillPolicy.MAX_FARM_TICKS + 1));
+        assertEquals(20 * 60 * 20, NpcLifeSkillPolicy.MAX_FARM_TICKS);
+    }
+
+    @Test
+    void farmDoesNotRecallNpcDuringSeedExcursionAndBatchesSeeds() {
+        assertFalse(NpcLifeSkillPolicy.shouldReturnToFarmAnchor(true, 80.0D, 32));
+        assertTrue(NpcLifeSkillPolicy.shouldReturnToFarmAnchor(false, 48.1D, 32));
+        assertFalse(NpcLifeSkillPolicy.shouldReturnToFarmAnchor(false, 48.0D, 32));
+        assertFalse(NpcLifeSkillPolicy.shouldReturnToFarmAnchor(false, 20.0D, 32));
+        assertEquals(8, NpcLifeSkillPolicy.farmActionTarget(32));
+        assertEquals(1, NpcLifeSkillPolicy.farmActionTarget(0));
+        assertEquals(8, NpcLifeSkillPolicy.farmSeedBatchSize(32, 0));
+        assertEquals(7, NpcLifeSkillPolicy.farmSeedBatchSize(32, 25));
+        assertEquals(1, NpcLifeSkillPolicy.farmSeedBatchSize(32, 32));
+        assertEquals(8, NpcLifeSkillPolicy.farmSeedBatchSize(128, 0));
+        assertTrue(NpcLifeSkillPolicy.isWheatSeedSurfaceGather("minecraft:wheat_seeds"));
+        assertFalse(NpcLifeSkillPolicy.isWheatSeedSurfaceGather("minecraft:beetroot_seeds"));
+        assertTrue(NpcLifeSkillPolicy.isSurfacePlantSource(70, 71));
+        assertFalse(NpcLifeSkillPolicy.isSurfacePlantSource(42, 71));
+        assertTrue(NpcLifeSkillPolicy.needsSurfaceRecovery(42, 71));
+        assertFalse(NpcLifeSkillPolicy.needsSurfaceRecovery(66, 71));
+        assertTrue(NpcLifeSkillPolicy.mayTeleportToSurface(true, 42, 71));
+        assertFalse(NpcLifeSkillPolicy.mayTeleportToSurface(false, 42, 71));
+        assertFalse(NpcLifeSkillPolicy.mayTeleportToSurface(true, 66, 71));
+        assertFalse(NpcLifeSkillPolicy.farmPlantRejectionsExhausted(15));
+        assertTrue(NpcLifeSkillPolicy.farmPlantRejectionsExhausted(16));
+    }
+
+    @Test
+    void expandsFarmSearchOutsideTheCurrentRoomWithoutScanningEveryTick() {
+        assertEquals(8, NpcLifeSkillPolicy.FARM_VERTICAL_SEARCH_RADIUS);
+        assertEquals(12, NpcLifeSkillPolicy.farmSearchRadius(12, 0));
+        assertEquals(32, NpcLifeSkillPolicy.farmSearchRadius(12, 20));
+        assertEquals(48, NpcLifeSkillPolicy.farmSearchRadius(12, 40));
+        assertEquals(16, NpcLifeSkillPolicy.farmSearchRadius(96, 0));
+        assertEquals(48, NpcLifeSkillPolicy.farmSearchRadius(96, 40));
+        assertEquals(64, NpcLifeSkillPolicy.farmSearchRadius(96, 60));
+        assertEquals(80, NpcLifeSkillPolicy.farmSearchRadius(96, 80));
+        assertEquals(96, NpcLifeSkillPolicy.farmSearchRadius(96, 100));
+        assertTrue(NpcLifeSkillPolicy.shouldScanFarmNow(0));
+        assertTrue(NpcLifeSkillPolicy.shouldScanFarmNow(20));
+        assertFalse(NpcLifeSkillPolicy.shouldScanFarmNow(21));
+        assertFalse(NpcLifeSkillPolicy.farmLocalSearchExhausted(119));
+        assertTrue(NpcLifeSkillPolicy.farmLocalSearchExhausted(120));
     }
 
     @Test

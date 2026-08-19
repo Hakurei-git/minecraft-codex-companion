@@ -227,6 +227,49 @@ final class MiningInventoryCleanupPolicyTest {
         ));
     }
 
+    @Test
+    void shortPrerequisiteFreesExactlyOneSlotFromAFullBackpack() {
+        List<MiningInventoryCleanupPolicy.InventorySlot> inventory = new ArrayList<>();
+        inventory.add(slot(0, "minecraft:bucket", 1));
+        inventory.add(slot(1, "minecraft:granite", 58));
+        inventory.add(slot(2, "minecraft:diorite", 29));
+        for (int index = 3; index < 27; index++) {
+            inventory.add(slot(index, "minecraft:task_item_" + index, 1));
+        }
+
+        assertEquals(List.of(
+            new MiningInventoryCleanupPolicy.Drop(2, "minecraft:diorite", 29)
+        ), MiningInventoryCleanupPolicy.planForFreeSlots(
+            27,
+            inventory,
+            Set.of("minecraft:wheat_seeds"),
+            1
+        ));
+    }
+
+    @Test
+    void freesMultipleClayStacksWhenDeepMiningNeedsCraftingSpace() {
+        List<MiningInventoryCleanupPolicy.InventorySlot> inventory = new ArrayList<>();
+        inventory.add(slot(0, "minecraft:cobblestone", 53));
+        inventory.add(slot(1, "minecraft:iron_ingot", 3));
+        inventory.add(slot(2, "minecraft:oak_log", 42));
+        inventory.add(slot(3, "minecraft:clay_ball", 64));
+        inventory.add(slot(4, "minecraft:clay_ball", 64));
+        inventory.add(slot(5, "minecraft:clay_ball", 48));
+        for (int index = 6; index < 27; index++) {
+            inventory.add(slot(index, "minecraft:task_item_" + index, 1));
+        }
+
+        assertEquals(List.of(
+            new MiningInventoryCleanupPolicy.Drop(3, "minecraft:clay_ball", 64),
+            new MiningInventoryCleanupPolicy.Drop(4, "minecraft:clay_ball", 64)
+        ), MiningInventoryCleanupPolicy.plan(
+            27,
+            inventory,
+            Set.of("minecraft:iron_ingot", "minecraft:oak_log", "minecraft:cobblestone")
+        ));
+    }
+
     private static MiningInventoryCleanupPolicy.InventorySlot slot(int index, String itemId, int count) {
         return new MiningInventoryCleanupPolicy.InventorySlot(index, itemId, count);
     }

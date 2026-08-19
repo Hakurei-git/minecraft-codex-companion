@@ -704,6 +704,7 @@ test("bridge configuration applies the NPC name and imported skin", async (t) =>
   const bridgePath = await configureBridge(config, state);
   const bridge = JSON.parse(await fsp.readFile(bridgePath, "utf8"));
   assert.equal(bridge.name, "Luna");
+  assert.equal(bridge.npcMaterialMode, "survival");
   assert.equal(bridge.npcSkinPath, "config/minecraft-codex-companion-skin.png");
   const installedSkin = path.join(target, "config", "minecraft-codex-companion-skin.png");
   assert.deepEqual(await fsp.readFile(installedSkin), await fsp.readFile(reference));

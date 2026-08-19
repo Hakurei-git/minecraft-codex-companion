@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { BridgeCommand, TaskRecord, WorldSnapshot } from "@mc/protocol";
+import type { BridgeCommand, CompanionAction, TaskRecord, WorldSnapshot } from "@mc/protocol";
 import type { TaskCallbacks } from "./backend.js";
 import { ControlService } from "./control-service.js";
 import { BUILTIN_BUILD_IDS } from "./builtin-content.js";
@@ -77,6 +77,45 @@ class MacroCaptureBackend extends SimulatorBackend {
     this.tasks.push(structuredClone(task));
     callbacks.onProgress(1, `${task.spec.kind} complete`, "active");
     return Promise.resolve(`${task.spec.kind} complete`);
+  }
+}
+
+class SmartRecallBackend extends MacroCaptureBackend {
+  readonly controlActions: CompanionAction[] = [];
+
+  async control(action: CompanionAction): Promise<void> {
+    this.controlActions.push(action);
+  }
+}
+
+class ResolvedFarmPlacementBackend extends MacroCaptureBackend {
+  readonly resolvedPlacementAnchor = { x: -87, y: 73, z: -138 };
+
+  override runTask(task: TaskRecord, callbacks: TaskCallbacks): Promise<string> {
+    this.tasks.push(structuredClone(task));
+    callbacks.onProgress(
+      1,
+      `${task.spec.kind} complete`,
+      "active",
+      task.spec.kind === "build"
+        ? { resolvedPlacementAnchor: this.resolvedPlacementAnchor }
+        : undefined,
+    );
+    return Promise.resolve(`${task.spec.kind} complete`);
+  }
+}
+
+class FailOnceFarmMacroBackend extends MacroCaptureBackend {
+  #failedFarm = false;
+
+  override runTask(task: TaskRecord, callbacks: TaskCallbacks): Promise<string> {
+    if (task.spec.kind === "farm" && !this.#failedFarm) {
+      this.#failedFarm = true;
+      this.tasks.push(structuredClone(task));
+      callbacks.onProgress(0, "FARM_TARGET_NOT_FOUND", "active");
+      return Promise.reject(new Error("FARM_TARGET_NOT_FOUND"));
+    }
+    return super.runTask(task, callbacks);
   }
 }
 
@@ -665,6 +704,175 @@ describe("ControlService", () => {
     expect(creative.tasks.map((child) => child.spec.kind)).toEqual(["build"]);
   });
 
+  it("routes a new crop farm to an outdoor anchor and preserves the Forge site guard", async () => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const snapshot = backend.snapshot();
+    const assigned = service.assignTask(backend.id, {
+      kind: "macro",
+      skillId: "build.crop-farm",
+      arguments: { cropId: "minecraft:wheat", radius: 12 },
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+
+    for (let attempt = 0; attempt < 50 && service.getTask(assigned.id).status !== "succeeded"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(assigned.spec).toMatchObject({
+      kind: "macro",
+      placementAnchor: expect.objectContaining({ y: snapshot.position.y }),
+    });
+    if (assigned.spec.kind !== "macro" || !assigned.spec.placementAnchor) throw new Error("missing crop-farm anchor");
+    const horizontalDistanceSquared = (assigned.spec.placementAnchor.x - snapshot.position.x) ** 2
+      + (assigned.spec.placementAnchor.z - snapshot.position.z) ** 2;
+    expect(horizontalDistanceSquared).toBeGreaterThanOrEqual(48 ** 2);
+    expect(backend.tasks.find((task) => task.spec.kind === "build")?.spec).toMatchObject({
+      kind: "build",
+      sitePolicy: "outdoor",
+      placementAnchor: assigned.spec.placementAnchor,
+    });
+  });
+
+  it("locks the farm step to the exact outdoor origin resolved by Forge", async () => {
+    const backend = new ResolvedFarmPlacementBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const snapshot = backend.snapshot();
+    service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "farm",
+      name: "Older remembered field that must not replace a fresh build",
+      position: { x: 40, y: 73, z: -190 },
+      tags: ["crop", "farmland"],
+      properties: { source: "test.snapshot" },
+    });
+
+    const assigned = service.assignTask(backend.id, {
+      kind: "macro",
+      skillId: "build.crop-farm",
+      arguments: { cropId: "minecraft:wheat", radius: 12 },
+      placementAnchor: { x: 66, y: 102, z: 2 },
+      materialMode: "survival",
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+    for (let attempt = 0; attempt < 50 && service.getTask(assigned.id).status !== "succeeded"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    const farm = backend.tasks.find((task) => task.spec.kind === "farm");
+    expect(farm?.spec).toMatchObject({
+      kind: "farm",
+      radius: 96,
+      placementAnchor: backend.resolvedPlacementAnchor,
+      lockPlacementAnchor: true,
+    });
+    expect(service.getTask(assigned.id)).toMatchObject({
+      status: "succeeded",
+      spec: {
+        kind: "macro",
+        placementAnchor: backend.resolvedPlacementAnchor,
+      },
+    });
+  });
+
+  it("routes a retried farm macro to remembered outdoor farmland with a wider scan", async () => {
+    const service = new ControlService();
+    const backend = new FailOnceFarmMacroBackend("survival");
+    service.registerBackend(backend);
+    const assigned = service.assignTask(backend.id, {
+      kind: "macro",
+      skillId: "build.crop-farm",
+      arguments: { cropId: "minecraft:wheat", radius: 12 },
+      placementAnchor: { x: -22, y: 16, z: -97 },
+      materialMode: "survival",
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+    for (let attempt = 0; attempt < 50 && service.getTask(assigned.id).status !== "failed"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(service.getTask(assigned.id)).toMatchObject({ status: "failed", progress: 0.5 });
+
+    const snapshot = backend.snapshot();
+    service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "farm",
+      name: "Legacy inferred underground farm anchor",
+      position: { x: -22, y: 16, z: -97 },
+      tags: ["farm", "crop", "agent-goal"],
+      properties: { source: "agent.workGraph" },
+    });
+    service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "farm",
+      name: "Observed outdoor crop farmland",
+      position: { x: -17, y: 77, z: -89 },
+      tags: ["crop", "farmland"],
+      properties: { source: "snapshot.observedFacilities" },
+    });
+    const retried = service.retryTask(assigned.id, "antigravity-autoplay");
+    expect(retried.id).toBe(assigned.id);
+    for (let attempt = 0; attempt < 50 && service.getTask(assigned.id).status !== "succeeded"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    const farmAttempts = backend.tasks.filter((task) => task.spec.kind === "farm");
+    expect(farmAttempts).toHaveLength(2);
+    expect(farmAttempts[1]?.id).toBe(assigned.id);
+    expect(farmAttempts[1]?.spec).toMatchObject({
+      kind: "farm",
+      radius: 96,
+      placementAnchor: { x: -17, y: 77, z: -89 },
+    });
+    expect(service.getTask(assigned.id)).toMatchObject({
+      status: "succeeded",
+      progress: 1,
+      spec: {
+        kind: "macro",
+        placementAnchor: { x: -17, y: 77, z: -89 },
+      },
+    });
+  });
+
+  it("routes a direct farm command to a same-dimension remembered field beyond the local scan", async () => {
+    const service = new ControlService();
+    const backend = new MacroCaptureBackend("survival");
+    service.registerBackend(backend);
+    const snapshot = backend.snapshot();
+    const remoteFarm = service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "farm",
+      name: "Remembered outdoor farm",
+      position: { x: 40, y: 73, z: -190 },
+      tags: ["crop", "farmland"],
+      properties: { source: "test.snapshot" },
+    });
+
+    const assigned = service.assignTask(backend.id, {
+      kind: "farm",
+      cropId: "minecraft:wheat",
+      action: "cycle",
+      radius: 12,
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+    for (let attempt = 0; attempt < 50 && service.getTask(assigned.id).status !== "succeeded"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(backend.tasks).toHaveLength(1);
+    expect(backend.tasks[0]?.spec).toMatchObject({
+      kind: "farm",
+      radius: 96,
+      placementAnchor: remoteFarm.position,
+    });
+    expect(service.getTask(assigned.id)).toMatchObject({ status: "succeeded", progress: 1 });
+  });
+
   it("requires a confirmed build preview before assigning construction", () => {
     const service = new ControlService();
     service.registerBackend(new SimulatorBackend());
@@ -802,6 +1010,82 @@ describe("ControlService", () => {
         requestedBy: "PlayerOne",
       },
     });
+  });
+
+  it("routes a smart crop-cycle skill through the farm memory and outdoor fallback WorkGraph", async () => {
+    const service = new ControlService();
+    service.registerBackend(new SimulatorBackend());
+    const interactionId = service.beginAiDecision({
+      sequence: 23,
+      at: "2026-08-18T08:30:00.000Z",
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "照料屋外农田，找不到旧农田就在屋外新建并记录，不要在房屋里种田",
+    });
+
+    const result = await service.submitAiDecision(interactionId, {
+      type: "skill",
+      reply: "好，我先找屋外农田。",
+      summary: "复用或建立屋外农田并照料",
+      skillId: "life.crop-cycle",
+      arguments: { cropId: "minecraft:wheat", radius: 32 },
+      materialMode: "survival",
+    });
+
+    expect(result).toMatchObject({
+      decisionType: "skill",
+      goalId: expect.any(String),
+      taskId: expect.any(String),
+    });
+    const goal = service.getGoal(result.goalId!);
+    expect(goal.spec).toMatchObject({ source: "t-chat", requestedBy: "PlayerOne" });
+    expect(service.getPlan(goal.id).nodes.map((node) => node.id)).toEqual(expect.arrayContaining([
+      "query_existing_farm",
+      "find_or_craft_hoe",
+      "find_or_craft_bucket",
+      "build_crop_farm",
+      "verify_farm_memory",
+      "operate_crop_farm",
+    ]));
+  });
+
+  it("allows a validated smart decision to execute its Agent recall node", async () => {
+    const service = new ControlService();
+    const backend = new SmartRecallBackend("survival");
+    service.registerBackend(backend);
+    const interactionId = service.beginAiDecision({
+      sequence: 22,
+      at: "2026-08-18T08:00:00.000Z",
+      companionId: backend.id,
+      sender: "PlayerOne",
+      message: "先回来，再给我制作一把钻石镐并交给我",
+    });
+
+    const result = await service.submitAiDecision(interactionId, {
+      type: "task",
+      reply: "好，我先回来再开始准备。",
+      summary: "召回后制作并交付钻石镐",
+      spec: {
+        kind: "craft",
+        itemId: "minecraft:diamond_pickaxe",
+        count: 1,
+        deliverTo: "PlayerOne",
+        requestedBy: "PlayerOne",
+      },
+    });
+
+    expect(result).toMatchObject({
+      decisionType: "task",
+      goalId: expect.any(String),
+      taskId: expect.any(String),
+    });
+    expect(backend.controlActions).toEqual(["recall"]);
+    expect(service.getGoal(result.goalId!)).not.toMatchObject({ status: "failed" });
+    expect(service.getPlan(result.goalId!).nodes.find((node) => node.id === "recall_companion"))
+      .toMatchObject({ status: "succeeded", progress: 1 });
+    expect(service.events.recent(100).some((event) => (
+      event.type === "warning" && event.message.includes("AI_DECISION_TOOL_BLOCKED")
+    ))).toBe(false);
   });
 
   it("continues validated Agent work after an instant task finishes inside the one-shot AI commit", async () => {

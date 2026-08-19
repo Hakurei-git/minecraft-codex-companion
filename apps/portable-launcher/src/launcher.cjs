@@ -687,6 +687,9 @@ async function configureBridge(config, stateDirectory) {
     allowPvp: false,
     allowBreakingContainers: false,
     hostileEntityAllowlist: [],
+    npcMaterialMode: ["survival", "creative", "owner"].includes(existing?.npcMaterialMode)
+      ? existing.npcMaterialMode
+      : "survival",
     npcSkinPath: "config/minecraft-codex-companion-skin.png",
   };
   await syncNpcSkin(config, stateDirectory);

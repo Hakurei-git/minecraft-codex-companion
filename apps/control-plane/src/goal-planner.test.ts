@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { CompanionBackend, TaskCallbacks } from "./backend.js";
+import { BackendTaskFailure, type CompanionBackend, type TaskCallbacks } from "./backend.js";
 import { ControlService } from "./control-service.js";
 import { SimulatorBackend } from "./simulator-backend.js";
-import type { TaskRecord, WorldSnapshot } from "@mc/protocol";
+import type { CompanionAction, TaskRecord, WorldSnapshot } from "@mc/protocol";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -78,12 +78,25 @@ class FacilitySnapshotBackend extends SimulatorBackend {
           tags: ["home", "chest"],
           properties: { blockId: "minecraft:chest" },
         },
+        {
+          type: "farm",
+          name: "Observed outdoor crop farmland",
+          position: { x: 28, y: 64, z: -24 },
+          tags: ["crop", "farmland"],
+          properties: { blockId: "minecraft:farmland" },
+        },
       ],
     };
   }
 }
 
 class PendingGoalBackend extends SimulatorBackend {
+  readonly controlActions: CompanionAction[] = [];
+
+  async control(action: CompanionAction): Promise<void> {
+    this.controlActions.push(action);
+  }
+
   override runTask(task: TaskRecord, callbacks: TaskCallbacks, signal: AbortSignal): Promise<string> {
     callbacks.onProgress(0.25, `pending ${task.id}`, "active");
     return new Promise((_resolve, reject) => {
@@ -108,6 +121,59 @@ class RecoveringGoalBackend extends SimulatorBackend {
     this.continuedSpecs.push(task.spec.kind === "craft" ? task.spec.itemId : task.spec.kind);
     callbacks.onProgress(1, `continued ${task.id}`, "active");
     return Promise.resolve(`continued ${task.id}`);
+  }
+}
+
+class FailOnceGoalTaskBackend extends SimulatorBackend {
+  readonly attemptedTaskIds: string[] = [];
+
+  override runTask(task: TaskRecord, callbacks: TaskCallbacks): Promise<string> {
+    this.attemptedTaskIds.push(task.id);
+    if (this.attemptedTaskIds.length === 1) {
+      callbacks.onProgress(0.42, `transient failure ${task.id}`, "active");
+      return Promise.reject(new Error("transient retryable task failure"));
+    }
+    callbacks.onProgress(1, `recovered ${task.id}`, "active");
+    return Promise.resolve(`recovered ${task.id}`);
+  }
+}
+
+class MissingRememberedFarmBackend extends SimulatorBackend {
+  readonly tasks: TaskRecord[] = [];
+  readonly home = { x: -156, y: 76, z: -62 };
+  #position = { ...this.home };
+  #failedRememberedFarm = false;
+
+  override snapshot(): WorldSnapshot {
+    const base = super.snapshot();
+    return {
+      ...base,
+      position: { ...this.#position },
+      ownerPosition: { ...this.home },
+      homeState: {
+        dimension: base.dimension,
+        position: { ...this.home },
+        temporary: false,
+      },
+    };
+  }
+
+  override runTask(task: TaskRecord, callbacks: TaskCallbacks): Promise<string> {
+    this.tasks.push(structuredClone(task));
+    if (task.spec.kind === "farm" && !this.#failedRememberedFarm) {
+      this.#failedRememberedFarm = true;
+      callbacks.onProgress(0, "remembered farm missing", "active");
+      return Promise.reject(new BackendTaskFailure(
+        "FARM_TARGET_NOT_FOUND",
+        "remembered farm missing",
+        true,
+      ));
+    }
+    if (task.spec.kind === "build" && task.spec.placementAnchor) {
+      this.#position = { ...task.spec.placementAnchor };
+    }
+    callbacks.onProgress(1, `${task.spec.kind} complete`, "active");
+    return Promise.resolve(`${task.spec.kind} complete`);
   }
 }
 
@@ -324,6 +390,61 @@ describe("local Agent goal planner", () => {
     });
   });
 
+  it("recalls the companion before a requested farm work chain", async () => {
+    const backend = new PendingGoalBackend();
+    await withService(async (service) => {
+      const goal = service.submitGoal("codex-sim", {
+        title: "先回来再建造农田",
+        objective: "先停止其他目标并回到我身边，然后准备锄头、水桶和水，建造农田并种上小麦。",
+        requestedBy: "PlayerOne",
+        source: "t-chat",
+        priority: 100,
+        mode: "smart",
+        constraints: [],
+        taskHints: [],
+        metadata: {},
+      });
+      const plan = service.getPlan(goal.id);
+
+      expect(plan.nodes.map((node) => node.id)).toEqual([
+        "knowledge_lookup",
+        "recall_companion",
+        "query_existing_farm",
+        "find_or_craft_hoe",
+        "find_or_craft_bucket",
+        "build_crop_farm",
+        "verify_farm_memory",
+      ]);
+      expect(plan.nodes[1]).toMatchObject({
+        action: { kind: "control", action: "recall" },
+        dependsOn: ["knowledge_lookup"],
+        checkpoint: {
+          controlPriority: true,
+          returnBeforeWork: true,
+          resumePlannedWorkAfterRecall: true,
+        },
+      });
+      expect(plan.nodes[2]?.dependsOn).toEqual(["recall_companion"]);
+
+      const advanced = await service.advanceGoal(goal.id, "agent-test");
+      expect(advanced.task).toMatchObject({
+        status: "running",
+        spec: { kind: "craft", itemId: "minecraft:stone_hoe" },
+      });
+      expect(backend.controlActions).toEqual(["recall"]);
+      expect(advanced.plan.nodes[1]).toMatchObject({ status: "succeeded", progress: 1 });
+      service.cancelGoal(goal.id, "farm recall test complete");
+      expect(service.getTask(advanced.task!.id)).toMatchObject({
+        status: "cancelled",
+        message: "farm recall test complete",
+      });
+      expect(service.getGoal(goal.id)).toMatchObject({
+        status: "cancelled",
+        activeWorkNodeId: null,
+      });
+    }, backend);
+  });
+
   it("reuses remembered crop farms instead of repeating farm prerequisites and construction", async () => {
     await withService(async (service) => {
       const backend = service.getCompanion("codex-sim");
@@ -384,6 +505,70 @@ describe("local Agent goal planner", () => {
     });
   });
 
+  it("invalidates an unrecognized house-side farm and creates one new recorded field outdoors", async () => {
+    const backend = new MissingRememberedFarmBackend();
+    await withService(async (service) => {
+      const snapshot = backend.snapshot();
+      const mistakenHouseRecord = service.registerFacility({
+        worldId: snapshot.worldId,
+        dimension: snapshot.dimension,
+        type: "farm",
+        name: "Legacy house misclassified as crop farm",
+        position: { ...backend.home },
+        tags: ["crop", "farmland"],
+        owner: "PlayerOne",
+        properties: { source: "agent.workGraph" },
+      });
+      const goal = service.submitGoal(backend.id, {
+        title: "照料已有农田",
+        objective: "照料并补种已有农田；如果旧农田无法识别，就在当前房屋外新建并记录一块农田。",
+        requestedBy: "PlayerOne",
+        source: "t-chat",
+        priority: 100,
+        mode: "smart",
+        constraints: ["不得在当前房屋内建造农田"],
+        taskHints: [],
+        metadata: {},
+      });
+
+      await service.advanceGoal(goal.id, "antigravity-autoplay");
+      await waitForGoalStatus(service, goal.id, "succeeded", 10_000);
+
+      const facilities = service.listFacilities(snapshot.worldId);
+      expect(facilities.find((facility) => facility.id === mistakenHouseRecord.id)).toMatchObject({
+        properties: {
+          invalidForCropWork: true,
+          validationFailureCode: "FARM_TARGET_NOT_FOUND",
+        },
+      });
+      const recorded = facilities.find((facility) => (
+        facility.sourceGoalId === goal.id
+        && facility.type === "farm"
+        && facility.properties.invalidForCropWork !== true
+      ));
+      expect(recorded).toBeDefined();
+      const distanceFromHouse = (recorded!.position.x - backend.home.x) ** 2
+        + (recorded!.position.z - backend.home.z) ** 2;
+      expect(distanceFromHouse).toBeGreaterThanOrEqual(48 ** 2);
+
+      const buildAttempt = backend.tasks.find((task) => task.spec.kind === "build");
+      expect(buildAttempt?.spec).toMatchObject({
+        kind: "build",
+        sitePolicy: "outdoor",
+        placementAnchor: recorded!.position,
+      });
+      const farmAttempts = backend.tasks.filter((task) => task.spec.kind === "farm");
+      expect(farmAttempts.length).toBeGreaterThanOrEqual(2);
+      expect(farmAttempts.at(-1)?.spec).toMatchObject({
+        kind: "farm",
+        placementAnchor: recorded!.position,
+      });
+      expect(service.getPlan(goal.id).nodes.every((node) => (
+        node.status === "succeeded" || node.status === "skipped"
+      ))).toBe(true);
+    }, backend);
+  }, 15_000);
+
   it("records newly completed planned facilities so later goals can reuse them", async () => {
     await withService(async (service) => {
       const snapshot = service.getCompanion("codex-sim").snapshot;
@@ -407,7 +592,7 @@ describe("local Agent goal planner", () => {
       expect(farm).toMatchObject({
         name: "Agent farm: crop farm",
         tags: expect.arrayContaining(["farm", "crop", "build.crop-farm", "agent-goal"]),
-        position: snapshot.position,
+        position: { x: expect.any(Number), y: snapshot.position.y, z: expect.any(Number) },
         properties: {
           source: "agent.workGraph",
           nodeId: "build_crop_farm",
@@ -415,6 +600,10 @@ describe("local Agent goal planner", () => {
           skillId: "build.crop-farm",
         },
       });
+      expect(
+        (farm!.position.x - snapshot.position.x) ** 2
+        + (farm!.position.z - snapshot.position.z) ** 2,
+      ).toBeGreaterThanOrEqual(48 ** 2);
 
       const laterGoal = service.submitGoal("codex-sim", {
         title: "照料田地",
@@ -1022,6 +1211,7 @@ describe("local Agent goal planner", () => {
         ["workstation", "Observed crafting table"],
         ["workstation", "Observed furnace"],
         ["storage", "Observed home chest"],
+        ["farm", "Observed outdoor crop farmland"],
         ["home", "Observed home spawn"],
         ["mine", "Observed diamond mine"],
         ["dragon-landing", "Test Dragon landing area"],
@@ -1034,8 +1224,28 @@ describe("local Agent goal planner", () => {
         },
       });
 
+      const observedFarm = firstFacilities.find((facility) => facility.name === "Observed outdoor crop farmland");
+      expect(observedFarm).toMatchObject({
+        properties: {
+          source: "snapshot.observedFacilities",
+          invalidForCropWork: false,
+          physicallyObservedAt: expect.any(String),
+        },
+      });
+      service.registerFacility({
+        worldId: snapshot.worldId,
+        dimension: snapshot.dimension,
+        type: "farm",
+        name: "Observed outdoor crop farmland",
+        position: { x: 28, y: 64, z: -24 },
+        tags: ["crop", "farmland"],
+        properties: { invalidForCropWork: true, validationFailureCode: "FARM_TARGET_NOT_FOUND" },
+      });
+      expect(service.listFacilities(snapshot.worldId).find((facility) => facility.id === observedFarm?.id)?.properties.invalidForCropWork).toBe(true);
+
       service.getSnapshot("codex-sim");
       expect(service.listFacilities(snapshot.worldId)).toHaveLength(firstFacilities.length);
+      expect(service.listFacilities(snapshot.worldId).find((facility) => facility.id === observedFarm?.id)?.properties.invalidForCropWork).toBe(false);
 
       const goal = service.submitGoal("codex-sim", {
         title: "我要一个箱子",
@@ -1186,6 +1396,55 @@ describe("local Agent goal planner", () => {
       });
       expect(advanced.task).toBeUndefined();
     });
+  });
+
+  it("reopens a failed WorkGraph when its linked task id is retried and then continues the goal", async () => {
+    const backend = new FailOnceGoalTaskBackend();
+    await withService(async (service) => {
+      const goal = service.submitGoal(backend.id, {
+        title: "Retry the same physical task",
+        objective: "Retry the same task from its failure checkpoint and finish the goal.",
+        requestedBy: "PlayerOne",
+        source: "t-chat",
+        priority: 100,
+        mode: "smart",
+        constraints: [],
+        taskHints: [{
+          kind: "follow",
+          player: "PlayerOne",
+          distance: 3,
+          requestedBy: "PlayerOne",
+        }],
+        metadata: {},
+      });
+
+      const advanced = await service.advanceGoal(goal.id, "agent-test");
+      const taskId = advanced.task?.id;
+      expect(taskId).toBeTruthy();
+      await waitForGoalStatus(service, goal.id, "failed");
+      expect(service.getPlan(goal.id)).toMatchObject({
+        status: "failed",
+        nodes: [
+          { id: "knowledge_lookup", status: "succeeded" },
+          { id: "task_1", status: "failed", checkpoint: { taskId } },
+        ],
+      });
+
+      const retried = service.retryTask(taskId!, "agent-test");
+      expect(retried.id).toBe(taskId);
+      expect(service.getGoal(goal.id).status).not.toBe("failed");
+      expect(service.getPlan(goal.id).status).not.toBe("failed");
+
+      await waitForGoalStatus(service, goal.id, "succeeded");
+      expect(service.getPlan(goal.id)).toMatchObject({
+        status: "succeeded",
+        nodes: [
+          { id: "knowledge_lookup", status: "succeeded" },
+          { id: "task_1", status: "succeeded", checkpoint: { taskId } },
+        ],
+      });
+      expect(backend.attemptedTaskIds).toEqual([taskId, taskId]);
+    }, backend);
   });
 
   it("keeps unsupported goals blocked instead of pretending to know a route", async () => {

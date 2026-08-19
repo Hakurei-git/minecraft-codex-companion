@@ -39,4 +39,12 @@ final class WorkstationNavigationPolicyTest {
             WorkstationNavigationPolicy.MAX_STALLED_TICKS + 1
         ));
     }
+
+    @Test
+    void reusesAnOwnerAreaWorkstationOnlyWhenItCanBeReachedOrRecoveredLocally() {
+        assertTrue(WorkstationNavigationPolicy.canSelectKnownWorkstation(true, true, false));
+        assertTrue(WorkstationNavigationPolicy.canSelectKnownWorkstation(false, true, true));
+        assertFalse(WorkstationNavigationPolicy.canSelectKnownWorkstation(false, true, false));
+        assertFalse(WorkstationNavigationPolicy.canSelectKnownWorkstation(false, false, true));
+    }
 }

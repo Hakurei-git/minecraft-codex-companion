@@ -163,6 +163,11 @@ final class DeepMiningPolicyTest {
         assertFalse(DeepMiningPolicy.isImprovedReturnCheckpoint(
             origin, end, new BlockPos(11, -58, -50), new BlockPos(11, -58, -40)
         ));
+        assertEquals(
+            new BlockPos(11, -58, -49),
+            DeepMiningPolicy.nextReturnStand(new BlockPos(11, -58, -50), origin)
+        );
+        assertEquals(origin, DeepMiningPolicy.nextReturnStand(origin, origin));
     }
 
     @Test

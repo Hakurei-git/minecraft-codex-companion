@@ -29,4 +29,12 @@ final class WorkstationNavigationPolicy {
     static boolean shouldTryAnotherWorkstation(int stalledTicks) {
         return stalledTicks > MAX_STALLED_TICKS;
     }
+
+    static boolean canSelectKnownWorkstation(
+        boolean currentlyReachable,
+        boolean sameDimension,
+        boolean cheatRecoveryAllowed
+    ) {
+        return currentlyReachable || sameDimension && cheatRecoveryAllowed;
+    }
 }

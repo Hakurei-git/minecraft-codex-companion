@@ -58,6 +58,55 @@ final class GatherCandidatePolicyTest {
     }
 
     @Test
+    void wheatSeedsScanVersionedShortAndTallGrassAsProbabilisticSources() {
+        assertTrue(GatherCandidatePolicy.mayProduce(
+            "minecraft:wheat_seeds", "minecraft:grass", false
+        ));
+        assertTrue(GatherCandidatePolicy.mayProduce(
+            "minecraft:wheat_seeds", "minecraft:short_grass", false
+        ));
+        assertTrue(GatherCandidatePolicy.mayProduce(
+            "minecraft:wheat_seeds", "minecraft:tall_grass", false
+        ));
+        assertTrue(GatherCandidatePolicy.mayProduce(
+            "minecraft:wheat_seeds", "minecraft:fern", false
+        ));
+        assertTrue(GatherCandidatePolicy.mayProduce(
+            "minecraft:wheat_seeds", "minecraft:large_fern", false
+        ));
+        assertFalse(GatherCandidatePolicy.mayProduce(
+            "minecraft:wheat_seeds", "minecraft:stone", false
+        ));
+        assertTrue(GatherCandidatePolicy.isProbabilisticKnownSource(
+            "minecraft:wheat_seeds", "minecraft:grass"
+        ));
+        assertTrue(GatherCandidatePolicy.isProbabilisticKnownSource(
+            "minecraft:wheat_seeds", "minecraft:short_grass"
+        ));
+        assertTrue(GatherCandidatePolicy.isProbabilisticKnownSource(
+            "minecraft:wheat_seeds", "minecraft:tall_grass"
+        ));
+        assertTrue(GatherCandidatePolicy.isProbabilisticKnownSource(
+            "minecraft:wheat_seeds", "minecraft:fern"
+        ));
+        assertTrue(GatherCandidatePolicy.isProbabilisticKnownSource(
+            "minecraft:wheat_seeds", "minecraft:large_fern"
+        ));
+        assertTrue(GatherCandidatePolicy.harvestablePlantHalf(
+            "minecraft:wheat_seeds", "minecraft:tall_grass", false
+        ));
+        assertFalse(GatherCandidatePolicy.harvestablePlantHalf(
+            "minecraft:wheat_seeds", "minecraft:tall_grass", true
+        ));
+        assertFalse(GatherCandidatePolicy.harvestablePlantHalf(
+            "minecraft:wheat_seeds", "minecraft:large_fern", true
+        ));
+        assertTrue(GatherCandidatePolicy.harvestablePlantHalf(
+            "minecraft:coal", "minecraft:tall_grass", true
+        ));
+    }
+
+    @Test
     void protectsEveryLogAtAndInsideTheHomeBoundary() {
         assertTrue(GatherCandidatePolicy.protectedHomeResource(true, 0.0, 16, true));
         assertTrue(GatherCandidatePolicy.protectedHomeResource(true, 256.0, 16, true));

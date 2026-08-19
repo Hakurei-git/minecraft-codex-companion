@@ -12,7 +12,8 @@ public final class BridgeTaskDetails {
         "stepProgress",
         "completedCount",
         "targetCount",
-        "retainedCount"
+        "retainedCount",
+        "resolvedPlacementAnchor"
     );
     private static final BridgeTaskDetails EMPTY = new BridgeTaskDetails(new JsonObject());
 

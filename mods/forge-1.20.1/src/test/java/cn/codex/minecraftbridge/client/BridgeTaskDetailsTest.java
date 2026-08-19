@@ -18,6 +18,11 @@ final class BridgeTaskDetailsTest {
         source.addProperty("completedCount", 12);
         source.addProperty("targetCount", 12);
         source.addProperty("retainedCount", 12);
+        JsonObject anchor = new JsonObject();
+        anchor.addProperty("x", -87);
+        anchor.addProperty("y", 73);
+        anchor.addProperty("z", -138);
+        source.add("resolvedPlacementAnchor", anchor);
         source.addProperty("secret", "must-not-cross-the-bridge");
 
         BridgeTaskDetails details = BridgeTaskDetails.from(source);
@@ -31,6 +36,9 @@ final class BridgeTaskDetailsTest {
         assertEquals(12, forwarded.get("completedCount").getAsInt());
         assertEquals(12, forwarded.get("targetCount").getAsInt());
         assertEquals(12, forwarded.get("retainedCount").getAsInt());
+        assertEquals(-87, forwarded.getAsJsonObject("resolvedPlacementAnchor").get("x").getAsInt());
+        assertEquals(73, forwarded.getAsJsonObject("resolvedPlacementAnchor").get("y").getAsInt());
+        assertEquals(-138, forwarded.getAsJsonObject("resolvedPlacementAnchor").get("z").getAsInt());
         assertFalse(forwarded.has("taskId"));
         assertFalse(forwarded.has("secret"));
     }

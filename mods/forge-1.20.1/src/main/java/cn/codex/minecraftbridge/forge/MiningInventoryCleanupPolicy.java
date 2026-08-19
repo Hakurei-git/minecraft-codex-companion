@@ -26,6 +26,7 @@ final class MiningInventoryCleanupPolicy {
         "minecraft:diorite",
         "minecraft:granite",
         "minecraft:tuff",
+        "minecraft:clay_ball",
         // Long mining runs also collect ordinary terrain and access blocks.
         // They are safe fallback cleanup candidates once the useful reserve
         // is accounted for; gravel is deliberately preferred because it is
@@ -91,6 +92,34 @@ final class MiningInventoryCleanupPolicy {
     ) {
         if (capacity <= 0 || inventory == null || inventory.isEmpty()) return List.of();
 
+        long occupiedSlots = inventory.stream()
+            .filter(slot -> slot != null
+                && slot.index() >= 0
+                && slot.index() < capacity
+                && slot.count() > 0
+                && !normalize(slot.itemId()).isBlank())
+            .map(InventorySlot::index)
+            .distinct()
+            .count();
+        int freeSlots = Math.max(0, capacity - (int) occupiedSlots);
+        if (freeSlots > TRIGGER_FREE_SLOTS) return List.of();
+        return planForFreeSlots(capacity, inventory, protectedItemIds, TARGET_FREE_SLOTS);
+    }
+
+    /**
+     * Frees only the number of whole slots required by the current action.
+     * This is used by short prerequisites (for example eight wheat seeds),
+     * where the normal long-mining two-slot reserve would discard more terrain
+     * than is necessary.
+     */
+    static List<Drop> planForFreeSlots(
+        int capacity,
+        List<InventorySlot> inventory,
+        Set<String> protectedItemIds,
+        int requiredFreeSlots
+    ) {
+        if (capacity <= 0 || inventory == null || inventory.isEmpty()) return List.of();
+
         Map<Integer, InventorySlot> occupied = new LinkedHashMap<>();
         for (InventorySlot raw : inventory) {
             if (raw == null || raw.index() < 0 || raw.index() >= capacity || raw.count() <= 0) continue;
@@ -100,8 +129,8 @@ final class MiningInventoryCleanupPolicy {
         }
 
         int freeSlots = Math.max(0, capacity - occupied.size());
-        if (freeSlots > TRIGGER_FREE_SLOTS) return List.of();
-        int slotsToFree = TARGET_FREE_SLOTS - freeSlots;
+        int targetFreeSlots = Math.max(0, Math.min(capacity, requiredFreeSlots));
+        int slotsToFree = targetFreeSlots - freeSlots;
         if (slotsToFree <= 0) return List.of();
 
         Set<String> protectedIds = new HashSet<>();
@@ -162,7 +191,7 @@ final class MiningInventoryCleanupPolicy {
         return switch (itemId) {
             case "minecraft:gravel" -> 0;
             case "minecraft:moss_block" -> 1;
-            case "minecraft:tuff" -> 2;
+            case "minecraft:tuff", "minecraft:clay_ball" -> 2;
             case "minecraft:andesite", "minecraft:diorite", "minecraft:granite" -> 3;
             case "minecraft:stone", "minecraft:deepslate" -> 4;
             case "minecraft:cobbled_deepslate" -> 5;

@@ -815,6 +815,22 @@ final class BuildMaterialPrerequisitePolicy {
         return false;
     }
 
+    static String preferredCoalAcquisition(
+        String selector,
+        String materialContextId,
+        int deficit,
+        int availableLogs
+    ) {
+        if (!normalizeId(selector).equals("#minecraft:coals")) return "";
+        String context = normalizeId(materialContextId);
+        if (!context.equals("minecraft:torch") && !context.equals("minecraft:soul_torch")) return "";
+        int outputNeeded = Math.max(1, deficit);
+        int fuelLogs = ceilDiv(saturatedMultiply(outputNeeded, 2), 3);
+        return availableLogs >= saturatedAdd(outputNeeded, fuelLogs)
+            ? "minecraft:charcoal"
+            : "";
+    }
+
     private static Map<String, Integer> normalizeInventory(Map<String, Integer> availableItems) {
         if (availableItems == null || availableItems.isEmpty()) return Map.of();
         Map<String, Integer> normalized = new HashMap<>();

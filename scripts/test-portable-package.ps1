@@ -32,10 +32,31 @@ function Remove-TestTreeWithRetry([string]$Path) {
     }
 }
 
+function Get-BoundedProcessInfo(
+    [string[]]$Names = @('MinecraftCodexCompanion', 'MinecraftCodexClient', 'MinecraftCodexPicker', 'node'),
+    [int]$ProcessId = 0
+) {
+    $processes = if ($ProcessId -gt 0) {
+        @(Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+    } else {
+        @($Names | ForEach-Object { Get-Process -Name $_ -ErrorAction SilentlyContinue })
+    }
+    foreach ($process in $processes) {
+        $executablePath = $null
+        try { $executablePath = $process.Path } catch {}
+        if ([string]::IsNullOrWhiteSpace($executablePath)) { continue }
+        [PSCustomObject]@{
+            ProcessId = $process.Id
+            Name = $process.ProcessName + '.exe'
+            ExecutablePath = $executablePath
+        }
+    }
+}
+
 function Stop-TestProcessesUnderRoot([string]$Root) {
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
-        $processes = @(Get-CimInstance Win32_Process | Where-Object {
+        $processes = @(Get-BoundedProcessInfo | Where-Object {
             $_.ExecutablePath -and
             $_.ExecutablePath.StartsWith($Root, [System.StringComparison]::OrdinalIgnoreCase)
         })
@@ -181,7 +202,7 @@ try {
     $pickerDeadline = [DateTime]::UtcNow.AddSeconds(10)
     $pickerInfo = $null
     while ([DateTime]::UtcNow -lt $pickerDeadline -and -not $pickerInfo) {
-        $pickerInfo = Get-CimInstance Win32_Process | Where-Object {
+        $pickerInfo = Get-BoundedProcessInfo -Names @('MinecraftCodexPicker') | Where-Object {
             $_.Name -eq 'MinecraftCodexPicker.exe' -and
             $_.ExecutablePath -and
             $_.ExecutablePath.Equals($nativePicker, [System.StringComparison]::OrdinalIgnoreCase)
@@ -295,6 +316,7 @@ public static class PortablePickerAutomation
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $packageRoot "bridge-token.txt"))) "bridge token was written into the portable package"
     $bridgeSettings = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $target "config\minecraft-codex-companion.json") | ConvertFrom-Json
     Assert-True ($bridgeSettings.name -eq 'Luna') "NPC name was not applied to the Forge bridge"
+    Assert-True ($bridgeSettings.npcMaterialMode -eq 'survival') "NPC material mode did not default to survival"
     Assert-True ($bridgeSettings.npcSkinPath -eq 'config/minecraft-codex-companion-skin.png') "custom skin path was not applied to the Forge bridge"
     Assert-True (Test-Path -LiteralPath (Join-Path $target "config\minecraft-codex-companion-skin.png")) "custom NPC skin was not copied into the isolated instance"
     $skinPreview = Invoke-WebRequest -UseBasicParsing -Uri ($baseUrl + '/api/skin-preview') -Headers $headers
@@ -319,7 +341,7 @@ public static class PortablePickerAutomation
     $clientDeadline = [DateTime]::UtcNow.AddSeconds(15)
     $clientInfo = $null
     while ([DateTime]::UtcNow -lt $clientDeadline -and -not $clientInfo) {
-        $clientInfo = Get-CimInstance Win32_Process | Where-Object {
+        $clientInfo = Get-BoundedProcessInfo -Names @('MinecraftCodexClient') | Where-Object {
             $_.Name -eq 'MinecraftCodexClient.exe' -and
             $_.ExecutablePath -and
             $_.ExecutablePath.Equals($nativeClient, [System.StringComparison]::OrdinalIgnoreCase)
@@ -395,7 +417,7 @@ public static class PortablePickerAutomation
     if ($browseContent) { $browseContent.Dispose() }
     if ($browseClient) { $browseClient.Dispose() }
     if ($pickerProcessId) {
-        $pickerInfo = Get-CimInstance Win32_Process | Where-Object {
+        $pickerInfo = Get-BoundedProcessInfo -ProcessId $pickerProcessId | Where-Object {
             $_.ProcessId -eq $pickerProcessId -and
             $_.Name -eq 'MinecraftCodexPicker.exe' -and
             $_.ExecutablePath -and
@@ -404,7 +426,7 @@ public static class PortablePickerAutomation
         if ($pickerInfo) { Stop-Process -Id $pickerProcessId -Force -ErrorAction SilentlyContinue }
     }
     if ($clientProcessId) {
-        $clientInfo = Get-CimInstance Win32_Process | Where-Object {
+        $clientInfo = Get-BoundedProcessInfo -ProcessId $clientProcessId | Where-Object {
             $_.ProcessId -eq $clientProcessId -and
             $_.Name -eq 'MinecraftCodexClient.exe' -and
             $_.ExecutablePath -and

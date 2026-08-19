@@ -22,6 +22,7 @@ const DEFAULT_DELIVERY_PHRASE = /(?:给我|交给我|拿给我|带给我|送给�
 const MEAT_PHRASE = /(?:肉|牛肉|猪肉|羊肉|meat|beef|pork|mutton)/iu;
 const FOOD_PHRASE = /(?:食物|吃的|口粮|food|rations?)/iu;
 const STORAGE_GOAL_PHRASE = /(?:仓库|储物|整理|分类|归类|存放|放回|storage|organize|sort)/iu;
+const COMPANION_RECALL_BEFORE_WORK_PHRASE = /(?:回到我身边|到我身边来|(?:你|npc|NPC|伙伴|队友)\s*(?:快\s*)?回来|先[^。.!！]{0,80}回来|recall\s+(?:you|the\s+)?(?:npc|companion)|(?:come|return)\s+back(?:\s+to\s+me)?)/iu;
 
 type PlannedNodeDraft = {
   id: string;
@@ -173,6 +174,10 @@ function extractCount(text: string, fallback: number, max: number): number {
 
 function wantsDelivery(goal: GoalRecord, text: string): boolean {
   return Boolean(goal.spec.deliverTo) || DEFAULT_DELIVERY_PHRASE.test(text);
+}
+
+function wantsCompanionRecallBeforeWork(text: string): boolean {
+  return COMPANION_RECALL_BEFORE_WORK_PHRASE.test(text);
 }
 
 function craftTask(
@@ -1068,7 +1073,19 @@ export function planGoal(goal: GoalRecord, firstDependency = "knowledge_lookup")
     };
   }
 
-  const { nodes, edges } = chainFromDrafts(firstDependency, drafts);
+  const routedDrafts = wantsCompanionRecallBeforeWork(text)
+    ? [{
+        id: "recall_companion",
+        label: "Recall the companion before starting the requested work",
+        action: { kind: "control", action: "recall" } as ActionSpec,
+        checkpoint: {
+          controlPriority: true,
+          returnBeforeWork: true,
+          resumePlannedWorkAfterRecall: true,
+        },
+      }, ...drafts]
+    : drafts;
+  const { nodes, edges } = chainFromDrafts(firstDependency, routedDrafts);
   return {
     nodes,
     edges,

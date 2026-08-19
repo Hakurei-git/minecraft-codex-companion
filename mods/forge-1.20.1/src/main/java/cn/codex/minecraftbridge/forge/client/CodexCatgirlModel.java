@@ -218,6 +218,17 @@ public final class CodexCatgirlModel extends HumanoidModel<CodexNpcEntity> {
             head.xRot += Mth.sin(ageInTicks * 0.55F) * 0.035F;
         }
 
+        float workProgress = entity.clientWorkAnimationProgress();
+        if (!entity.isUsingItem() && workProgress > 0.0F) {
+            float workSwing = Mth.sin(workProgress * (float) Math.PI);
+            boolean mainHand = entity.clientWorkAnimationHand() == InteractionHand.MAIN_HAND;
+            HumanoidArm usedArm = mainHand ? entity.getMainArm() : entity.getMainArm().getOpposite();
+            ModelPart arm = usedArm == HumanoidArm.RIGHT ? rightArm : leftArm;
+            arm.xRot -= 1.35F * workSwing;
+            arm.yRot += (usedArm == HumanoidArm.RIGHT ? -0.16F : 0.16F) * workSwing;
+            arm.zRot += (usedArm == HumanoidArm.RIGHT ? -0.10F : 0.10F) * workSwing;
+        }
+
         float speech = entity.clientSpeechTicks() > 0 ? Mth.sin(ageInTicks * 0.7F) * 0.10F : 0.0F;
         float hurt = entity.hurtTime > 0 ? 0.28F : 0.0F;
         leftEar.zRot = 0.08F + speech + hurt;
