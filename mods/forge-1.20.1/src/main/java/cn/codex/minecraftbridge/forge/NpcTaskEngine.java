@@ -4494,13 +4494,33 @@ public final class NpcTaskEngine {
     private boolean ensureRanchPen(ActiveWork work) {
         if (work.workstation != null && work.ranchPenCenter != null
             && npc.level().getBlockState(work.workstation).getBlock() instanceof FenceGateBlock) return true;
-        work.workstation = findBlockAt(
-            position -> npc.level().getBlockState(position).getBlock() instanceof FenceGateBlock,
-            48,
-            12
-        );
+        BlockPos rememberedAnchor = work.spec.has("penAnchor") && work.spec.get("penAnchor").isJsonObject()
+            ? block(work.spec.getAsJsonObject("penAnchor"))
+            : null;
+        if (rememberedAnchor != null) {
+            maintainTaskChunkTicket(rememberedAnchor);
+            if (npc.position().distanceTo(Vec3.atCenterOf(rememberedAnchor)) > 20.0D
+                && !approachGatherDestination(
+                    work,
+                    rememberedAnchor,
+                    12.0D,
+                    1.08D,
+                    "已记录牧场不可达",
+                    "RANCH_PEN_NOT_REACHABLE"
+                )) return false;
+            work.workstation = findRanchGateNear(rememberedAnchor, 16, 8);
+        } else {
+            work.workstation = findBlockAt(
+                position -> npc.level().getBlockState(position).getBlock() instanceof FenceGateBlock,
+                48,
+                12
+            );
+        }
         if (work.workstation == null) {
-            fail(work, "附近没有找到已建成的栅栏门；围栏建造步骤可能尚未完成", "RANCH_PEN_NOT_FOUND");
+            fail(work, rememberedAnchor == null
+                ? "附近没有找到已建成的栅栏门；围栏建造步骤可能尚未完成"
+                : "已到达记录的牧场位置，但没有找到有效栅栏门；未改用其他围栏",
+                "RANCH_PEN_NOT_FOUND");
             return false;
         }
         work.ranchPenCenter = resolveRanchPenCenter(work.workstation);
@@ -4510,6 +4530,27 @@ public final class NpcTaskEngine {
             return false;
         }
         return true;
+    }
+
+    /** Finds the gate belonging to one remembered pen instead of selecting an unrelated nearby fence. */
+    private BlockPos findRanchGateNear(BlockPos anchor, int horizontalRadius, int verticalRadius) {
+        if (!(npc.level() instanceof ServerLevel level)) return null;
+        List<BlockPos> candidates = new ArrayList<>();
+        for (int y = -verticalRadius; y <= verticalRadius; y++) {
+            for (int x = -horizontalRadius; x <= horizontalRadius; x++) {
+                for (int z = -horizontalRadius; z <= horizontalRadius; z++) {
+                    BlockPos position = anchor.offset(x, y, z);
+                    if (!level.hasChunkAt(position)
+                        || !(level.getBlockState(position).getBlock() instanceof FenceGateBlock)) continue;
+                    candidates.add(position.immutable());
+                }
+            }
+        }
+        candidates.sort(Comparator.comparingDouble(position -> position.distSqr(anchor)));
+        for (BlockPos gate : candidates) {
+            if (resolveRanchPenCenter(gate) != null) return gate;
+        }
+        return null;
     }
 
     private BlockPos resolveRanchPenCenter(BlockPos gate) {
@@ -5202,7 +5243,7 @@ public final class NpcTaskEngine {
         if (!work.initialized) {
             work.initialized = true;
             work.requestedCount = Math.max(1, integer(work.spec, "count", FoodProvisionPolicy.DEFAULT_RESERVE_COUNT));
-            work.foodPhase = source.equals("auto") && destination.equals("backpack") ? 0 : 1;
+            work.foodPhase = FoodProvisionPolicy.initialPhase(source);
             work.gatherSearchRadius = 16;
             work.lastSearchTick = -10;
             work.completed = Math.min(work.requestedCount, provisioningFoodCount(work));
@@ -5221,11 +5262,15 @@ public final class NpcTaskEngine {
             tickProvisionFoodCooking(work);
             return;
         }
-        if (work.foodPhase == 3) {
+        if (work.foodPhase == FoodProvisionPolicy.PHASE_FISHING) {
             tickProvisionFoodFishing(work);
             return;
         }
-        if (work.foodPhase == 2) {
+        if (work.foodPhase == FoodProvisionPolicy.PHASE_REMEMBERED_FARM) {
+            tickProvisionFoodRememberedFarm(work);
+            return;
+        }
+        if (work.foodPhase == FoodProvisionPolicy.PHASE_DELIVERY) {
             tickProvisionFoodDestination(work, destination);
             return;
         }
@@ -5244,7 +5289,7 @@ public final class NpcTaskEngine {
             work.foodAnimalTargetId = null;
             npc.setTarget(null);
             if (!destination.equals("backpack")) {
-                work.foodPhase = 2;
+                work.foodPhase = FoodProvisionPolicy.PHASE_DELIVERY;
                 work.workstation = null;
                 work.skippedStorageTargets.clear();
                 progress(work, 0.9D, destination.equals("home-storage")
@@ -5258,7 +5303,7 @@ public final class NpcTaskEngine {
             return;
         }
 
-        if (work.foodPhase == 0 && tickFoodStorageLookup(work)) return;
+        if (work.foodPhase == FoodProvisionPolicy.PHASE_HOME_STORAGE && tickFoodStorageLookup(work)) return;
         tickFoodExpedition(work, source);
     }
 
@@ -5533,12 +5578,14 @@ public final class NpcTaskEngine {
         if (work.workstation == null) {
             work.workstation = findHomeFoodStorage(work, HomeStoragePolicy.DEFAULT_RADIUS);
             if (work.workstation == null) {
-                work.foodPhase = 1;
+                work.foodPhase = FoodProvisionPolicy.phaseAfterHomeStorage(provisioningSource(work));
                 work.skippedStorageTargets.clear();
                 work.noWorkTicks = 0;
                 work.stalledTicks = 0;
                 work.lastDistance = -1;
-                progress(work, activeProgress(work), "背包和家中箱子口粮不足，开始寻找成熟作物和野外成年牲畜");
+                progress(work, activeProgress(work), work.foodPhase == FoodProvisionPolicy.PHASE_FISHING
+                    ? "背包和家中箱子口粮不足，优先准备钓鱼补给"
+                    : "背包和家中箱子口粮不足，开始寻找指定食物来源");
                 return false;
             }
         }
@@ -5669,7 +5716,7 @@ public final class NpcTaskEngine {
         work.targetBlock = null;
         work.foodAnimalTargetId = null;
         work.workstation = water.immutable();
-        work.foodPhase = 3;
+        work.foodPhase = FoodProvisionPolicy.PHASE_FISHING;
         work.fishingCast = false;
         work.fishingReadyTick = 0;
         work.stalledTicks = 0;
@@ -5689,31 +5736,45 @@ public final class NpcTaskEngine {
             proxy.cancelFishing();
             work.fishingCast = false;
             work.fishingReadyTick = 0;
-            work.foodPhase = 1;
+            work.foodPhase = FoodProvisionPolicy.PHASE_LOCAL_THEN_REMOTE;
             work.workstation = null;
             progress(work, activeProgress(work), "钓鱼口粮已备齐，继续整理并烹饪安全口粮");
             return;
         }
         if (discardLowValueFishingJunk(work)) return;
         if (tickMiningInventoryCleanup(work, null, "minecraft:cod")) return;
-        int rodSlot = findFishingRodSlot();
-        if (rodSlot < 0) {
-            proxy.cancelFishing();
-            work.fishingCast = false;
-            work.fishingReadyTick = 0;
-            work.foodPhase = 1;
-            work.workstation = null;
-            progress(work, activeProgress(work), "钓鱼竿已无法使用，继续寻找其他安全食物来源");
-            return;
-        }
-        if (!isFishableWater(work.workstation)) {
-            work.workstation = findFishingWater(64);
-            if (work.workstation == null) {
-                work.foodPhase = 1;
-                progress(work, activeProgress(work), "附近水面不可用，继续寻找其他安全食物来源");
+        if (!isFishableWater(work.targetBlock)) {
+            work.targetBlock = findFishingWater(64);
+            if (work.targetBlock == null) {
+                advanceFoodAfterFishing(work, "家园附近没有可用水面，转向已记录农田和附近食物");
                 return;
             }
         }
+        int rodSlot = findFishingRodSlot();
+        if (rodSlot < 0 && npc.creativeResources() && canInsert(new ItemStack(Items.FISHING_ROD))) {
+            npc.insert(new ItemStack(Items.FISHING_ROD));
+            rodSlot = findFishingRodSlot();
+        }
+        if (rodSlot < 0) {
+            if (work.fishingStoragePhase < FishingRodPrerequisitePolicy.storagePhaseCount()) {
+                tickFishingHomeSupply(work);
+                return;
+            }
+            if (FishingRodPrerequisitePolicy.directIngredientsReady(
+                inventoryCount("minecraft:stick"),
+                inventoryCount("minecraft:string"),
+                1
+            )) {
+                Recipe<?> recipe = findCraftRecipe("minecraft:fishing_rod");
+                if (recipe != null) {
+                    if (prepareCraftPrerequisite(work, "minecraft:fishing_rod", recipe)) return;
+                    if (craftOnePrerequisite(work, "minecraft:fishing_rod", "已制作钓鱼竿，准备优先钓鱼")) return;
+                }
+            }
+            advanceFoodAfterFishing(work, "现有材料无法合理补齐钓鱼竿，转向已记录农田和附近食物");
+            return;
+        }
+        work.workstation = work.targetBlock;
         if (!approach(work, work.workstation, 4.5D, 1.0D)) return;
         if (rodSlot != CodexNpcEntity.MAIN_HAND_SLOT) equipMainHand(rodSlot);
         rodSlot = CodexNpcEntity.MAIN_HAND_SLOT;
@@ -5724,10 +5785,8 @@ public final class NpcTaskEngine {
             npc.swing(InteractionHand.MAIN_HAND);
             if (!proxy.castFishing(rodSlot)) {
                 if (++work.failedActions >= 3) {
-                    work.foodPhase = 1;
-                    work.workstation = null;
                     work.failedActions = 0;
-                    progress(work, activeProgress(work), "当前水面无法抛竿，继续寻找其他口粮来源");
+                    advanceFoodAfterFishing(work, "当前水面无法抛竿，转向已记录农田和附近食物");
                 }
                 return;
             }
@@ -5769,6 +5828,63 @@ public final class NpcTaskEngine {
         int updated = provisioningFoodCount(work);
         work.completed = Math.min(work.requestedCount, updated);
         progress(work, activeProgress(work), "已完成一竿，当前安全口粮 " + updated + "/" + work.requestedCount);
+    }
+
+    private void advanceFoodAfterFishing(ActiveWork work, String message) {
+        proxy.cancelFishing();
+        work.fishingCast = false;
+        work.fishingReadyTick = 0;
+        work.foodPhase = FoodProvisionPolicy.phaseAfterFishing(work.spec.has("farmAnchor"));
+        work.workstation = null;
+        work.targetBlock = null;
+        work.destination = null;
+        work.noWorkTicks = 0;
+        work.stalledTicks = 0;
+        work.lastDistance = -1.0D;
+        work.lastSearchTick = -10;
+        progress(work, activeProgress(work), message);
+    }
+
+    /** Visits a remembered field before searching around the player or starting an expedition. */
+    private void tickProvisionFoodRememberedFarm(ActiveWork work) {
+        BlockPos anchor = work.spec.has("farmAnchor") && work.spec.get("farmAnchor").isJsonObject()
+            ? block(work.spec.getAsJsonObject("farmAnchor"))
+            : null;
+        if (anchor == null) {
+            work.foodPhase = FoodProvisionPolicy.PHASE_LOCAL_THEN_REMOTE;
+            return;
+        }
+        maintainTaskChunkTicket(anchor);
+        if (npc.position().distanceTo(Vec3.atCenterOf(anchor)) > 8.0D) {
+            if (!approachGatherDestination(work, anchor, 6.0D, 1.12D, "已记录农田不可达", "FOOD_FARM_NOT_REACHABLE")) return;
+            work.noWorkTicks = 0;
+            work.lastSearchTick = -10;
+        }
+        if (work.targetBlock != null && isHarvestableFoodSource(work.targetBlock)) {
+            tickFoodHarvest(work);
+            return;
+        }
+        work.targetBlock = null;
+        if (work.ticks - work.lastSearchTick >= 10) {
+            work.lastSearchTick = work.ticks;
+            work.targetBlock = findFoodSourceBlock(32, work.skippedGatherTargets);
+            if (work.targetBlock != null) {
+                work.noWorkTicks = 0;
+                work.stalledTicks = 0;
+                work.lastDistance = -1.0D;
+                progress(work, activeProgress(work), "已在记录的农田找到成熟食物");
+                return;
+            }
+        }
+        if (++work.noWorkTicks <= 80) return;
+        work.foodPhase = FoodProvisionPolicy.PHASE_LOCAL_THEN_REMOTE;
+        work.noWorkTicks = 0;
+        work.gatherSearchRadius = 16;
+        work.lastSearchTick = -10;
+        work.skippedGatherTargets.clear();
+        ServerPlayer owner = npc.owner();
+        if (owner != null && owner.level() == npc.level()) work.destination = Vec3.atCenterOf(owner.blockPosition());
+        progress(work, activeProgress(work), "记录农田暂无可收获食物，返回玩家附近后再扩大搜索");
     }
 
     private boolean discardLowValueFishingJunk(ActiveWork work) {
@@ -6216,6 +6332,7 @@ public final class NpcTaskEngine {
                     && work.spec.get("placementAnchor").isJsonObject()
                     ? block(work.spec.getAsJsonObject("placementAnchor"))
                     : null;
+                NpcHomeStorage.Bounds rememberedHomeBounds = homeBounds(work.spec);
                 if (restoredOrigin == null) {
                     BlockPos surfaceProbe = BuildPlacementPolicy.surfaceProbe(
                         placement,
@@ -6239,7 +6356,12 @@ public final class NpcTaskEngine {
                     work.buildOrigin = new BlockPos(work.buildOrigin.getX(), originY, work.buildOrigin.getZ());
                 }
                 if (BuildPlacementPolicy.shouldResolveOutdoorSite(sitePolicy, work.buildIndex)) {
-                    BlockPos outdoorOrigin = findOutdoorBuildOrigin(level, work.buildOrigin, work.plan);
+                    BlockPos outdoorOrigin = findOutdoorBuildOrigin(
+                        level,
+                        work.buildOrigin,
+                        work.plan,
+                        rememberedHomeBounds
+                    );
                     if (outdoorOrigin == null) {
                         // Do not persist the unvalidated request anchor as if it
                         // were a locked construction checkpoint. A later retry
@@ -6419,7 +6541,12 @@ public final class NpcTaskEngine {
      * anchor; Forge remains authoritative because it can verify the real
      * terrain, open sky, fluids, world border and the player's saved home.
      */
-    private BlockPos findOutdoorBuildOrigin(ServerLevel level, BlockPos preferred, JsonObject plan) {
+    private BlockPos findOutdoorBuildOrigin(
+        ServerLevel level,
+        BlockPos preferred,
+        JsonObject plan,
+        NpcHomeStorage.Bounds rememberedHomeBounds
+    ) {
         JsonArray blocks = plan.getAsJsonArray("blocks");
         if (blocks == null || blocks.isEmpty()) return null;
 
@@ -6477,6 +6604,7 @@ public final class NpcTaskEngine {
                             minZ,
                             maxZ,
                             home,
+                            rememberedHomeBounds,
                             maximumTerrainDelta
                         );
                         if (resolved != null) return resolved;
@@ -6496,6 +6624,7 @@ public final class NpcTaskEngine {
         int minZ,
         int maxZ,
         BlockPos home,
+        NpcHomeStorage.Bounds rememberedHomeBounds,
         int maximumTerrainDelta
     ) {
         int minimumSurface = Integer.MAX_VALUE;
@@ -6507,7 +6636,8 @@ public final class NpcTaskEngine {
                 int z = originZ + relativeZ;
                 BlockPos horizontalProbe = new BlockPos(x, preferredBuildProbeY(level), z);
                 if (!level.getWorldBorder().isWithinBounds(horizontalProbe)) return null;
-                if (!BuildPlacementPolicy.clearsHome(horizontalProbe, home, OUTDOOR_BUILD_HOME_CLEARANCE)) return null;
+                if (!BuildPlacementPolicy.clearsHome(horizontalProbe, home, OUTDOOR_BUILD_HOME_CLEARANCE)
+                    || !BuildPlacementPolicy.clearsHome(horizontalProbe, rememberedHomeBounds, 12)) return null;
 
                 ChunkPos chunk = new ChunkPos(x >> 4, z >> 4);
                 level.getChunkSource().addRegionTicket(TASK_CHUNK_TICKET, chunk, 2, npc.getUUID());
@@ -14820,7 +14950,10 @@ public final class NpcTaskEngine {
         }
         work.bedStoragePhase = Math.max(0, Math.min(5, integer(value, "bedStoragePhase", 0)));
         work.bedSmeltLoaded = Math.max(0, integer(value, "bedSmeltLoaded", 0));
-        work.foodPhase = Math.max(0, Math.min(3, integer(value, "foodPhase", 0)));
+        work.foodPhase = Math.max(
+            FoodProvisionPolicy.PHASE_HOME_STORAGE,
+            Math.min(FoodProvisionPolicy.PHASE_REMEMBERED_FARM, integer(value, "foodPhase", 0))
+        );
         work.ranchPhase = Math.max(0, Math.min(3, integer(value, "ranchPhase", 0)));
         work.ranchLeadStorageChecked = value.has("ranchLeadStorageChecked")
             && value.get("ranchLeadStorageChecked").getAsBoolean();
@@ -14907,6 +15040,26 @@ public final class NpcTaskEngine {
         if (!source.has(key) || !source.get(key).isJsonObject()) return null;
         JsonObject value = source.getAsJsonObject(key);
         return new BlockPos(integer(value, "x", 0), integer(value, "y", 0), integer(value, "z", 0));
+    }
+
+    private static NpcHomeStorage.Bounds homeBounds(JsonObject source) {
+        if (source == null || !source.has("homeBounds") || !source.get("homeBounds").isJsonObject()) return null;
+        JsonObject value = source.getAsJsonObject("homeBounds");
+        BlockPos min = value.has("min") && value.get("min").isJsonObject()
+            ? new BlockPos(
+                integer(value.getAsJsonObject("min"), "x", 0),
+                integer(value.getAsJsonObject("min"), "y", 0),
+                integer(value.getAsJsonObject("min"), "z", 0)
+            )
+            : null;
+        BlockPos max = value.has("max") && value.get("max").isJsonObject()
+            ? new BlockPos(
+                integer(value.getAsJsonObject("max"), "x", 0),
+                integer(value.getAsJsonObject("max"), "y", 0),
+                integer(value.getAsJsonObject("max"), "z", 0)
+            )
+            : null;
+        return min == null || max == null ? null : new NpcHomeStorage.Bounds(min, max);
     }
 
     private static JsonArray blocks(Iterable<BlockPos> positions) {

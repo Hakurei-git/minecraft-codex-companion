@@ -240,6 +240,18 @@ async function waitForTaskTerminal(service: ControlService, id: string) {
   throw new Error("Minecraft task did not finish");
 }
 
+async function waitForBackendKinds(
+  backend: RecordingSimulatorBackend,
+  expected: readonly string[],
+) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const kinds = backend.ranSpecs.map((spec) => spec.kind);
+    if (kinds.length >= expected.length && expected.every((kind, index) => kinds[index] === kind)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Minecraft backend did not run expected task sequence: ${expected.join(", ")}`);
+}
+
 async function createHarness(prefix = "mc-codex-driver-") {
   const stateDirectory = await mkdtemp(path.join(os.tmpdir(), prefix));
   const service = new ControlService();
@@ -437,6 +449,31 @@ describe("CodexDriver", () => {
     await waitForRequest(driver, collaboration.request!.id);
     expect(fake.started.advisorTokenBudgets).toEqual([160, 160]);
     expect(fake.started.coordinatorTokenBudgets).toEqual([320]);
+  });
+
+  it("records a player-built house locally even when Smart AI is enabled", async () => {
+    const { service, fake, driver } = await createHarness("mc-codex-smart-home-memory-");
+    await configureChat(service, { actionMode: "smart", target: "antigravity-mcp" });
+
+    const first = await driver.handleImmediateInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "记录房屋第一个角",
+    });
+    expect(first).toMatchObject({ handled: true, request: { status: "succeeded" } });
+
+    const second = await driver.handleImmediateInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "记录房屋第二个角",
+    });
+    expect(second).toMatchObject({ handled: true, request: { status: "succeeded" } });
+    expect(fake.started.prompts).toHaveLength(0);
+    expect(service.listFacilities("simulated-dragon-world")).toContainEqual(expect.objectContaining({
+      type: "home",
+      bounds: expect.objectContaining({ min: expect.any(Object), max: expect.any(Object) }),
+      properties: expect.objectContaining({ boundarySource: "manual", companionId: "codex-sim" }),
+    }));
   });
 
   it("rejects malformed smart planner JSON without executing a task", async () => {
@@ -1039,6 +1076,11 @@ describe("CodexDriver", () => {
       }),
     ]);
     expect(backend.ranSpecs[0]).not.toHaveProperty("fixtureTag");
+    expect(service.listFacilities("simulated-dragon-world")).toContainEqual(expect.objectContaining({
+      type: "ranch",
+      properties: expect.objectContaining({ source: "direct-task", skillId: "life.establish-ranch" }),
+      bounds: expect.objectContaining({ min: expect.any(Object), max: expect.any(Object) }),
+    }));
 
     backend.ranSpecs.length = 0;
     await driver.handleImmediateInGameChat({
@@ -1048,7 +1090,8 @@ describe("CodexDriver", () => {
     });
     const ordinaryTask = service.listTasks().find((candidate) => candidate.id !== task.id)!;
     expect(await waitForTaskTerminal(service, ordinaryTask.id)).toMatchObject({ status: "succeeded" });
-    expect(backend.ranSpecs.map((spec) => spec.kind)).toEqual(["build", "ranch"]);
+    await waitForBackendKinds(backend, ["ranch"]);
+    expect(backend.ranSpecs.map((spec) => spec.kind)).toEqual(["ranch"]);
     expect(backend.ranSpecs.every((spec) => !("fixtureTag" in spec))).toBe(true);
     expect(fake.started.prompts).toHaveLength(0);
   }, 15_000);

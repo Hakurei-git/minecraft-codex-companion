@@ -72,6 +72,8 @@ export interface MinecraftControlApi {
   queryKnowledge(query: string, topics?: KnowledgeTopic[]): KnowledgeRecord[] | Promise<KnowledgeRecord[]>;
   listFacilities(worldId?: string): FacilityRecord[] | Promise<FacilityRecord[]>;
   registerFacility(input: FacilityDraft): FacilityRecord | Promise<FacilityRecord>;
+  /** Test/acceptance hook: keep the armed ranch fixture on the direct macro path. */
+  isRanchChatFixtureArmed?(companionId: string): boolean | Promise<boolean>;
   listChatMessages(afterSequence?: number, limit?: number): ChatMessage[] | Promise<ChatMessage[]>;
   listTasks(): TaskRecord[] | Promise<TaskRecord[]>;
   getTask(id: string): TaskRecord | Promise<TaskRecord>;

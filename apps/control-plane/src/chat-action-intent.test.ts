@@ -2,6 +2,21 @@ import { describe, expect, it } from "vitest";
 import { parseBuildMenuSelection, parseDeterministicChatAction } from "./chat-action-intent.js";
 
 describe("parseDeterministicChatAction", () => {
+  it("recognizes manual player-built house boundary commands", () => {
+    expect(parseDeterministicChatAction("记录房屋第一个角", "PlayerOne")).toMatchObject({
+      operation: "home-memory",
+      action: "corner-one",
+    });
+    expect(parseDeterministicChatAction("记录房屋第二个角", "PlayerOne")).toMatchObject({
+      operation: "home-memory",
+      action: "corner-two",
+    });
+    expect(parseDeterministicChatAction("重新识别我的房屋范围", "PlayerOne")).toMatchObject({
+      operation: "home-memory",
+      action: "rescan",
+    });
+  });
+
   it("turns common follow controls into immediate NPC actions", () => {
     expect(parseDeterministicChatAction("你先跟着我", "PlayerOne")).toMatchObject({
       operation: "control",
@@ -254,6 +269,12 @@ describe("parseDeterministicChatAction", () => {
     });
     expect(parseDeterministicChatAction("怎么还没有开始建造房子", "PlayerOne")).toMatchObject({
       operation: "resume-build",
+    });
+    expect(parseDeterministicChatAction("继续之前的任务", "PlayerOne")).toMatchObject({
+      operation: "resume-goal",
+    });
+    expect(parseDeterministicChatAction("继续畜牧", "PlayerOne")).toMatchObject({
+      operation: "resume-goal",
     });
   });
 

@@ -735,6 +735,29 @@ describe("ControlService", () => {
     });
   });
 
+  it("remembers a direct crop-farm macro once without shadowing its later farm step", async () => {
+    const service = new ControlService();
+    const backend = new MacroCaptureBackend("survival");
+    service.registerBackend(backend);
+    const assigned = service.assignTask(backend.id, {
+      kind: "macro",
+      skillId: "build.crop-farm",
+      arguments: { cropId: "minecraft:wheat", radius: 12 },
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+    for (let attempt = 0; attempt < 50 && service.getTask(assigned.id).status !== "succeeded"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    const farms = service.listFacilities(backend.snapshot().worldId).filter((facility) => facility.type === "farm");
+    expect(farms).toHaveLength(1);
+    expect(farms[0]).toMatchObject({
+      properties: { source: "direct-task", skillId: "build.crop-farm", taskId: assigned.id },
+      bounds: { min: expect.any(Object), max: expect.any(Object) },
+    });
+    expect(backend.tasks.map((task) => task.spec.kind)).toEqual(["build", "farm"]);
+  });
+
   it("locks the farm step to the exact outdoor origin resolved by Forge", async () => {
     const backend = new ResolvedFarmPlacementBackend("survival");
     const service = new ControlService();
@@ -871,6 +894,213 @@ describe("ControlService", () => {
       placementAnchor: remoteFarm.position,
     });
     expect(service.getTask(assigned.id)).toMatchObject({ status: "succeeded", progress: 1 });
+  });
+
+  it("injects the nearest remembered farm into automatic food provisioning", () => {
+    const service = new ControlService();
+    const backend = new MacroCaptureBackend("survival");
+    service.registerBackend(backend);
+    const snapshot = backend.snapshot();
+    const farm = service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "farm",
+      name: "Remembered food field",
+      position: { x: 42, y: 70, z: -18 },
+      tags: ["crop", "farmland"],
+      properties: { source: "test" },
+    });
+
+    expect(service.assignTask(backend.id, {
+      kind: "provision-food",
+      count: 8,
+      source: "auto",
+      foodCategory: "any",
+      destination: "backpack",
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay").spec).toMatchObject({
+      kind: "provision-food",
+      farmAnchor: farm.position,
+    });
+  });
+
+  it("passes the remembered manual house boundary to outdoor blueprint validation", async () => {
+    const service = new ControlService();
+    const backend = new MacroCaptureBackend("survival");
+    service.registerBackend(backend);
+    const snapshot = backend.snapshot();
+    const bounds = {
+      min: { x: -18, y: 60, z: -12 },
+      max: { x: 14, y: 78, z: 16 },
+    };
+    service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "home",
+      name: "Manual player house",
+      position: snapshot.position,
+      bounds,
+      tags: ["home", "manual-boundary"],
+      properties: { source: "t-chat.manual-home-boundary", boundarySource: "manual", confidence: 1 },
+    });
+    const task = service.assignTask(backend.id, {
+      kind: "macro",
+      skillId: "build.crop-farm",
+      arguments: { cropId: "minecraft:wheat", radius: 12 },
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+    for (let attempt = 0; attempt < 50 && service.getTask(task.id).status !== "succeeded"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(backend.tasks.find((entry) => entry.spec.kind === "build")?.spec).toMatchObject({
+      kind: "build",
+      homeBounds: bounds,
+    });
+  });
+
+  it("deduplicates adjacent bed head and foot home observations", () => {
+    const service = new ControlService();
+    const first = service.registerFacility({
+      worldId: "home-world",
+      dimension: "minecraft:overworld",
+      type: "home",
+      name: "Observed home spawn",
+      position: { x: 10, y: 64, z: 10 },
+      tags: ["home", "spawn"],
+      properties: { source: "snapshot.homeState" },
+    });
+    const second = service.registerFacility({
+      worldId: "home-world",
+      dimension: "minecraft:overworld",
+      type: "home",
+      name: "Observed home spawn",
+      position: { x: 11, y: 64, z: 10 },
+      bounds: { min: { x: 4, y: 63, z: 4 }, max: { x: 17, y: 72, z: 16 } },
+      tags: ["home", "spawn"],
+      properties: { source: "snapshot.homeState", boundarySource: "enclosed-scan" },
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(service.listFacilities("home-world")).toHaveLength(1);
+    expect(service.listFacilities("home-world")[0]).toMatchObject({
+      position: { x: 11, y: 64, z: 10 },
+      bounds: { min: { x: 4, y: 63, z: 4 }, max: { x: 17, y: 72, z: 16 } },
+    });
+  });
+
+  it("keeps a manual player-built house boundary across ordinary snapshots and updates one home when the bed moves", () => {
+    const service = new ControlService();
+    const manualBounds = {
+      min: { x: -12, y: 63, z: -9 },
+      max: { x: 8, y: 75, z: 11 },
+    };
+    const manual = service.registerFacility({
+      worldId: "home-world",
+      dimension: "minecraft:overworld",
+      type: "home",
+      name: "Observed home spawn",
+      position: { x: 0, y: 64, z: 0 },
+      bounds: manualBounds,
+      tags: ["home", "spawn", "manual-boundary"],
+      owner: "PlayerOne",
+      properties: {
+        source: "t-chat.manual-home-boundary",
+        companionId: "codex-home",
+        boundarySource: "manual",
+        confidence: 1,
+        coreRadius: 24,
+      },
+    });
+    const automatic = service.registerFacility({
+      worldId: "home-world",
+      dimension: "minecraft:overworld",
+      type: "home",
+      name: "Observed home spawn",
+      position: { x: 1, y: 64, z: 0 },
+      bounds: { min: { x: -2, y: 63, z: -2 }, max: { x: 3, y: 70, z: 3 } },
+      tags: ["home", "spawn"],
+      properties: {
+        source: "snapshot.homeState",
+        companionId: "codex-home",
+        boundarySource: "enclosed-scan",
+        confidence: 0.8,
+        coreRadius: 24,
+      },
+    });
+
+    expect(automatic.id).toBe(manual.id);
+    expect(automatic).toMatchObject({
+      position: { x: 1, y: 64, z: 0 },
+      bounds: manualBounds,
+      properties: { boundarySource: "manual", confidence: 1 },
+    });
+
+    const moved = service.registerFacility({
+      worldId: "home-world",
+      dimension: "minecraft:overworld",
+      type: "home",
+      name: "Observed home spawn",
+      position: { x: 80, y: 70, z: 80 },
+      bounds: { min: { x: 72, y: 69, z: 72 }, max: { x: 88, y: 78, z: 88 } },
+      tags: ["home", "spawn"],
+      properties: {
+        source: "snapshot.homeState",
+        companionId: "codex-home",
+        boundarySource: "enclosed-scan",
+        confidence: 0.9,
+        coreRadius: 24,
+      },
+    });
+    expect(moved.id).toBe(manual.id);
+    expect(service.listFacilities("home-world").filter((facility) => facility.type === "home")).toHaveLength(1);
+    expect(moved).toMatchObject({
+      position: { x: 80, y: 70, z: 80 },
+      bounds: { min: { x: 72, y: 69, z: 72 }, max: { x: 88, y: 78, z: 88 } },
+      properties: { boundarySource: "enclosed-scan", confidence: 0.9 },
+    });
+  });
+
+  it("persists home bounds without swallowing specialized farm and ranch facilities", async () => {
+    const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "mc-home-facilities-"));
+    try {
+      const first = new ControlService({ stateDirectory });
+      first.registerFacility({
+        worldId: "home-world",
+        dimension: "minecraft:overworld",
+        type: "home",
+        name: "Observed home spawn",
+        position: { x: 0, y: 64, z: 0 },
+        bounds: { min: { x: -24, y: 52, z: -24 }, max: { x: 24, y: 76, z: 24 } },
+        tags: ["home", "spawn"],
+        properties: { source: "snapshot.homeState", companionId: "codex-home", boundarySource: "radius-fallback" },
+      });
+      first.registerFacility({
+        worldId: "home-world",
+        dimension: "minecraft:overworld",
+        type: "farm",
+        name: "Courtyard crops",
+        position: { x: 10, y: 64, z: 10 },
+        tags: ["crop", "farmland"],
+        properties: { source: "test" },
+      });
+      first.registerFacility({
+        worldId: "home-world",
+        dimension: "minecraft:overworld",
+        type: "ranch",
+        name: "Courtyard pen",
+        position: { x: -10, y: 64, z: 10 },
+        tags: ["livestock"],
+        properties: { source: "test" },
+      });
+
+      const second = new ControlService({ stateDirectory });
+      expect(second.listFacilities("home-world").map((facility) => facility.type).sort())
+        .toEqual(["farm", "home", "ranch"]);
+      expect(second.listFacilities("home-world").find((facility) => facility.type === "home")?.bounds)
+        .toEqual({ min: { x: -24, y: 52, z: -24 }, max: { x: 24, y: 76, z: 24 } });
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
   });
 
   it("requires a confirmed build preview before assigning construction", () => {

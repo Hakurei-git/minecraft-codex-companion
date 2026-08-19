@@ -257,6 +257,25 @@ describe("protocol schemas", () => {
     })).toThrow();
   });
 
+  it("preserves a bounded player-built home scan and its 24-block home circle", () => {
+    expect(worldSnapshotSchema.shape.homeState.unwrap().parse({
+      dimension: "minecraft:overworld",
+      position: { x: 10, y: 64, z: 12 },
+      temporary: false,
+      bounds: {
+        min: { x: 3, y: 63, z: 5 },
+        max: { x: 18, y: 72, z: 20 },
+      },
+      coreRadius: 24,
+      boundarySource: "enclosed-scan",
+      confidence: 0.9,
+    })).toMatchObject({
+      coreRadius: 24,
+      boundarySource: "enclosed-scan",
+      bounds: { min: { x: 3, y: 63, z: 5 }, max: { x: 18, y: 72, z: 20 } },
+    });
+  });
+
   it("rejects impossible health snapshots", () => {
     expect(() => worldSnapshotSchema.parse({ health: -1 })).toThrow();
   });
@@ -556,6 +575,10 @@ describe("protocol schemas", () => {
       placement: "companion",
       offset: { x: 3, y: 0, z: 3 },
       placementAnchor: { x: 10, y: 64, z: -4 },
+      homeBounds: {
+        min: { x: -20, y: 60, z: -20 },
+        max: { x: 20, y: 80, z: 20 },
+      },
     })).toMatchObject({
       placement: "companion",
       offset: { x: 3, y: 0, z: 3 },
@@ -632,6 +655,10 @@ describe("protocol schemas", () => {
       count: 2,
       radius: 128,
     });
+    expect(taskSpecSchema.parse({
+      kind: "ranch",
+      penAnchor: { x: 18, y: 64, z: -6 },
+    })).toMatchObject({ penAnchor: { x: 18, y: 64, z: -6 } });
     expect(taskSpecSchema.parse({
       kind: "ranch",
       fixtureTag: "CodexAcceptanceRanchAnimal",

@@ -20,8 +20,10 @@ export type DeterministicChatAction =
       replaceConflictingDelivery?: boolean;
     }
   | { operation: "resume-build"; reply: string }
+  | { operation: "resume-goal"; reply: string }
   | { operation: "reply"; reply: string; context: "build-menu" | "build-menu-cancel" }
   | { operation: "inspect"; scope: "activity" | "vitals" | "inventory" | "full" }
+  | { operation: "home-memory"; action: "corner-one" | "corner-two" | "rescan"; reply: string }
   | {
       operation: "inspect-item-history";
       items: Array<{ itemId: string; itemName: string }>;
@@ -32,6 +34,9 @@ const BOAT_FOLLOW_COMMAND = /^\s*(?:你\s*)?(?:快|现在|先)?\s*(?:上船|坐�
 const FOLLOW_COMPLAINT = /^\s*(?:怎么|为什么)\s*(?:还是|还|又)?\s*(?:不|没在?)\s*(?:跟着我|跟紧我|跟上我)(?:了)?\s*(?:吧|呀|啊|喵)?\s*[？?！!。.]?\s*$/iu;
 const STAY_COMMAND = /^\s*(?:你\s*)?(?:先\s*)?(?:在这(?:里)?待着|原地(?:等|等待|待命)|别跟了|停在这(?:里)?|stay)\s*[！!。.]?\s*$/iu;
 const RECALL_COMMAND = /^\s*(?:你\s*)?(?:快\s*)?(?:回来|回到我身边|到我身边来|召回|recall)\s*[！!。.]?\s*$/iu;
+const HOME_CORNER_ONE_COMMAND = /^\s*(?:(?:记录|设置|标记)(?:一下)?(?:房屋|屋子|家)(?:范围|边界)?(?:的)?|(?:把|将)(?:这里|当前位置)\s*(?:设为|记录为|记为)(?:房屋|屋子|家)(?:范围|边界)?(?:的)?)(?:第一个角|第一角|角一|起点)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
+const HOME_CORNER_TWO_COMMAND = /^\s*(?:(?:记录|设置|标记)(?:一下)?(?:房屋|屋子|家)(?:范围|边界)?(?:的)?|(?:把|将)(?:这里|当前位置)\s*(?:设为|记录为|记为)(?:房屋|屋子|家)(?:范围|边界)?(?:的)?)(?:第二个角|第二角|角二|终点|对角)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
+const HOME_RESCAN_COMMAND = /^\s*(?:重新|再次)?(?:扫描|识别|记录)(?:一下)?(?:我的)?(?:房屋|屋子|家)(?:范围|边界)?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const VITALS_QUESTION = /^(?=.*(?:你|npc|ai|同伴))(?=.*(?:状态|生命|血量|多少血|几滴血|饱食度|饿不饿|饿了|回血|健康)).*(?:[？?]|多少|怎么样|如何|吗|没满|不回血|饿).*/iu;
 const INVENTORY_QUESTION = /^(?=.*(?:你|npc|ai|同伴))(?=.*(?:背包|包里|装备|主手|副手|拿着|物品|东西|武器|工具)).*(?:[？?]|什么|哪些|有什么|看到|看见|认识).*/iu;
 const FULL_STATUS_QUESTION = /^\s*(?:查看|汇报|告诉我|说一下)?\s*(?:你|npc|ai|同伴)?\s*(?:现在|当前)?\s*(?:完整)?状态\s*(?:吧|呀|啊|喵)?\s*[？?！!。.]?\s*$/iu;
@@ -54,6 +59,7 @@ const BUILD_DEFAULT_INTENT = /(?:你来建造|你来施工|拿去建造|拿去�
 const BUILD_DELIVERY_CORRECTION = /(?:不要|别再|不许|老是|总是).*(?:木头|木材|建材|材料).*(?:给我|交给我|丢给我|扔给我)/u;
 const CONTINUE_BUILD_COMMAND = /^(?=.*(?:继续|接着|续建|接续|恢复|还没(?:建|盖|造)完|没(?:建|盖|造)完|施工|不动|没动|失败点))(?=.*(?:建造|搭建|建|盖|造|施工|刷怪|刷石机|住宅|房屋|房子|小屋|基地|农田|农场|仓库|围栏|塔|树场)).*$/u;
 const BUILD_PROGRESS_QUERY = /^(?=.*(?:怎么|为什么))(?=.*(?:还|又))(?=.*(?:没|没有|不))(?=.*(?:开始|继续|动|施工|建造|搭建|盖|造))(?=.*(?:房屋|房子|小屋|住宅|建筑|施工|建造|搭建|盖|造)).*$/u;
+const CONTINUE_GOAL_COMMAND = /^\s*(?:(?:继续|接着|恢复)(?:(?:之前|当前|上次)?(?:的)?(?:任务|目标)|畜牧|养殖|种田|种植|采集|挖矿|钓鱼|远征|探险))(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const CRAFT_KIT_COMMAND = /^\s*(?:你\s*)?(?:给我\s*)?(?:帮我\s*)?(?:制作|做|打造|合成|生产|来|整|弄)\s*(?:一|1)?\s*(?:套|组|些)?\s*(?<kit>基础工具|新手工具|工具套装|工具|铁质装备|铁装备|铁甲套装|防具|护甲|盔甲|装备|建筑材料)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const CRAFT_ITEM_COMMAND = /^\s*(?:你\s*)?(?:(?:给我\s*)?(?:帮我\s*)?(?:制作|做|打造|合成|生产|来|整|弄|搓|造)|(?:我\s*)?(?:想要|需要|要)|给我(?:来|做|制作)?)\s*(?:(?<count>\d{1,3}|[一二两三四五六七八九十百]+)\s*)?(?:个|把|件|张|组|些)?\s*(?<item>工作台|木镐|石镐|铁镐|金镐|钻石镐|镐子|镐|木斧|石斧|铁斧|金斧|钻石斧|斧子|斧|木铲|石铲|铁铲|金铲|钻石铲|铲子|铲|木锄|石锄|铁锄|金锄|钻石锄|锄头|锄|熔炉|木剑|石剑|铁剑|金剑|钻石剑|剑|武器|弓|箭|钓鱼竿|鱼竿|剪刀|铁桶|桶|打火石|盾牌|铁头盔|铁胸甲|铁护腿|铁靴|金头盔|金胸甲|金护腿|金靴|钻石头盔|钻石胸甲|钻石护腿|钻石靴|箱子|火把|床)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const CRAFT_DELIVERY_HINT = /(?:给我|交给我|拿给我|送给我|丢给我|扔给我|给玩家|我\s*(?:想要|需要|要)|(?:^|\s)来\s*(?:个|把|件)?)/u;
@@ -430,6 +436,15 @@ export function parseBuildMenuSelection(
 export function parseDeterministicChatAction(message: string, sender: string, companionName = ""): DeterministicChatAction | null {
   const normalized = normalizeAddressedMessage(message, companionName)
     .replace(/^t(?=(?:给我|帮我|我想要|我需要|我要|做|制作|打造|合成|生产|来|整|弄|搓|建造|搭建|建|盖|造|起|种|播种|种植|收割|砍|挖|远征|远程))/iu, "");
+  if (HOME_CORNER_ONE_COMMAND.test(normalized)) {
+    return { operation: "home-memory", action: "corner-one", reply: "已记录房屋第一个角，请走到房屋对角后输入“记录房屋第二个角”。" };
+  }
+  if (HOME_CORNER_TWO_COMMAND.test(normalized)) {
+    return { operation: "home-memory", action: "corner-two", reply: "已记录房屋第二个角并保存手动房屋边界。" };
+  }
+  if (HOME_RESCAN_COMMAND.test(normalized)) {
+    return { operation: "home-memory", action: "rescan", reply: "已重新读取床锚点并更新自动识别的房屋范围。" };
+  }
   const itemHistoryItems = itemHistoryQuery(normalized);
   if (itemHistoryItems.length > 0) {
     return { operation: "inspect-item-history", items: itemHistoryItems };
@@ -504,6 +519,9 @@ export function parseDeterministicChatAction(message: string, sender: string, co
       operation: "resume-build",
       reply: "好，我从上次失败点继续建造；已完成的方块不会重做。",
     };
+  }
+  if (CONTINUE_GOAL_COMMAND.test(normalized)) {
+    return { operation: "resume-goal", reply: "好，我恢复上一个暂停的目标，并从已保存的步骤继续。" };
   }
   const build = buildIntent(normalized);
   if (build) {

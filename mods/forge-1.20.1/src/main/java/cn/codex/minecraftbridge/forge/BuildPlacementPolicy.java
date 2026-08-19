@@ -44,6 +44,16 @@ final class BuildPlacementPolicy {
         return dx * dx + dz * dz >= (long) distance * distance;
     }
 
+    /** Conservative rectangle check for a remembered player-built house. */
+    static boolean clearsHome(BlockPos candidate, NpcHomeStorage.Bounds bounds, int margin) {
+        if (candidate == null || bounds == null) return true;
+        int padding = Math.max(0, margin);
+        return candidate.getX() < bounds.min().getX() - padding
+            || candidate.getX() > bounds.max().getX() + padding
+            || candidate.getZ() < bounds.min().getZ() - padding
+            || candidate.getZ() > bounds.max().getZ() + padding;
+    }
+
     /**
      * A failed outdoor-site lookup can leave a raw request origin in the
      * persisted task checkpoint. Revalidate while no blueprint block has been

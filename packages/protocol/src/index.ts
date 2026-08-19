@@ -83,6 +83,10 @@ export const homeStateSchema = z.object({
   dimension: z.string().min(1),
   position: vec3Schema,
   temporary: z.boolean(),
+  bounds: z.object({ min: vec3Schema, max: vec3Schema }).optional(),
+  coreRadius: z.number().int().min(1).max(64).default(24),
+  boundarySource: z.enum(["blueprint", "enclosed-scan", "manual", "radius-fallback"]).default("radius-fallback"),
+  confidence: z.number().min(0).max(1).default(0),
 });
 export type HomeState = z.infer<typeof homeStateSchema>;
 
@@ -453,6 +457,7 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     foodCategory: z.enum(["any", "meat", "plant"]).default("any"),
     destination: z.enum(["backpack", "player", "home-storage"]).default("backpack"),
     player: playerReferenceSchema.optional(),
+    farmAnchor: vec3Schema.optional(),
   }),
   z.object({
     ...taskBase,
@@ -461,6 +466,10 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     animalType: z.enum(["any", "minecraft:pig", "minecraft:cow", "minecraft:sheep"]).default("any"),
     count: z.number().int().min(2).max(24).default(2),
     radius: z.number().int().min(16).max(512).default(128),
+    // A remembered pen is authoritative across task/process restarts. Forge
+    // searches for the real gate around this anchor and still validates the
+    // closed fence before moving any animal.
+    penAnchor: vec3Schema.optional(),
     fixtureTag: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,47}$/).optional(),
   }),
   z.object({ ...taskBase, kind: z.literal("drop"), itemId: resourceSelectorSchema, count: z.number().int().min(1).max(4096), player: playerReferenceSchema.optional() }),
@@ -482,6 +491,7 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     placement: z.enum(["plan-origin", "companion"]).optional(),
     offset: vec3Schema.optional(),
     placementAnchor: vec3Schema.optional(),
+    homeBounds: z.object({ min: vec3Schema, max: vec3Schema }).optional(),
     sitePolicy: z.enum(["default", "outdoor"]).optional(),
     materialPreference: buildMaterialPreferenceSchema.optional(),
   }),
@@ -491,6 +501,7 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     skillId: z.string().trim().min(1).max(128),
     arguments: z.record(z.string().max(64), z.unknown()).default({}),
     placementAnchor: vec3Schema.optional(),
+    homeBounds: z.object({ min: vec3Schema, max: vec3Schema }).optional(),
     materialMode: z.enum(["survival", "creative"]).optional(),
     materialPreference: buildMaterialPreferenceSchema.optional(),
   }),

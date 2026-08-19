@@ -145,6 +145,21 @@ If Antigravity stops replying after a network or provider-location error, type `
 
 The Antigravity bridge binds the exact configured conversation title and persists that conversation ID across app updates and restarts. It does not rotate on a locally estimated turn or character count by default; it creates a numbered successor only after Antigravity explicitly reports that the real context capacity is exhausted. Optional local limits are available through `MC_ANTIGRAVITY_MAX_TURNS` and `MC_ANTIGRAVITY_MAX_PROMPT_CHARACTERS`.
 
+### Remembering a player-built home
+
+The bed/respawn point is the stable home anchor. The companion keeps two related records:
+
+- **House bounds** describe the physical indoor area. A bounded roofed-space scan is attempted first; if it cannot identify a closed room, the safe fallback is the full 24-block home circle.
+- **Home circle** is a 24-block radius around the normalized bed foot. Chests, crafting tables, furnaces, and other home services are searched there. Crop farms and livestock pens remain separate facility records even when they overlap that circle.
+
+For an irregular or player-built house, record the boundary from Minecraft `T` chat without using an AI provider:
+
+1. Stand at one outside corner and send `记录房屋第一个角`.
+2. Walk diagonally to the opposite outside corner and send `记录房屋第二个角`.
+3. If the bed or roof changed, send `重新识别我的房屋范围` to refresh the automatic scan.
+
+The two-corner command stores a conservative rectangular boundary, uses the current bed anchor, and is persisted in the local facility journal. A later snapshot will not overwrite a manual boundary unless the bed moves outside the old 24-block home circle or the player explicitly rescans. No world save, API key, conversation content, or external file is uploaded for this operation.
+
 ## Capabilities
 
 - Observe position, health, hunger, equipment, inventory, blocks, nearby entities, task state, and bounded item transaction history.

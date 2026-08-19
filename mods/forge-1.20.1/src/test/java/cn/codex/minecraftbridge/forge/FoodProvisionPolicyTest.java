@@ -60,4 +60,15 @@ final class FoodProvisionPolicyTest {
         assertFalse(FoodProvisionPolicy.isMeat("minecraft:rotten_flesh"));
         assertFalse(FoodProvisionPolicy.isMeat("minecraft:melon_slice"));
     }
+
+    @Test
+    void keepsTheAutomaticFoodRouteInTheRequestedPriorityOrder() {
+        assertTrue(FoodProvisionPolicy.initialPhase("auto") == FoodProvisionPolicy.PHASE_HOME_STORAGE);
+        assertTrue(FoodProvisionPolicy.phaseAfterHomeStorage("auto") == FoodProvisionPolicy.PHASE_FISHING);
+        assertTrue(FoodProvisionPolicy.phaseAfterFishing(true) == FoodProvisionPolicy.PHASE_REMEMBERED_FARM);
+        assertTrue(FoodProvisionPolicy.phaseAfterFishing(false) == FoodProvisionPolicy.PHASE_LOCAL_THEN_REMOTE);
+
+        assertTrue(FoodProvisionPolicy.initialPhase("hunt") == FoodProvisionPolicy.PHASE_LOCAL_THEN_REMOTE);
+        assertTrue(FoodProvisionPolicy.phaseAfterHomeStorage("forage") == FoodProvisionPolicy.PHASE_LOCAL_THEN_REMOTE);
+    }
 }

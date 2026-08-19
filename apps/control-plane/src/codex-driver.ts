@@ -478,6 +478,12 @@ export class CodexDriver {
   readonly #modelTurnTimeoutMs: number;
   readonly #requests = new Map<string, CodexDriverRequest>();
   readonly #pendingBuildMenus = new Map<string, number>();
+  readonly #pendingHomeCorners = new Map<string, {
+    position: { x: number; y: number; z: number };
+    worldId: string;
+    dimension: string;
+    expiresAt: number;
+  }>();
   readonly #ready: Promise<void>;
   readonly #threads = new Map<string, CodexThreadAdapter>();
   readonly #savedThreadIds = new Map<string, string>();
@@ -992,6 +998,11 @@ export class CodexDriver {
         taskId = task.id;
         actionName = "resume-build";
         reply = `${action.reply}（任务 ID：${task.id}）`;
+      } else if (action.operation === "resume-goal") {
+        const resumed = await this.#resumeLatestGoal(request);
+        taskId = resumed.taskId;
+        actionName = "resume-goal";
+        reply = `${action.reply}${resumed.title ? `（${resumed.title}）` : ""}${resumed.taskId ? `（任务 ID：${resumed.taskId}）` : ""}`;
       } else if (action.operation === "reply") {
         actionName = action.context;
         reply = action.reply;
@@ -1005,6 +1016,9 @@ export class CodexDriver {
           : null;
         actionName = `inspect:${action.scope}`;
         reply = inspectionReply(companion, action.scope, activeTask);
+      } else if (action.operation === "home-memory") {
+        reply = await this.#recordHomeMemory(request, action);
+        actionName = `home-memory:${action.action}`;
       } else {
         const companion = await this.#control.getCompanion(request.companionId);
         actionName = "inspect:item-history";
@@ -1014,7 +1028,7 @@ export class CodexDriver {
       await this.#sendReply(
         request.companionId,
         reply,
-        action.operation === "task" || action.operation === "resume-build"
+        action.operation === "task" || action.operation === "resume-build" || action.operation === "resume-goal"
           ? { interactionId: request.id, phase: "start" }
           : undefined,
       );
@@ -1040,12 +1054,125 @@ export class CodexDriver {
     }
   }
 
+  async #recordHomeMemory(
+    request: CodexDriverRequest,
+    action: Extract<DeterministicChatAction, { operation: "home-memory" }>,
+  ): Promise<string> {
+    const snapshot = await this.#control.getSnapshot(request.companionId);
+    const playerPosition = snapshot.ownerPosition ?? snapshot.position;
+    const home = snapshot.homeState;
+    const key = this.#buildMenuKey(request.companionId, request.sender);
+    if (action.action === "corner-one") {
+      this.#pendingHomeCorners.set(key, {
+        position: { ...playerPosition },
+        worldId: snapshot.worldId,
+        dimension: snapshot.dimension,
+        expiresAt: Date.now() + 10 * 60_000,
+      });
+      return action.reply;
+    }
+
+    if (action.action === "corner-two") {
+      const first = this.#pendingHomeCorners.get(key);
+      if (!first || first.expiresAt <= Date.now()) {
+        this.#pendingHomeCorners.delete(key);
+        throw new Error("还没有有效的第一个角，请先站在第一个角输入“记录房屋第一个角”");
+      }
+      if (first.worldId !== snapshot.worldId || first.dimension !== snapshot.dimension) {
+        this.#pendingHomeCorners.delete(key);
+        throw new Error("两个房屋角必须位于同一个世界和维度");
+      }
+      const lowY = Math.min(first.position.y, playerPosition.y);
+      const highY = Math.max(first.position.y, playerPosition.y);
+      const sameFloor = highY - lowY <= 2;
+      const bounds = {
+        min: {
+          x: Math.floor(Math.min(first.position.x, playerPosition.x)),
+          y: Math.floor(sameFloor ? lowY - 1 : lowY),
+          z: Math.floor(Math.min(first.position.z, playerPosition.z)),
+        },
+        max: {
+          x: Math.ceil(Math.max(first.position.x, playerPosition.x)),
+          y: Math.ceil(sameFloor ? highY + 12 : highY),
+          z: Math.ceil(Math.max(first.position.z, playerPosition.z)),
+        },
+      };
+      await this.#control.registerFacility({
+        worldId: snapshot.worldId,
+        dimension: snapshot.dimension,
+        type: "home",
+        name: "Observed home spawn",
+        position: home?.dimension === snapshot.dimension ? home.position : playerPosition,
+        bounds,
+        tags: ["spawn", "home", "manual-boundary"],
+        owner: request.sender,
+        properties: {
+          source: "t-chat.manual-home-boundary",
+          companionId: request.companionId,
+          boundarySource: "manual",
+          confidence: 1,
+          coreRadius: home?.coreRadius ?? 24,
+        },
+      });
+      this.#pendingHomeCorners.delete(key);
+      return action.reply;
+    }
+
+    if (!home) throw new Error("当前世界还没有可用的床或复活点");
+    await this.#control.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: home.dimension,
+      type: "home",
+      name: "Observed home spawn",
+      position: home.position,
+      ...(home.bounds ? { bounds: home.bounds } : {}),
+      tags: ["spawn", "home"],
+      owner: request.sender,
+      properties: {
+        source: "t-chat.home-rescan",
+        companionId: request.companionId,
+        boundarySource: home.boundarySource,
+        confidence: home.confidence,
+        coreRadius: home.coreRadius,
+        temporary: home.temporary,
+        forceBoundaryRefresh: true,
+      },
+    });
+    return action.reply;
+  }
+
+  async #resumeLatestGoal(request: CodexDriverRequest): Promise<{ title: string; taskId?: string }> {
+    const companion = await this.#control.getCompanion(request.companionId);
+    const goals = await Promise.resolve(this.#control.listGoals());
+    const requestedBy = normalizedPlayerName(request.sender);
+    const candidates = goals
+      .filter((goal) => goal.companionId === request.companionId)
+      .filter((goal) => normalizedPlayerName(goal.spec.requestedBy) === requestedBy
+        || normalizedPlayerName(goal.spec.deliverTo ?? "") === requestedBy)
+      .filter((goal) => ["paused", "planning", "running"].includes(goal.status))
+      .sort((left, right) => (
+        (right.startedAt ?? right.createdAt).localeCompare(left.startedAt ?? left.createdAt)
+      ));
+    const goal = candidates[0];
+    if (!goal) throw new Error("没有找到属于你的可恢复暂停目标");
+    if (goal.status === "paused") await this.#control.resumeGoal(goal.id);
+    const owner = companion.leaseOwner ?? DRIVER_OWNER;
+    const advanced = await this.#control.advanceGoal(goal.id, owner);
+    return { title: goal.spec.title, ...(advanced.task ? { taskId: advanced.task.id } : {}) };
+  }
+
   async #tryRunAgentGoalForDeterministicTask(
     request: CodexDriverRequest,
     action: Extract<DeterministicChatAction, { operation: "task" }>,
     owner: string,
   ): Promise<{ taskId?: string; actionName: string; reply: string } | null> {
     if (!this.#shouldUseAgentGoalForDeterministicTask(request.message, action)) return null;
+    // The armed ranch acceptance fixture intentionally exercises the direct
+    // macro wire path (build child first, ranch child second), not the local
+    // Agent planner. It is an opt-in test hook and never affects normal T chat.
+    if (action.spec.kind === "macro"
+      && action.spec.skillId === "life.establish-ranch"
+      && await Promise.resolve(this.#control.isRanchChatFixtureArmed?.(request.companionId))) return null;
     const settings = await this.#control.getChatSettings(request.companionId);
     const goalSpec: GoalSpec = {
       title: this.#goalTitleFromMessage(request.message, action.spec),
@@ -1143,7 +1270,11 @@ export class CodexDriver {
   ): Promise<DeterministicChatAction | null> {
     const companion = await Promise.resolve(this.#control.getCompanion(companionId)).catch(() => null);
     const action = parseDeterministicChatAction(message, sender, companion?.name ?? "");
-    return action && ["control"].includes(action.operation)
+    // These commands are local state/safety operations, not AI-generated
+    // gameplay decisions. Keep them deterministic even when Smart AI is on:
+    // recording a player-built home and resuming a saved checkpoint must not
+    // spend a token or wait for a provider persona to answer.
+    return action && ["control", "home-memory", "resume-build", "resume-goal"].includes(action.operation)
       ? action
       : null;
   }

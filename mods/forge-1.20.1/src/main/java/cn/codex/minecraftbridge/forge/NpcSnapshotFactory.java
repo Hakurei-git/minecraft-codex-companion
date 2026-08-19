@@ -127,6 +127,15 @@ public final class NpcSnapshotFactory {
         result.addProperty("dimension", home.dimension().location().toString());
         result.add("position", vector(home.position().getX(), home.position().getY(), home.position().getZ()));
         result.addProperty("temporary", home.temporary());
+        result.addProperty("coreRadius", HomeStoragePolicy.DEFAULT_RADIUS);
+        result.addProperty("boundarySource", home.boundarySource());
+        result.addProperty("confidence", home.confidence());
+        if (home.bounds() != null) {
+            JsonObject bounds = new JsonObject();
+            bounds.add("min", vector(home.bounds().min().getX(), home.bounds().min().getY(), home.bounds().min().getZ()));
+            bounds.add("max", vector(home.bounds().max().getX(), home.bounds().max().getY(), home.bounds().max().getZ()));
+            result.add("bounds", bounds);
+        }
         return result;
     }
 

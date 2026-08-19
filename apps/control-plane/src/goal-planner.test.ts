@@ -34,6 +34,9 @@ class FacilitySnapshotBackend extends SimulatorBackend {
         dimension: base.dimension,
         position: { x: 10, y: 64, z: 10 },
         temporary: false,
+        coreRadius: 24,
+        boundarySource: "radius-fallback",
+        confidence: 0.15,
       },
       miningState: {
         phase: "descending",
@@ -154,6 +157,9 @@ class MissingRememberedFarmBackend extends SimulatorBackend {
         dimension: base.dimension,
         position: { ...this.home },
         temporary: false,
+        coreRadius: 24,
+        boundarySource: "radius-fallback",
+        confidence: 0.15,
       },
     };
   }
@@ -804,18 +810,24 @@ describe("local Agent goal planner", () => {
 
       const advanced = await service.advanceGoal(goal.id, "agent-test");
 
-      expect(advanced.plan.nodes.find((node) => node.id === "establish_ranch")).toMatchObject({
+      expect(advanced.plan.nodes.find((node) => node.id === "build_ranch_pen")).toMatchObject({
         status: "skipped",
         checkpoint: { reusedFacilityId: ranch.id },
       });
       expect(advanced.task).toMatchObject({
         spec: {
           kind: "ranch",
-          action: "breed",
+          action: "establish",
           animalType: "minecraft:sheep",
+          penAnchor: ranch.position,
         },
       });
       await waitForGoalStatus(service, goal.id, "succeeded");
+      expect(service.listTasks().filter((task) => task.spec.kind === "ranch").map((task) => task.spec))
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ kind: "ranch", action: "establish", penAnchor: ranch.position }),
+          expect.objectContaining({ kind: "ranch", action: "breed", penAnchor: ranch.position }),
+        ]));
     });
   });
 
@@ -954,10 +966,20 @@ describe("local Agent goal planner", () => {
       expect(built).toMatchObject({
         tags: expect.arrayContaining(["build", "basic-shelter", "build.basic-shelter", "agent-goal"]),
         position: snapshot.position,
+        bounds: {
+          min: snapshot.position,
+          max: {
+            x: snapshot.position.x + 6,
+            y: snapshot.position.y + 4,
+            z: snapshot.position.z + 6,
+          },
+        },
         properties: {
           source: "agent.workGraph",
           nodeId: "build_requested_structure",
           skillId: "build.basic-shelter",
+          boundarySource: "blueprint",
+          confidence: 1,
         },
       });
 

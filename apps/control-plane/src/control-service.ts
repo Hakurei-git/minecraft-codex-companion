@@ -745,31 +745,110 @@ export class ControlService {
       updatedAt: now,
       lastUsedAt: null,
     });
-    const existingIndex = this.#agentState.facilities.findIndex((entry) => (
+    let existingIndex = this.#agentState.facilities.findIndex((entry) => (
       entry.id === parsed.id || this.#facilitySignature(entry) === this.#facilitySignature(parsed)
     ));
+    // Bed head/foot coordinates and respawn relocation must update one home
+    // record instead of creating a second home. A snapshot carries the stable
+    // companion id so moving the bed can update the same journal entry even
+    // when the new spawn is farther away than the old head/foot pair.
+    if (existingIndex < 0 && parsed.type === "home") {
+      const companionId = typeof parsed.properties.companionId === "string"
+        ? parsed.properties.companionId
+        : "";
+      existingIndex = this.#agentState.facilities.findIndex((entry) => (
+        entry.type === "home"
+        && entry.worldId === parsed.worldId
+        && entry.dimension === parsed.dimension
+        && (
+          companionId.length > 0 && entry.properties.companionId === companionId
+          || Math.abs(entry.position.x - parsed.position.x) <= 1
+            && Math.abs(entry.position.y - parsed.position.y) <= 1
+            && Math.abs(entry.position.z - parsed.position.z) <= 1
+        )
+      ));
+      // One-time migration for an old journal that predates companionId. Only
+      // claim an unambiguous snapshot-backed home; never merge another
+      // player's explicit/manual home merely because it is in the same world.
+      if (existingIndex < 0 && companionId.length > 0) {
+        const legacy = this.#agentState.facilities
+          .map((entry, index) => ({ entry, index }))
+          .filter(({ entry }) => entry.type === "home"
+            && entry.worldId === parsed.worldId
+            && entry.dimension === parsed.dimension
+            && entry.properties.source === "snapshot.homeState"
+            && typeof entry.properties.companionId !== "string");
+        if (legacy.length === 1) existingIndex = legacy[0]!.index;
+      }
+    }
     const existing = existingIndex >= 0 ? this.#agentState.facilities[existingIndex] : undefined;
+    const incomingBoundarySource = typeof parsed.properties.boundarySource === "string"
+      ? parsed.properties.boundarySource
+      : "";
+    const existingBoundarySource = typeof existing?.properties.boundarySource === "string"
+      ? existing.properties.boundarySource
+      : "";
+    const coreRadius = typeof existing?.properties.coreRadius === "number"
+      ? existing.properties.coreRadius
+      : 24;
+    const anchorMovedOutsideManualHome = existing
+      ? (existing.position.x - parsed.position.x) ** 2
+        + (existing.position.z - parsed.position.z) ** 2 > coreRadius ** 2
+      : false;
+    const preserveManualBoundary = parsed.type === "home"
+      && existingBoundarySource === "manual"
+      && incomingBoundarySource !== "manual"
+      && parsed.properties.forceBoundaryRefresh !== true
+      && !anchorMovedOutsideManualHome;
+    const properties: Record<string, unknown> = {
+      ...(existing?.properties ?? {}),
+      ...parsed.properties,
+      ...(preserveManualBoundary ? {
+        source: existing?.properties.source,
+        boundarySource: "manual",
+        confidence: existing?.properties.confidence ?? 1,
+      } : {}),
+    };
+    // This is a one-shot merge instruction, not durable world metadata.
+    delete properties.forceBoundaryRefresh;
     const facility = facilityRecordSchema.parse({
       ...parsed,
       id: existing?.id ?? parsed.id,
       createdAt: existing?.createdAt ?? parsed.createdAt,
       updatedAt: now,
       lastUsedAt: existing?.lastUsedAt ?? parsed.lastUsedAt,
-      properties: {
-        ...(existing?.properties ?? {}),
-        ...parsed.properties,
-      },
+      ...(preserveManualBoundary && existing?.bounds ? { bounds: existing.bounds } : {}),
+      tags: preserveManualBoundary && existing
+        ? [...new Set([...existing.tags, ...parsed.tags])].slice(0, 32)
+        : parsed.tags,
+      owner: parsed.owner ?? existing?.owner,
+      sourceGoalId: parsed.sourceGoalId ?? existing?.sourceGoalId,
+      properties,
     });
-    const facilities = [...this.#agentState.facilities];
+    let facilities = [...this.#agentState.facilities];
     if (existingIndex >= 0) facilities[existingIndex] = facility;
     else facilities.push(facility);
+    if (facility.type === "home") {
+      const companionId = typeof facility.properties.companionId === "string"
+        ? facility.properties.companionId
+        : "";
+      facilities = facilities.filter((entry) => {
+        if (entry.id === facility.id || entry.type !== "home"
+          || entry.worldId !== facility.worldId || entry.dimension !== facility.dimension) return true;
+        const sameCompanion = companionId.length > 0 && entry.properties.companionId === companionId;
+        const adjacentBedHalf = Math.abs(entry.position.x - facility.position.x) <= 1
+          && Math.abs(entry.position.y - facility.position.y) <= 1
+          && Math.abs(entry.position.z - facility.position.z) <= 1;
+        return !sameCompanion && !adjacentBedHalf;
+      });
+    }
     this.#agentState = { ...this.#agentState, facilities };
     return facility;
   }
 
   #syncSnapshotFacilities(companionId: string, snapshot: WorldSnapshot): void {
     const now = new Date().toISOString();
-    const drafts = this.#facilityDraftsFromSnapshot(snapshot);
+    const drafts = this.#facilityDraftsFromSnapshot(snapshot, companionId);
     if (drafts.length === 0) return;
     let synced = 0;
     for (const draft of drafts) {
@@ -795,7 +874,7 @@ export class ControlService {
     });
   }
 
-  #facilityDraftsFromSnapshot(snapshot: WorldSnapshot): FacilityDraft[] {
+  #facilityDraftsFromSnapshot(snapshot: WorldSnapshot, companionId: string): FacilityDraft[] {
     const drafts: FacilityDraft[] = [];
     const observed = snapshot.observedFacilities ?? [];
     for (const facility of observed) {
@@ -808,8 +887,16 @@ export class ControlService {
         type: "home",
         name: "Observed home spawn",
         position: snapshot.homeState.position,
+        ...(snapshot.homeState.bounds ? { bounds: snapshot.homeState.bounds } : {}),
         tags: ["spawn", "home"],
-        properties: { source: "snapshot.homeState", temporary: false },
+        properties: {
+          source: "snapshot.homeState",
+          companionId,
+          temporary: false,
+          coreRadius: snapshot.homeState.coreRadius,
+          boundarySource: snapshot.homeState.boundarySource,
+          confidence: snapshot.homeState.confidence,
+        },
       });
     }
     if (snapshot.miningState) {
@@ -1067,6 +1154,10 @@ export class ControlService {
       ? this.#prepareMacroSpec(runtime, spec)
       : spec.kind === "farm"
         ? this.#prepareFarmSpec(runtime, spec)
+        : spec.kind === "build"
+          ? this.#prepareBuildSpec(runtime, spec)
+        : spec.kind === "provision-food"
+          ? this.#prepareProvisionFoodSpec(runtime, spec)
         : spec;
     if (isBuildTask(resolvedSpec) && options.replaceConflictingDelivery) {
       for (const candidate of [...this.#tasks.values()]) {
@@ -1324,6 +1415,16 @@ export class ControlService {
     this.#armedRanchChatFixtures.set(companionId, Date.now() + RANCH_CHAT_FIXTURE_TTL_MS);
   }
 
+  isRanchChatFixtureArmed(companionId: string): boolean {
+    const expiresAt = this.#armedRanchChatFixtures.get(companionId);
+    if (expiresAt === undefined) return false;
+    if (expiresAt < Date.now()) {
+      this.#armedRanchChatFixtures.delete(companionId);
+      return false;
+    }
+    return true;
+  }
+
   clearRanchChatFixture(companionId: string): void {
     this.#armedRanchChatFixtures.delete(companionId);
   }
@@ -1461,13 +1562,60 @@ export class ControlService {
       ?? (spec.skillId === "build.crop-farm"
         ? this.#outdoorFarmBuildAnchor(snapshot)
         : snapshot.position);
+    const homeBounds = spec.homeBounds ?? this.#rememberedHomeBounds(snapshot);
     return {
       ...spec,
       placementAnchor,
+      ...(homeBounds ? { homeBounds } : {}),
       materialMode: spec.materialMode
         ?? snapshot.materialMode
         ?? (snapshot.gameMode === "creative" ? "creative" : "survival"),
     };
+  }
+
+  #rememberedHomeBounds(snapshot: WorldSnapshot): NonNullable<FacilityDraft["bounds"]> | undefined {
+    const remembered = this.#agentState.facilities
+      .filter((facility) => facility.worldId === snapshot.worldId)
+      .filter((facility) => facility.dimension === snapshot.dimension)
+      .filter((facility) => facility.type === "home" && facility.bounds)
+      .sort((left, right) => {
+        const leftManual = left.properties.boundarySource === "manual" ? 1 : 0;
+        const rightManual = right.properties.boundarySource === "manual" ? 1 : 0;
+        if (leftManual !== rightManual) return rightManual - leftManual;
+        return (right.lastUsedAt ?? right.updatedAt).localeCompare(left.lastUsedAt ?? left.updatedAt);
+      })[0];
+    return remembered?.bounds;
+  }
+
+  #prepareProvisionFoodSpec(
+    runtime: RuntimeCompanion,
+    spec: Extract<TaskSpec, { kind: "provision-food" }>,
+  ): Extract<TaskSpec, { kind: "provision-food" }> {
+    if (spec.farmAnchor || spec.source !== "auto") return spec;
+    const snapshot = runtime.backend.snapshot();
+    const reference = snapshot.homeState?.dimension === snapshot.dimension
+      ? snapshot.homeState.position
+      : snapshot.ownerPosition ?? snapshot.position;
+    const farm = this.#agentState.facilities
+      .filter((facility) => facility.worldId === snapshot.worldId)
+      .filter((facility) => facility.dimension === snapshot.dimension)
+      .filter((facility) => facility.type === "farm")
+      .filter((facility) => !this.#isInvalidCropFarm(facility))
+      .sort((left, right) => {
+        const leftDistance = (left.position.x - reference.x) ** 2 + (left.position.z - reference.z) ** 2;
+        const rightDistance = (right.position.x - reference.x) ** 2 + (right.position.z - reference.z) ** 2;
+        return leftDistance - rightDistance;
+      })[0];
+    return farm ? { ...spec, farmAnchor: farm.position } : spec;
+  }
+
+  #prepareBuildSpec(
+    runtime: RuntimeCompanion,
+    spec: Extract<TaskSpec, { kind: "build" }>,
+  ): Extract<TaskSpec, { kind: "build" }> {
+    if (spec.homeBounds) return spec;
+    const bounds = this.#rememberedHomeBounds(runtime.backend.snapshot());
+    return bounds ? { ...spec, homeBounds: bounds } : spec;
   }
 
   /**
@@ -1643,13 +1791,14 @@ export class ControlService {
     currentIndex: number,
     details?: TaskProgressDetails,
   ): void {
-    if (parent.spec.kind !== "macro" || parent.spec.skillId !== "build.crop-farm") return;
+    if (parent.spec.kind !== "macro") return;
     if (steps[currentIndex]?.task.kind !== "build" || !details?.resolvedPlacementAnchor) return;
     const placementAnchor = details.resolvedPlacementAnchor;
     parent.spec = {
       ...parent.spec,
       placementAnchor,
     };
+    if (parent.spec.skillId !== "build.crop-farm") return;
     for (let index = currentIndex + 1; index < steps.length; index += 1) {
       const step = steps[index]!;
       if (step.task.kind !== "farm") continue;
@@ -1687,6 +1836,9 @@ export class ControlService {
             ...step.task,
             ...(step.task.placement === "companion"
               ? { placementAnchor: step.task.placementAnchor ?? spec.placementAnchor }
+              : {}),
+            ...(step.task.kind === "build" && spec.homeBounds && !step.task.homeBounds
+              ? { homeBounds: spec.homeBounds }
               : {}),
             materialPreference: step.task.materialPreference ?? spec.materialPreference,
           },
@@ -1757,6 +1909,7 @@ export class ControlService {
           undefined,
           macroStepProgressDetails(index, stepTask, 1),
         );
+        this.#registerCompletedMacroBuildCheckpoint(parent, stepTask);
         index += 1;
       } catch (caught) {
         if (!(atStepBoundary && caught instanceof Error && caught.message === "RECOVERED_TASK_NOT_ACTIVE")) throw caught;
@@ -1786,6 +1939,7 @@ export class ControlService {
         undefined,
         macroStepProgressDetails(index, stepTask, 1),
       );
+      this.#registerCompletedMacroBuildCheckpoint(parent, stepTask);
     }
     return `声明式技能 ${parent.spec.skillId} 已完成`;
   }
@@ -1878,6 +2032,18 @@ export class ControlService {
         task.progress = 1;
         task.message = message;
         task.finishedAt = new Date().toISOString();
+        // Direct MCP/dashboard build tasks do not have an Agent WorkGraph
+        // checkpoint to trigger facility memory. Record them at the same
+        // completion boundary as planned goals so every successful building
+        // route can be reused after a restart.
+        if (task.spec.kind === "build") this.#registerDirectBuildFacility(task);
+        if (task.spec.kind === "macro" && task.spec.skillId === "build.crop-farm") {
+          // A crop-farm macro has a farm child after its blueprint child. Wait
+          // until that child succeeds before exposing the new farm as a
+          // maintenance candidate; otherwise the just-recorded build point can
+          // redirect its own farm step back to the NPC's current position.
+          this.#registerDirectMacroBuildFacility(task);
+        }
         this.#persistTaskState();
         this.events.publish({ type: "task", companionId: task.companionId, message, data: { taskId } });
       }
@@ -1914,6 +2080,159 @@ export class ControlService {
       this.#continueAgentGoalsWaitingOnTask(task);
       void this.#pump(runtime);
     }
+  }
+
+  /**
+   * A facility exists as soon as its blueprint child succeeds, not only after
+   * a long farm/ranch/storage macro finishes. Persisting here means a crash,
+   * pause or later livestock search cannot make the Agent rebuild the already
+   * completed structure.
+   */
+  #registerCompletedMacroBuildCheckpoint(parent: TaskRecord, stepTask: TaskSpec): void {
+    if (parent.spec.kind !== "macro" || stepTask.kind !== "build") return;
+    const graph = this.#agentState.workGraphs.find((candidate) => candidate.nodes.some(
+      (node) => this.#checkpointString(node, "taskId") === parent.id,
+    ));
+    if (!graph) {
+      // An instant simulator/backend can finish before advanceGoal writes the
+      // taskId into its running skill node. Defer to that graph instead of
+      // creating a generic direct record that would shadow the specialized
+      // farm/ranch record a few microticks later.
+      if (this.#hasAgentMacroAssociation(parent)) return;
+      // Ranch establishment needs the pen anchor before the long livestock
+      // search, so it is remembered immediately. Other multi-step macros are
+      // finalized at their terminal boundary below.
+      if (parent.spec.skillId !== "build.crop-farm") this.#registerDirectMacroBuildFacility(parent);
+      return;
+    }
+    const node = graph.nodes.find((candidate) => this.#checkpointString(candidate, "taskId") === parent.id);
+    const goal = this.#agentState.goals.find((candidate) => candidate.id === graph.goalId);
+    if (!node || !goal || !this.#checkpointBoolean(node, "shouldRegisterFacilityAfterBuild")) return;
+    const now = new Date().toISOString();
+    this.#registerCompletedFacilityIfRequested(goal, node, parent, now);
+    graph.updatedAt = now;
+    this.#persistAgentState();
+  }
+
+  /**
+   * Tell direct-task facility registration apart from a macro that belongs to
+   * an Agent WorkGraph. The graph/task link is normally written before the
+   * backend starts, but very fast backends can finish in the same turn. In
+   * that race the active skill node is still enough evidence to defer the
+   * generic record; once the link is present it also protects the terminal
+   * macro callback from creating a duplicate beside the authoritative
+   * sourceGoalId record.
+   */
+  #hasAgentMacroAssociation(task: TaskRecord): boolean {
+    if (task.spec.kind !== "macro") return false;
+    const skillId = task.spec.skillId;
+    return this.#agentState.workGraphs.some((graph) => {
+      const goal = this.#agentState.goals.find((candidate) => candidate.id === graph.goalId);
+      if (!goal || goal.companionId !== task.companionId) return false;
+      return graph.nodes.some((node) => {
+        if (this.#checkpointString(node, "taskId") === task.id) return true;
+        if (["succeeded", "failed", "skipped"].includes(node.status)) return false;
+        return node.action.kind === "skill" && node.action.skillId === skillId;
+      });
+    });
+  }
+
+  /**
+   * Register a standalone `build` task that was submitted through MCP or the
+   * dashboard rather than through the Agent planner. The same exact blueprint
+   * bounds are used as for a planned goal, and the upsert journal prevents a
+   * duplicate record when the player later asks the Agent to use the building.
+   */
+  #registerDirectBuildFacility(task: TaskRecord): void {
+    if (task.spec.kind !== "build") return;
+    // Planned build nodes are registered by their WorkGraph checkpoint, which
+    // may carry a specialized type such as farm/ranch/storage. Do not create
+    // a generic duplicate before that authoritative registration runs.
+    if (this.#agentState.workGraphs.some((graph) => graph.nodes.some(
+      (node) => this.#checkpointString(node, "taskId") === task.id,
+    ))) return;
+    const runtime = this.#companions.get(task.companionId);
+    const snapshot = runtime?.backend.snapshot();
+    if (!snapshot) return;
+    const position = this.#facilityPositionForCompletedTask(task, snapshot);
+    if (!position) return;
+    const blueprint = this.#facilityBlueprintForCompletedTask(task);
+    const bounds = blueprint ? this.#blueprintBounds(blueprint.plan, blueprint.origin) : undefined;
+    const now = new Date().toISOString();
+    this.#upsertFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "build",
+      name: `Direct build: ${task.spec.planId}`.slice(0, 120),
+      position,
+      ...(bounds ? { bounds } : {}),
+      tags: ["build", "direct-task", task.spec.planId],
+      owner: task.spec.requestedBy,
+      properties: {
+        source: "direct-task",
+        taskId: task.id,
+        taskKind: task.spec.kind,
+        companionId: task.companionId,
+        planId: task.spec.planId,
+        ...(blueprint ? { blueprintPlanId: blueprint.plan.id, boundarySource: "blueprint", confidence: 1 } : {}),
+      },
+    }, now);
+    this.#persistAgentState();
+  }
+
+  /** Register the first successful blueprint child of a standalone macro. */
+  #registerDirectMacroBuildFacility(parent: TaskRecord): void {
+    if (parent.spec.kind !== "macro") return;
+    // Agent-planned macros are registered by their WorkGraph node with the
+    // specialized type and sourceGoalId. A direct fallback must never shadow
+    // that record, including the fast-backend completion race.
+    if (this.#hasAgentMacroAssociation(parent)) return;
+    const type = this.#directMacroFacilityType(parent.spec.skillId);
+    if (!type) return;
+    const runtime = this.#companions.get(parent.companionId);
+    const snapshot = runtime?.backend.snapshot();
+    if (!snapshot) return;
+    const position = this.#facilityPositionForCompletedTask(parent, snapshot);
+    if (!position) return;
+    const blueprint = this.#facilityBlueprintForCompletedTask(parent);
+    const bounds = blueprint ? this.#blueprintBounds(blueprint.plan, blueprint.origin) : undefined;
+    const skillId = parent.spec.skillId;
+    const readable = skillId.replace(/^build\.|^life\./u, "").replace(/[-_.]+/gu, " ").trim();
+    const tags = new Set<string>([type, "direct-task", skillId]);
+    if (skillId.startsWith("build.")) tags.add("build");
+    if (skillId === "build.crop-farm") tags.add("crop");
+    if (skillId === "build.storage-room") tags.add("home");
+    if (skillId === "life.establish-ranch" || skillId === "build.animal-pen") tags.add("livestock");
+    if (skillId.includes("cobblestone-generator")) tags.add("cobblestone-generator");
+    if (skillId.includes("mob-farm")) tags.add("mob-farm");
+    const now = new Date().toISOString();
+    this.#upsertFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type,
+      name: `Direct ${type}: ${readable || skillId}`.slice(0, 120),
+      position,
+      ...(bounds ? { bounds } : {}),
+      tags: [...tags].slice(0, 32),
+      owner: parent.spec.requestedBy,
+      properties: {
+        source: "direct-task",
+        taskId: parent.id,
+        taskKind: parent.spec.kind,
+        companionId: parent.companionId,
+        skillId,
+        ...(blueprint ? { blueprintPlanId: blueprint.plan.id, boundarySource: "blueprint", confidence: 1 } : {}),
+      },
+    }, now);
+    this.#persistAgentState();
+  }
+
+  #directMacroFacilityType(skillId: string): FacilityType | null {
+    if (skillId === "build.crop-farm") return "farm";
+    if (skillId === "build.storage-room") return "storage";
+    if (skillId === "life.establish-ranch" || skillId === "build.animal-pen") return "ranch";
+    if (skillId.includes("cobblestone-generator") || skillId.includes("mob-farm")) return "redstone";
+    return skillId.startsWith("build.") ? "build" : null;
   }
 
   #markRecoveryUnsupported(task: TaskRecord): void {
@@ -2195,23 +2514,36 @@ export class ControlService {
     const type = this.#facilityTypeForCompletedNode(node, task);
     const snapshot = this.#companions.get(goal.companionId)?.backend.snapshot();
     const position = this.#facilityPositionForCompletedTask(task, snapshot);
+    const blueprint = this.#facilityBlueprintForCompletedTask(task);
+    const bounds = blueprint && position
+      ? this.#blueprintBounds(blueprint.plan, blueprint.origin)
+      : undefined;
     const registeredFacilityId = this.#checkpointString(node, "registeredFacilityId");
     if (registeredFacilityId) {
       const existing = this.#agentState.facilities.find((facility) => facility.id === registeredFacilityId);
-      if (existing && type === "farm" && position
-        && (existing.position.x !== position.x
+      if (existing && position) {
+        const positionChanged = existing.position.x !== position.x
           || existing.position.y !== position.y
-          || existing.position.z !== position.z)) {
-        existing.position = position;
+          || existing.position.z !== position.z;
+        const boundsChanged = bounds && JSON.stringify(existing.bounds) !== JSON.stringify(bounds);
+        if (!positionChanged && !boundsChanged) return;
+        if (positionChanged) existing.position = position;
+        if (bounds) existing.bounds = bounds;
         existing.updatedAt = now;
         existing.properties = {
           ...existing.properties,
           correctedFromLegacyAnchor: true,
           correctedAt: now,
+          ...(blueprint ? {
+            blueprintPlanId: blueprint.plan.id,
+            boundarySource: "blueprint",
+            confidence: 1,
+          } : {}),
         };
         node.checkpoint = {
           ...node.checkpoint,
           correctedFacilityPosition: position,
+          ...(bounds ? { correctedFacilityBounds: bounds } : {}),
           correctedFacilityAt: now,
         };
       }
@@ -2232,6 +2564,7 @@ export class ControlService {
       type,
       name: this.#facilityNameForCompletedNode(type, node, task),
       position,
+      ...(bounds ? { bounds } : {}),
       tags,
       owner: goal.spec.requestedBy,
       sourceGoalId: goal.id,
@@ -2240,8 +2573,14 @@ export class ControlService {
         nodeId: node.id,
         taskId: task.id,
         taskKind: task.spec.kind,
+        companionId: goal.companionId,
         ...(task.spec.kind === "macro" ? { skillId: task.spec.skillId } : {}),
         ...(task.spec.kind === "build" ? { planId: task.spec.planId } : {}),
+        ...(blueprint ? {
+          blueprintPlanId: blueprint.plan.id,
+          boundarySource: "blueprint",
+          confidence: 1,
+        } : {}),
       },
     }, now);
     node.checkpoint = {
@@ -2338,8 +2677,54 @@ export class ControlService {
       return snapshot.position;
     }
     if (task.spec.kind === "macro" && task.spec.placementAnchor) return task.spec.placementAnchor;
+    if (task.spec.kind === "build" && task.resolvedPlacementAnchor) return task.resolvedPlacementAnchor;
     if (task.spec.kind === "build" && task.spec.placementAnchor) return task.spec.placementAnchor;
+    if (task.spec.kind === "build") {
+      try {
+        return this.buildPlans.get(task.spec.planId).origin;
+      } catch {
+        return snapshot?.position ?? null;
+      }
+    }
     return snapshot?.position ?? null;
+  }
+
+  #facilityBlueprintForCompletedTask(task: TaskRecord): { plan: BuildPlan; origin: FacilityDraft["position"] } | null {
+    try {
+      if (task.spec.kind === "build") {
+        const plan = this.buildPlans.get(task.spec.planId);
+        const origin = task.resolvedPlacementAnchor ?? task.spec.placementAnchor ?? plan.origin;
+        return { plan, origin };
+      }
+      if (task.spec.kind !== "macro") return null;
+      const build = this.#resolveMacroSteps(task.spec).find((step) => step.task.kind === "build");
+      if (!build || build.task.kind !== "build") return null;
+      const plan = this.buildPlans.get(build.task.planId);
+      const origin = task.spec.placementAnchor ?? build.task.placementAnchor;
+      return origin ? { plan, origin } : null;
+    } catch {
+      // A removed local blueprint must not prevent the completed task or its
+      // point anchor from being journaled; only exact bounds are omitted.
+      return null;
+    }
+  }
+
+  #blueprintBounds(plan: BuildPlan, origin: FacilityDraft["position"]): NonNullable<FacilityDraft["bounds"]> {
+    const xs = plan.blocks.map((block) => block.position.x);
+    const ys = plan.blocks.map((block) => block.position.y);
+    const zs = plan.blocks.map((block) => block.position.z);
+    return {
+      min: {
+        x: origin.x + Math.min(...xs),
+        y: origin.y + Math.min(...ys),
+        z: origin.z + Math.min(...zs),
+      },
+      max: {
+        x: origin.x + Math.max(...xs),
+        y: origin.y + Math.max(...ys),
+        z: origin.z + Math.max(...zs),
+      },
+    };
   }
 
   #dependencySatisfied(node: WorkNode | undefined): boolean {
@@ -2484,7 +2869,10 @@ export class ControlService {
         return undefined;
       }
       case "task": {
-        const task = this.assignTask(goal.companionId, action.spec, owner, options);
+        const spec = action.spec.kind === "ranch"
+          ? this.#prepareRanchSpecFromWorkGraph(graph, node, action.spec)
+          : action.spec;
+        const task = this.assignTask(goal.companionId, spec, owner, options);
         node.status = task.status === "succeeded" ? "succeeded" : "running";
         node.progress = task.progress;
         node.checkpoint = {
@@ -2519,6 +2907,38 @@ export class ControlService {
         return task;
       }
     }
+  }
+
+  #prepareRanchSpecFromWorkGraph(
+    graph: WorkGraph,
+    node: WorkNode,
+    spec: Extract<TaskSpec, { kind: "ranch" }>,
+  ): Extract<TaskSpec, { kind: "ranch" }> {
+    if (spec.penAnchor) return spec;
+    const queryNodeId = this.#checkpointString(node, "preferredFacilityQueryNodeId");
+    const buildNodeId = this.#checkpointString(node, "preferredFacilityBuildNodeId");
+    const queryNode = queryNodeId ? graph.nodes.find((candidate) => candidate.id === queryNodeId) : undefined;
+    const buildNode = buildNodeId ? graph.nodes.find((candidate) => candidate.id === buildNodeId) : undefined;
+    const registeredFacilityId = buildNode
+      ? this.#checkpointString(buildNode, "registeredFacilityId")
+      : undefined;
+    const facility = registeredFacilityId
+      ? this.#agentState.facilities.find((candidate) => candidate.id === registeredFacilityId)
+      : undefined;
+    const queriedPosition = queryNode?.checkpoint.firstFacilityPosition;
+    const penAnchor = facility?.position ?? (
+      queriedPosition && typeof queriedPosition === "object"
+        && typeof (queriedPosition as Record<string, unknown>).x === "number"
+        && typeof (queriedPosition as Record<string, unknown>).y === "number"
+        && typeof (queriedPosition as Record<string, unknown>).z === "number"
+        ? {
+            x: (queriedPosition as { x: number }).x,
+            y: (queriedPosition as { y: number }).y,
+            z: (queriedPosition as { z: number }).z,
+          }
+        : undefined
+    );
+    return penAnchor ? { ...spec, penAnchor } : spec;
   }
 
   #queryFacilitiesForAction(

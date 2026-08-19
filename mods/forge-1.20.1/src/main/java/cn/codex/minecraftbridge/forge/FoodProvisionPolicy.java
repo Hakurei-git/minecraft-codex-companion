@@ -5,6 +5,11 @@ final class FoodProvisionPolicy {
     static final int LOCAL_SEARCH_RADIUS = 48;
     static final int MAX_EXCURSIONS = 64;
     static final int BREEDING_RESERVE = 2;
+    static final int PHASE_HOME_STORAGE = 0;
+    static final int PHASE_LOCAL_THEN_REMOTE = 1;
+    static final int PHASE_DELIVERY = 2;
+    static final int PHASE_FISHING = 3;
+    static final int PHASE_REMEMBERED_FARM = 4;
 
     private FoodProvisionPolicy() {}
 
@@ -80,5 +85,17 @@ final class FoodProvisionPolicy {
 
     static int nextSearchRadius(int current) {
         return Math.min(LOCAL_SEARCH_RADIUS, Math.max(16, current) + 16);
+    }
+
+    static int initialPhase(String source) {
+        return "auto".equals(source) ? PHASE_HOME_STORAGE : PHASE_LOCAL_THEN_REMOTE;
+    }
+
+    static int phaseAfterHomeStorage(String source) {
+        return "auto".equals(source) ? PHASE_FISHING : PHASE_LOCAL_THEN_REMOTE;
+    }
+
+    static int phaseAfterFishing(boolean hasRememberedFarm) {
+        return hasRememberedFarm ? PHASE_REMEMBERED_FARM : PHASE_LOCAL_THEN_REMOTE;
     }
 }
