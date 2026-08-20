@@ -266,6 +266,15 @@ async function tryCommitViaAgentGoal(
     taskIntentText(proposed),
   ].filter(Boolean).join(" | ").slice(0, 500);
   if (!shouldAttemptAgentGoal(proposed, objective)) return null;
+  // An Antigravity build request such as "build near me" is bound to the
+  // player's live position before it enters the Agent WorkGraph. Re-planning
+  // that request from objective text alone can silently replace the explicit
+  // player anchor with a home-compound candidate. Keep the exact build task as
+  // a bounded hint in that case; the goal still runs through the knowledge
+  // node, WorkGraph, and single-writer executor, while all unanchored goals
+  // continue to receive the full local prerequisite plan.
+  const anchoredBuildHint = (proposed.kind === "build" || proposed.kind === "macro")
+    && proposed.placementAnchor !== undefined;
   const spec: GoalSpec = {
     title: goalTitle(objective, proposed),
     objective: objective || goalTitle("", proposed),
@@ -277,7 +286,7 @@ async function tryCommitViaAgentGoal(
       "Route this AI decision through the local Agent WorkGraph and single-writer task executor.",
       "Do not upload files, screenshots, provider keys, local paths, account data, prompts, logs, or raw world saves.",
     ],
-    taskHints: [],
+    taskHints: anchoredBuildHint ? [proposed] : [],
     metadata: {
       routedFrom: "mc_submit_ai_decision",
       aiDecisionType: decision.type,

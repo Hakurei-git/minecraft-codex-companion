@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1, 10000)]
-    [int]$ExpectedTestCount = 446
+    [int]$ExpectedTestCount = 449
 )
 
 $ErrorActionPreference = "Stop"
