@@ -546,7 +546,7 @@ describe("local Agent goal planner", () => {
       });
       const goal = service.submitGoal("codex-sim", {
         title: "新建农田",
-        objective: "唯唯，帮我新建一块农田。",
+        objective: "Luna，帮我新建一块农田。",
         requestedBy: "PlayerOne",
         source: "t-chat",
         priority: 100,

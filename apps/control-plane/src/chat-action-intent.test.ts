@@ -26,6 +26,10 @@ describe("parseDeterministicChatAction", () => {
       operation: "control",
       action: "stay",
     });
+    expect(parseDeterministicChatAction("请先原地等待，不要开始其他任务。", "PlayerOne")).toMatchObject({
+      operation: "control",
+      action: "stay",
+    });
     expect(parseDeterministicChatAction("快回来", "PlayerOne")).toMatchObject({
       operation: "control",
       action: "recall",
@@ -277,9 +281,9 @@ describe("parseDeterministicChatAction", () => {
       operation: "resume-goal",
     });
     expect(parseDeterministicChatAction(
-      "唯唯，刚才的回复我看到了。你现在在房子里的哪个位置，接下来想陪我做什么？继续用你平时的语气回答。",
+      "Luna，刚才的回复我看到了。你现在在房子里的哪个位置，接下来想陪我做什么？继续用你平时的语气回答。",
       "PlayerOne",
-      "唯",
+      "Luna",
     )).toBeNull();
   });
 
