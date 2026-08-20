@@ -391,8 +391,23 @@ function isFarmMaintenanceGoal(text: string): boolean {
   return true;
 }
 
+/**
+ * An explicit "build/new farm" request must create another facility even when
+ * an older field is already remembered.  Conditional fallback clauses such as
+ * "照料旧农田；如果找不到就新建" still prefer the existing field.
+ */
+function explicitlyRequestsNewCropFarm(text: string): boolean {
+  const unconditionalClause = text.split(/(?:如果|若(?:是)?|除非|\bif\b|\bunless\b)/iu, 1)[0] ?? text;
+  const namesCropFarm = /(?:农田|田地|农场|crop\s*farm|farmland)/iu.test(unconditionalClause);
+  const hasBuildIntent = /(?:建造|搭建|新建|再建|另建|建一个|造一个|建立|开垦|\bbuild\b|\bcreate\b|\bsetup\b|\bset\s+up\b)/iu
+    .test(unconditionalClause);
+  return namesCropFarm && hasBuildIntent;
+}
+
 function farmPlan(goal: GoalRecord, text: string): PlannedNodeDraft[] {
   const cropId = cropIdFromText(text);
+  const forceNewFacility = explicitlyRequestsNewCropFarm(text);
+  const reuseSkipCheckpoint = forceNewFacility ? {} : { skipIfFacilityQueryNodeId: "query_existing_farm" };
   return [
     {
       id: "query_existing_farm",
@@ -407,13 +422,13 @@ function farmPlan(goal: GoalRecord, text: string): PlannedNodeDraft[] {
       id: "find_or_craft_hoe",
       label: "Find or craft a hoe before preparing farmland",
       action: taskAction(craftTask(goal, "minecraft:stone_hoe", 1, { nodeNote: "Search nearby/home storage first; craft a hoe only if none is usable." })),
-      checkpoint: { preferExistingTool: true, toolRole: "hoe", skipIfFacilityQueryNodeId: "query_existing_farm" },
+      checkpoint: { preferExistingTool: true, toolRole: "hoe", ...reuseSkipCheckpoint },
     },
     {
       id: "find_or_craft_bucket",
       label: "Find or craft a bucket for irrigation water",
       action: taskAction(craftTask(goal, "minecraft:bucket", 1, { nodeNote: "Search nearby/home storage for a bucket or iron; mine and smelt iron only if needed." })),
-      checkpoint: { preferExistingItem: true, itemRole: "water_bucket", skipIfFacilityQueryNodeId: "query_existing_farm" },
+      checkpoint: { preferExistingItem: true, itemRole: "water_bucket", ...reuseSkipCheckpoint },
     },
     {
       id: "build_crop_farm",
@@ -421,9 +436,10 @@ function farmPlan(goal: GoalRecord, text: string): PlannedNodeDraft[] {
       action: skillAction("build.crop-farm", { cropId, radius: 12 }),
       checkpoint: {
         facilityType: "farm",
-        shouldReuseExistingFacility: true,
+        shouldReuseExistingFacility: !forceNewFacility,
+        forceNewFacility,
         shouldRegisterFacilityAfterBuild: true,
-        skipIfFacilityQueryNodeId: "query_existing_farm",
+        ...reuseSkipCheckpoint,
       },
     },
     {

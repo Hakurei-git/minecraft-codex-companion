@@ -1638,13 +1638,18 @@ export class ControlService {
       { x: -diagonal, z: diagonal },
       { x: -diagonal, z: -diagonal },
     ];
-    const residential = this.#agentState.facilities
+    // Outdoor construction must avoid not only the house cluster but also
+    // remembered ranches and bounded crop fields. Point-only observed farmland
+    // records are intentionally ignored here because one field can emit dozens
+    // of block observations and distort candidate ranking.
+    const protectedFacilities = this.#agentState.facilities
       .filter((facility) => facility.worldId === snapshot.worldId)
       .filter((facility) => facility.dimension === snapshot.dimension)
-      .filter((facility) => ["home", "build", "storage"].includes(facility.type));
+      .filter((facility) => ["home", "build", "storage", "ranch"].includes(facility.type)
+        || (facility.type === "farm" && facility.bounds !== undefined));
     const candidates = offsets.map((offset, order) => {
       const position = { x: base.x + offset.x, y: base.y, z: base.z + offset.z };
-      const overlapsExpandedBounds = residential.some((facility) => {
+      const overlapsExpandedBounds = protectedFacilities.some((facility) => {
         if (!facility.bounds) return false;
         const margin = 12;
         return position.x >= facility.bounds.min.x - margin
@@ -1652,9 +1657,9 @@ export class ControlService {
           && position.z >= facility.bounds.min.z - margin
           && position.z <= facility.bounds.max.z + margin;
       });
-      const nearestResidentialDistance = residential.length === 0
+      const nearestResidentialDistance = protectedFacilities.length === 0
         ? Number.POSITIVE_INFINITY
-        : Math.min(...residential.map((facility) => (
+        : Math.min(...protectedFacilities.map((facility) => (
           (facility.position.x - position.x) ** 2
           + (facility.position.z - position.z) ** 2
         )));
@@ -2513,7 +2518,11 @@ export class ControlService {
     if (!this.#checkpointBoolean(node, "shouldRegisterFacilityAfterBuild")) return;
     const type = this.#facilityTypeForCompletedNode(node, task);
     const snapshot = this.#companions.get(goal.companionId)?.backend.snapshot();
-    const position = this.#facilityPositionForCompletedTask(task, snapshot);
+    const position = this.#facilityPositionForCompletedTask(
+      task,
+      snapshot,
+      this.#checkpointBoolean(node, "forceNewFacility"),
+    );
     const blueprint = this.#facilityBlueprintForCompletedTask(task);
     const bounds = blueprint && position
       ? this.#blueprintBounds(blueprint.plan, blueprint.origin)
@@ -2640,9 +2649,18 @@ export class ControlService {
     return `Agent facility: ${node.label}`.slice(0, 120);
   }
 
-  #facilityPositionForCompletedTask(task: TaskRecord, snapshot?: WorldSnapshot): FacilityDraft["position"] | null {
+  #facilityPositionForCompletedTask(
+    task: TaskRecord,
+    snapshot?: WorldSnapshot,
+    forceNewFacility = false,
+  ): FacilityDraft["position"] | null {
     if (task.spec.kind === "macro" && task.spec.skillId === "build.crop-farm" && snapshot) {
       const reference = task.spec.placementAnchor ?? snapshot.position;
+      // A newly requested field has just produced an authoritative Forge build
+      // origin. Never replace it with unrelated observed farmland from the
+      // broad legacy cluster search, or the saved anchor can land outside its
+      // own blueprint bounds and overwrite an older facility record.
+      if (forceNewFacility && task.spec.placementAnchor) return task.spec.placementAnchor;
       const observed = this.#agentState.facilities
         .filter((facility) => facility.worldId === snapshot.worldId)
         .filter((facility) => facility.dimension === snapshot.dimension)

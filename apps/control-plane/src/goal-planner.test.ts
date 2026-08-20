@@ -369,9 +369,9 @@ describe("local Agent goal planner", () => {
         checkpoint: {
           preferExistingItem: true,
           itemRole: "water_bucket",
-          skipIfFacilityQueryNodeId: "query_existing_farm",
         },
       });
+      expect(plan.nodes[3]?.checkpoint).not.toHaveProperty("skipIfFacilityQueryNodeId");
       expect(plan.nodes[4]).toMatchObject({
         action: {
           kind: "skill",
@@ -382,11 +382,12 @@ describe("local Agent goal planner", () => {
           },
         },
         checkpoint: {
-          shouldReuseExistingFacility: true,
+          shouldReuseExistingFacility: false,
+          forceNewFacility: true,
           shouldRegisterFacilityAfterBuild: true,
-          skipIfFacilityQueryNodeId: "query_existing_farm",
         },
       });
+      expect(plan.nodes[4]?.checkpoint).not.toHaveProperty("skipIfFacilityQueryNodeId");
       expect(plan.nodes[5]).toMatchObject({
         action: {
           kind: "verify",
@@ -510,6 +511,56 @@ describe("local Agent goal planner", () => {
       });
     });
   });
+
+  it("creates and records a distinct crop farm when the player explicitly asks for a new one", async () => {
+    await withService(async (service) => {
+      const backend = service.getCompanion("codex-sim");
+      const existing = service.registerFacility({
+        worldId: backend.snapshot.worldId,
+        dimension: backend.snapshot.dimension,
+        type: "farm",
+        name: "Nearby observed crop block from an older field",
+        position: { x: -90, y: 76, z: -58 },
+        tags: ["crop", "farmland"],
+        owner: "PlayerOne",
+        properties: { source: "snapshot.observedFacilities" },
+      });
+      const goal = service.submitGoal("codex-sim", {
+        title: "新建农田",
+        objective: "唯唯，帮我新建一块农田。",
+        requestedBy: "PlayerOne",
+        source: "t-chat",
+        priority: 100,
+        mode: "smart",
+        constraints: [],
+        taskHints: [],
+        metadata: {},
+      });
+
+      await service.advanceGoal(goal.id, "agent-test");
+      await waitForGoalStatus(service, goal.id, "succeeded", 20_000);
+
+      const plan = service.getPlan(goal.id);
+      expect(plan.nodes.find((node) => node.id === "query_existing_farm")).toMatchObject({
+        status: "succeeded",
+        checkpoint: { facilityCount: 1, firstFacilityId: existing.id },
+      });
+      expect(plan.nodes.find((node) => node.id === "build_crop_farm")).toMatchObject({
+        status: "succeeded",
+        checkpoint: { forceNewFacility: true, shouldReuseExistingFacility: false },
+      });
+      const farms = service.listFacilities(backend.snapshot.worldId)
+        .filter((facility) => facility.type === "farm");
+      expect(farms.some((facility) => facility.id === existing.id)).toBe(true);
+      const created = farms.find((facility) => facility.sourceGoalId === goal.id && facility.id !== existing.id);
+      expect(created).toBeDefined();
+      expect(created?.bounds).toBeDefined();
+      expect(created!.position.x).toBeGreaterThanOrEqual(created!.bounds!.min.x);
+      expect(created!.position.x).toBeLessThanOrEqual(created!.bounds!.max.x);
+      expect(created!.position.z).toBeGreaterThanOrEqual(created!.bounds!.min.z);
+      expect(created!.position.z).toBeLessThanOrEqual(created!.bounds!.max.z);
+    });
+  }, 25_000);
 
   it("invalidates an unrecognized house-side farm and creates one new recorded field outdoors", async () => {
     const backend = new MissingRememberedFarmBackend();

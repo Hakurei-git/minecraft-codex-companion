@@ -709,6 +709,19 @@ describe("ControlService", () => {
     const service = new ControlService();
     service.registerBackend(backend);
     const snapshot = backend.snapshot();
+    const protectedRanch = service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "ranch",
+      name: "Remembered ranch that a new field must avoid",
+      position: { x: snapshot.position.x + 48, y: snapshot.position.y, z: snapshot.position.z },
+      bounds: {
+        min: { x: snapshot.position.x + 44, y: snapshot.position.y, z: snapshot.position.z - 4 },
+        max: { x: snapshot.position.x + 52, y: snapshot.position.y, z: snapshot.position.z + 4 },
+      },
+      tags: ["livestock", "animal-pen"],
+      properties: { source: "test" },
+    });
     const assigned = service.assignTask(backend.id, {
       kind: "macro",
       skillId: "build.crop-farm",
@@ -728,6 +741,12 @@ describe("ControlService", () => {
     const horizontalDistanceSquared = (assigned.spec.placementAnchor.x - snapshot.position.x) ** 2
       + (assigned.spec.placementAnchor.z - snapshot.position.z) ** 2;
     expect(horizontalDistanceSquared).toBeGreaterThanOrEqual(48 ** 2);
+    expect(
+      assigned.spec.placementAnchor.x >= protectedRanch.bounds!.min.x - 12
+      && assigned.spec.placementAnchor.x <= protectedRanch.bounds!.max.x + 12
+      && assigned.spec.placementAnchor.z >= protectedRanch.bounds!.min.z - 12
+      && assigned.spec.placementAnchor.z <= protectedRanch.bounds!.max.z + 12,
+    ).toBe(false);
     expect(backend.tasks.find((task) => task.spec.kind === "build")?.spec).toMatchObject({
       kind: "build",
       sitePolicy: "outdoor",
