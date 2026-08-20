@@ -9,6 +9,22 @@ import { SimulatorBackend } from "./simulator-backend.js";
 
 const clients: Client[] = [];
 
+class DistantOwnerSimulatorBackend extends SimulatorBackend {
+  recalls = 0;
+
+  override snapshot() {
+    return {
+      ...super.snapshot(),
+      ownerPosition: { x: 40.75, y: 70, z: -12.25 },
+      ownerDistance: 128,
+    };
+  }
+
+  async control(action: "summon" | "recall" | "follow" | "stay") {
+    if (action === "recall") this.recalls += 1;
+  }
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(clients.splice(0).map((client) => client.close()));
@@ -119,6 +135,43 @@ describe("Minecraft MCP server", () => {
     });
     expect(duplicate.isError).toBe(true);
     expect(JSON.stringify(duplicate.content)).toContain("AI_DECISION_NOT_PENDING");
+  });
+
+  it("anchors an Antigravity build skill at the player instead of a distant NPC", async () => {
+    const service = new ControlService();
+    const backend = new DistantOwnerSimulatorBackend();
+    service.registerBackend(backend);
+    const interactionId = service.beginAiDecision({
+      sequence: 2,
+      at: new Date().toISOString(),
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "在我附近建造一个基础住宅",
+    });
+    const client = await createClient(service);
+    const submitted = await client.callTool({
+      name: "mc_submit_ai_decision",
+      arguments: {
+        interactionId,
+        decision: {
+          type: "skill",
+          reply: "我会在你附近开始建造。",
+          summary: "在玩家附近建造基础住宅",
+          skillId: "build.basic-shelter",
+          arguments: {},
+        },
+      },
+    });
+
+    expect(submitted.isError).not.toBe(true);
+    const taskId = (submitted.structuredContent as { taskId: string }).taskId;
+    expect(service.getTask(taskId).spec).toMatchObject({
+      kind: "macro",
+      requestedBy: "PlayerOne",
+      placementAnchor: { x: 40.75, y: 70, z: -12.25 },
+    });
+    expect(backend.recalls).toBe(1);
+    service.cancelTask(taskId, "测试完成");
   });
 
   it("blocks direct mutating MCP tools while a smart decision is pending", async () => {

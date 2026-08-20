@@ -1,9 +1,13 @@
 package cn.codex.minecraftbridge.forge;
 
+import java.util.Set;
 import java.util.function.ToIntFunction;
 
 final class TaskPriorityPolicy {
     static final int COMBAT_ASSIST = 100;
+    private static final Set<String> EXPLICIT_FOOD_ACTIONS = Set.of(
+        "provision-food", "eat", "deliver", "drop"
+    );
 
     private TaskPriorityPolicy() {}
 
@@ -20,6 +24,19 @@ final class TaskPriorityPolicy {
 
     static boolean shouldPreempt(int incomingPriority, int activePriority) {
         return incomingPriority > activePriority;
+    }
+
+    static boolean explicitFoodReplacesAutonomousReserve(
+        String incomingId,
+        String incomingKind,
+        String activeId
+    ) {
+        return incomingId != null
+            && !incomingId.startsWith("local:")
+            && incomingKind != null
+            && EXPLICIT_FOOD_ACTIONS.contains(incomingKind)
+            && activeId != null
+            && activeId.startsWith("local:auto-food:");
     }
 
     static <T> T highestPriorityFirst(Iterable<T> candidates, ToIntFunction<T> priority) {

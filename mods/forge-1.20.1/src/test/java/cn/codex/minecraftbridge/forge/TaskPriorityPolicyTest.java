@@ -41,6 +41,25 @@ final class TaskPriorityPolicyTest {
     }
 
     @Test
+    void explicitFoodActionsReplaceAnAlreadyRunningAutonomousReserve() {
+        assertTrue(TaskPriorityPolicy.explicitFoodReplacesAutonomousReserve(
+            "player-task", "provision-food", "local:auto-food:npc:1"
+        ));
+        assertTrue(TaskPriorityPolicy.explicitFoodReplacesAutonomousReserve(
+            "player-task", "eat", "local:auto-food:npc:1"
+        ));
+        assertFalse(TaskPriorityPolicy.explicitFoodReplacesAutonomousReserve(
+            "local:deep-mining-food:task", "provision-food", "local:auto-food:npc:1"
+        ));
+        assertFalse(TaskPriorityPolicy.explicitFoodReplacesAutonomousReserve(
+            "player-task", "craft", "local:auto-food:npc:1"
+        ));
+        assertFalse(TaskPriorityPolicy.explicitFoodReplacesAutonomousReserve(
+            "player-task", "provision-food", "local:deep-mining-food:task"
+        ));
+    }
+
+    @Test
     void resumesHighestPriorityInsteadOfQueueHead() {
         List<Candidate> paused = List.of(
             new Candidate("gather", 50),

@@ -49,6 +49,7 @@ final class FoodSurvivalLiveFixture {
     private static final String ITEM_TAG = "CodexAcceptanceFoodSurvivalItem";
     private static final String STATE_KEY = "CodexAcceptanceFoodSurvivalState";
     private static final String SAVED_NPC_KEY = "SavedNpc";
+    private static final String SUPPRESS_AUTONOMOUS_FOOD_KEY = "CodexFoodSurvivalSuppressAutonomy";
     private static final int PLATFORM_RADIUS = 10;
     private static final int SEARCH_LIMIT = 512;
     private static final int LEGACY_TARGET_COUNT = 4;
@@ -114,6 +115,10 @@ final class FoodSurvivalLiveFixture {
             case "cleanup" -> cleanup(player, npc, true);
             default -> throw new IllegalArgumentException("Unknown food survival fixture mode");
         }
+    }
+
+    static boolean suppressesAutonomousFoodReserve(CodexNpcEntity npc) {
+        return npc != null && npc.getPersistentData().getBoolean(SUPPRESS_AUTONOMOUS_FOOD_KEY);
     }
 
     @SubscribeEvent(priority = EventPriority.MONITOR)
@@ -258,6 +263,7 @@ final class FoodSurvivalLiveFixture {
         int targetCount = requireTargetCount(requestedTargetCount);
         int huntableCount = targetCount + FoodProvisionPolicy.BREEDING_RESERVE;
         cleanup(player, npc, false);
+        npc.getPersistentData().remove(SUPPRESS_AUTONOMOUS_FOOD_KEY);
         requireSafeSetup(player, npc);
         ServerLevel level = player.serverLevel();
         BlockPos origin = findIsolatedOrigin(level, npc.blockPosition(), player);
@@ -289,6 +295,7 @@ final class FoodSurvivalLiveFixture {
         state.putFloat("StartYaw", npc.getYRot());
         state.putFloat("StartPitch", npc.getXRot());
         state.put(SAVED_NPC_KEY, npc.saveWithoutId(new CompoundTag()));
+        npc.getPersistentData().putBoolean(SUPPRESS_AUTONOMOUS_FOOD_KEY, true);
         marker.getPersistentData().put(STATE_KEY, state);
         if (!level.addFreshEntity(marker)) throw new IllegalStateException("Food survival fixture marker was rejected");
 
@@ -421,7 +428,12 @@ final class FoodSurvivalLiveFixture {
         if (!state.getBoolean("GuardObserved") || !state.getBoolean("ResumeObserved")) {
             throw new IllegalStateException("Food survival fixture guard interruption has not resumed");
         }
-        if (diagnostics.loaded() <= 0 || diagnostics.cookingTargetCount() < targetCount(state)) {
+        int covered = checkpointCoveredCount(
+            state.getInt("Withdrawn"),
+            diagnostics.loaded(),
+            diagnostics.cookedCount()
+        );
+        if (diagnostics.loaded() <= 0 || covered < targetCount(state)) {
             throw new IllegalStateException("Food survival fixture cooking checkpoint is incomplete");
         }
         if (!state.getString("TaskId").equals(diagnostics.taskId())) {
@@ -445,10 +457,14 @@ final class FoodSurvivalLiveFixture {
         if (diagnostics.taskId().isBlank() || !state.getString("TaskId").equals(diagnostics.taskId())) {
             throw new IllegalStateException("Food survival fixture task identity changed after restart");
         }
-        boolean cookingAdvanced = diagnostics.loaded() >= state.getInt("CheckpointLoaded")
-            && diagnostics.cookedCount() >= state.getInt("CheckpointCooked");
-        boolean cookingFinished = diagnostics.foodPhase() == 2 && diagnostics.completed() >= targetCount(state);
-        if (!cookingAdvanced && !cookingFinished) {
+        if (!restartProgressValid(
+            diagnostics.loaded(),
+            diagnostics.cookedCount(),
+            diagnostics.completed(),
+            state.getInt("CheckpointLoaded"),
+            state.getInt("CheckpointCooked"),
+            targetCount(state)
+        )) {
             throw new IllegalStateException("Food survival fixture cooking checkpoint regressed after restart");
         }
         state.putBoolean("RestartObserved", true);
@@ -466,6 +482,24 @@ final class FoodSurvivalLiveFixture {
             throw new IllegalStateException("Food survival fixture requires active beef cooking");
         }
         return diagnostics;
+    }
+
+    static int checkpointCoveredCount(int withdrawn, int loaded, int cookedInCurrentBatch) {
+        int completedBeforeCurrentBatch = Math.max(0, withdrawn - Math.max(0, cookedInCurrentBatch));
+        return completedBeforeCurrentBatch + Math.max(0, loaded);
+    }
+
+    static boolean restartProgressValid(
+        int loaded,
+        int cooked,
+        int completed,
+        int checkpointLoaded,
+        int checkpointCooked,
+        int target
+    ) {
+        boolean currentBatchAdvanced = loaded >= checkpointLoaded && cooked >= checkpointCooked;
+        boolean cookingFinished = completed >= target;
+        return currentBatchAdvanced || cookingFinished;
     }
 
     private static void cleanup(ServerPlayer player, CodexNpcEntity npc, boolean report) {
@@ -563,10 +597,12 @@ final class FoodSurvivalLiveFixture {
         CompoundTag savedNpc = state.getCompound(SAVED_NPC_KEY);
         npc.cancelManagedEating();
         npc.removeAllEffects();
+        npc.getPersistentData().remove(SUPPRESS_AUTONOMOUS_FOOD_KEY);
         if (!npc.getActiveEffects().isEmpty()) {
             throw new IllegalStateException("Food survival fixture NPC effects could not be cleared");
         }
         npc.load(savedNpc.copy());
+        npc.getPersistentData().remove(SUPPRESS_AUTONOMOUS_FOOD_KEY);
         npc.getNavigation().stop();
         npc.teleportTo(state.getDouble("StartX"), state.getDouble("StartY"), state.getDouble("StartZ"));
         npc.setYRot(state.getFloat("StartYaw"));

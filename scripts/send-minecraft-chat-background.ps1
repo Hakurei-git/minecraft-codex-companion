@@ -95,11 +95,11 @@ public static class MinecraftBackgroundChatPost
 
     public static bool Text(IntPtr hWnd, string value)
     {
-        for (int index = 0; index < value.Length; index++)
+        foreach (char codeUnit in value)
         {
-            int codePoint = Char.ConvertToUtf32(value, index);
-            if (Char.IsHighSurrogate(value[index])) index++;
-            if (!PostMessage(hWnd, 0x0109, (IntPtr)codePoint, (IntPtr)1)) return false; // WM_UNICHAR
+            // GLFW's Windows callback consumes WM_CHAR. Supplementary Unicode
+            // characters arrive as the original UTF-16 surrogate pair.
+            if (!PostMessage(hWnd, 0x0102, (IntPtr)codeUnit, (IntPtr)1)) return false; // WM_CHAR
             System.Threading.Thread.Sleep(1);
         }
         return true;

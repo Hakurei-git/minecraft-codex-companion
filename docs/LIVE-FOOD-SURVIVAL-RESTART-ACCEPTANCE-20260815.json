@@ -1,0 +1,65 @@
+{
+  "ok": true,
+  "localOnly": true,
+  "reversible": true,
+  "actor": "ai-npc",
+  "playerGameplayAssistanceUsed": false,
+  "usedMinecraftTChat": true,
+  "prompt": "给我16个肉",
+  "playerIdentityRedacted": true,
+  "companionIdentityRedacted": true,
+  "conversationIdentityIncluded": false,
+  "conversationContentRead": false,
+  "antigravityUsed": false,
+  "isolatedControlPortUsed": true,
+  "task": {
+    "kind": "provision-food",
+    "count": 16,
+    "source": "hunt",
+    "foodCategory": "meat",
+    "destination": "player",
+    "status": "succeeded"
+  },
+  "hunting": {
+    "attacks": 16,
+    "kills": 8,
+    "rawDrops": 16,
+    "initialHuntableAdults": 18,
+    "survivingHuntableAdults": 10,
+    "protectedAnimals": 3,
+    "protectedAnimalsAlive": 3,
+    "violations": 0
+  },
+  "cooking": {
+    "furnaceInputObserved": true,
+    "furnaceLitObserved": true,
+    "furnaceOutputObserved": true,
+    "cookedItemsWithdrawn": 16
+  },
+  "priorityAndPersistence": {
+    "guardInterruptObserved": true,
+    "sameTaskResumedAfterGuard": true,
+    "taskWasRunningDuringRestart": true,
+    "sameTaskResumedAfterMinecraftRestart": true,
+    "checkpoint": "food-survival:checkpoint loaded=16,cooked=0",
+    "restart": "food-survival:restart same=1,phase=1,cooked=0"
+  },
+  "delivery": {
+    "physicalItemsDelivered": 16,
+    "targetCount": 16
+  },
+  "saveAndQuit": {
+    "normalSaveAndQuit": true,
+    "savedAndClosed": true,
+    "leftWorldBeforeWindowClose": true,
+    "forcedTerminationUsed": false,
+    "minecraftClosed": true
+  },
+  "automation": {
+    "mouseOrKeyboardInputUsed": false,
+    "clipboardUsed": false,
+    "screenshotUsed": false
+  },
+  "cleanup": "food-survival:cleanup restored",
+  "forgeJarSha256": "4E177B4082D3614E575DCA8C833270975C959205B72041F5AB70E546402AB1D9"
+}

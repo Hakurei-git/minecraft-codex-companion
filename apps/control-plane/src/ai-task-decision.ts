@@ -73,6 +73,43 @@ export async function bindTaskToRequester(
   return taskSpecSchema.parse(bound);
 }
 
+function finitePosition(value: unknown): { x: number; y: number; z: number } | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { x?: unknown; y?: unknown; z?: unknown };
+  if (
+    typeof candidate.x !== "number" || !Number.isFinite(candidate.x)
+    || typeof candidate.y !== "number" || !Number.isFinite(candidate.y)
+    || typeof candidate.z !== "number" || !Number.isFinite(candidate.z)
+  ) return null;
+  return { x: candidate.x, y: candidate.y, z: candidate.z };
+}
+
+async function bindAntigravityBuildPlacement(
+  control: MinecraftControlApi,
+  spec: TaskSpec,
+  companion: Companion,
+  owner: string,
+): Promise<{ spec: TaskSpec; anchoredToOwner: boolean }> {
+  const hasExplicitAnchor = (spec.kind === "build" || spec.kind === "macro")
+    && spec.placementAnchor !== undefined;
+  if (owner !== "antigravity-autoplay" || hasExplicitAnchor) {
+    return { spec, anchoredToOwner: false };
+  }
+  const placesAtCompanion = spec.kind === "build"
+    ? spec.placement === "companion"
+    : spec.kind === "macro"
+      ? (await control.getSkill(spec.skillId)).steps.some((step) => (
+          step.task.kind === "build" && step.task.placement === "companion"
+        ))
+      : false;
+  if (!placesAtCompanion) return { spec, anchoredToOwner: false };
+  const ownerPosition = finitePosition(companion.snapshot.ownerPosition)
+    ?? finitePosition(companion.snapshot.nearbyEntities.find((entity) => entity.disposition === "owner")?.position);
+  return ownerPosition
+    ? { spec: taskSpecSchema.parse({ ...spec, placementAnchor: ownerPosition }), anchoredToOwner: true }
+    : { spec, anchoredToOwner: false };
+}
+
 function inventorySlotLabel(item: InventoryItem): string {
   const inferred = item.slotType ?? (
     item.slot < 27 ? "backpack"
@@ -305,14 +342,25 @@ export async function commitAiTaskDecision(
     const companion = await control.getCompanion(context.companionId);
     const owner = companion.leaseOwner ?? context.owner;
     const bound = await bindTaskToRequester(control, proposed, context.requester);
-    const agentGoal = await tryCommitViaAgentGoal(control, context, decision, bound, owner);
+    const placement = await bindAntigravityBuildPlacement(control, bound, companion, context.owner);
+    if (
+      placement.anchoredToOwner
+      && typeof companion.snapshot.ownerDistance === "number"
+      && Number.isFinite(companion.snapshot.ownerDistance)
+      && companion.snapshot.ownerDistance > 32
+    ) {
+      await control.controlCompanion(context.companionId, "recall", {
+        aiDecisionInteractionId: context.interactionId,
+      });
+    }
+    const agentGoal = await tryCommitViaAgentGoal(control, context, decision, placement.spec, owner);
     if (agentGoal) {
       goalId = agentGoal.goalId;
       taskId = agentGoal.taskId;
     } else {
       const task = await control.assignTask(
         context.companionId,
-        bound,
+        placement.spec,
         owner,
         {
           replaceConflictingDelivery: decision.type === "task"

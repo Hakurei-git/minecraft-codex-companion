@@ -40,6 +40,14 @@ final class FoodProvisionPolicyTest {
     }
 
     @Test
+    void cooksOnlyTheAmountStillNeededForTheRequestedGoal() {
+        assertTrue(FoodProvisionPolicy.cookingTarget(16, 17, 17) == 16);
+        assertTrue(FoodProvisionPolicy.cookingTarget(16, 16, 10) == 10);
+        assertTrue(FoodProvisionPolicy.cookingTarget(8, 9, 1) == 0);
+        assertTrue(FoodProvisionPolicy.cookingTarget(4, 4, 4) == 4);
+    }
+
+    @Test
     void preservesRequestedFoodCategoryFromAcquisitionThroughDelivery() {
         assertTrue(FoodProvisionPolicy.acceptsSourceItem("hunt", "minecraft:beef"));
         assertTrue(FoodProvisionPolicy.acceptsSourceItem("hunt", "minecraft:cooked_porkchop"));

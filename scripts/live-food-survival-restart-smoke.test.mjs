@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -9,7 +10,9 @@ import {
   fixtureAcknowledgement,
   fixtureExpectedPrefix,
   gracefulCloseArguments,
+  hmclLaunchArguments,
   loopbackBase,
+  minecraftChatArguments,
   parseCli,
   parseGracefulCloseEvidence,
   parseInspection,
@@ -20,6 +23,7 @@ import {
   validateStartingSnapshot,
   validateTaskSpec,
   worldEntryArguments,
+  resolveSandboxProfileRoot,
 } from "./live-food-survival-restart-smoke.mjs";
 
 const finalStatus = "food-survival:a=24,k=8,r=17,i=1,l=1,o=1,w=16,g=1,u=1,x=1,s=10,p=3,v=0,d=16,t=1,q=16,h=18";
@@ -122,6 +126,7 @@ test("food survival fixture acknowledgements are fresh and exact", () => {
   };
   assert.equal(fixtureExpectedPrefix("verify-restart"), "food-survival:restart same=1,");
   assert.equal(fixtureExpectedPrefix("setup-16"), "food-survival:setup ");
+  assert.equal(fixtureExpectedPrefix("recover-cleanup"), "food-survival:recover restored,");
   assert.equal(validateFixtureAcknowledgement(fixtureAcknowledgement(current, 4, "cleanup"), "cleanup").sequence, 5);
   assert.equal(fixtureAcknowledgement(current, 5, "cleanup"), null);
   assert.throws(() => validateFixtureAcknowledgement({
@@ -133,12 +138,30 @@ test("food survival fixture acknowledgements are fresh and exact", () => {
 test("food survival restart uses loopback only and never requests log inspection", () => {
   assert.equal(loopbackBase("http://localhost:8765/api/tasks").href, "http://localhost:8765/");
   assert.throws(() => loopbackBase("https://example.com"));
-  assert.deepEqual(worldEntryArguments("Acceptance World"), [
+  assert.deepEqual(worldEntryArguments("Acceptance World", "http://127.0.0.1:8766/api/health"), [
     "-WorldId", "Acceptance World",
+    "-ControlBaseUri", "http://127.0.0.1:8766",
     "-SkipLogInspection",
     "-NoLogMenuGraceSeconds", "75",
     "-WaitSeconds", "300",
   ]);
+  assert.throws(() => worldEntryArguments("Acceptance World", "https://example.com"));
+  assert.deepEqual(minecraftChatArguments(PROMPT, "http://127.0.0.1:8766/api/health"), [
+    "-MessageUtf8Base64", Buffer.from(PROMPT, "utf8").toString("base64"),
+    "-ControlBaseUri", "http://127.0.0.1:8766",
+    "-RespawnIfDead",
+  ]);
+});
+
+test("food survival restart preserves the explicit project-local sandbox across HMCL restarts", () => {
+  const sandbox = resolveSandboxProfileRoot("runtime/live-hmcl-profile");
+  assert.equal(path.isAbsolute(sandbox), true);
+  assert.deepEqual(hmclLaunchArguments(sandbox), [
+    "-WaitSeconds", "180", "-SandboxProfileRoot", sandbox,
+  ]);
+  assert.deepEqual(hmclLaunchArguments(null), ["-WaitSeconds", "180"]);
+  assert.throws(() => resolveSandboxProfileRoot(path.resolve(process.cwd(), "..")));
+  assert.equal(parseCli(["--sandbox-profile-root=runtime/live-hmcl-profile"]).sandboxProfileRoot, sandbox);
 });
 
 test("food survival smoke refuses non-idle starts and short windows", () => {

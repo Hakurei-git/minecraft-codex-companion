@@ -63,9 +63,11 @@ export function requireWorldId(value) {
   return worldId;
 }
 
-export function worldEntryArguments(worldId) {
+export function worldEntryArguments(worldId, base = "http://127.0.0.1:8765") {
+  const control = loopbackBase(base);
   return [
     "-WorldId", requireWorldId(worldId),
+    "-ControlBaseUri", control.origin,
     "-SkipLogInspection",
     "-NoLogMenuGraceSeconds", "75",
     "-WaitSeconds", "300",
@@ -122,6 +124,7 @@ export function fixtureExpectedPrefix(mode) {
     "release-guard": "food-survival:guard released=1",
     checkpoint: "food-survival:checkpoint ",
     "verify-restart": "food-survival:restart same=1,",
+    "recover-cleanup": "food-survival:recover restored,",
     cleanup: "food-survival:cleanup ",
   }[mode] ?? (() => { throw new Error(`Unsupported food survival fixture mode ${mode}`); })();
 }
@@ -273,10 +276,19 @@ async function inspectUntil(base, companionId, phase, waitMs) {
   throw lastError ?? new Error(`Food survival ${phase} inspection did not converge: ${JSON.stringify(last)}`);
 }
 
-async function sendMinecraftTChat(message) {
+export function minecraftChatArguments(message, base) {
+  const control = loopbackBase(base);
+  return [
+    "-MessageUtf8Base64", Buffer.from(message, "utf8").toString("base64"),
+    "-ControlBaseUri", control.origin,
+    "-RespawnIfDead",
+  ];
+}
+
+async function sendMinecraftTChat(message, base) {
   await runPowerShell(
     "send-minecraft-chat-background.ps1",
-    ["-MessageUtf8Base64", Buffer.from(message, "utf8").toString("base64"), "-RespawnIfDead"],
+    minecraftChatArguments(message, base),
     30_000,
   );
 }
@@ -423,6 +435,7 @@ async function waitForIdle(base, companionId) {
 
 export function parseCli(argv) {
   const waitArg = argv.find((value) => value.startsWith("--wait-seconds="));
+  const sandboxArg = argv.find((value) => value.startsWith("--sandbox-profile-root="));
   const seconds = waitArg ? Number(waitArg.slice("--wait-seconds=".length)) : 300;
   if (!Number.isFinite(seconds) || seconds < 120 || seconds > 900) {
     throw new Error("--wait-seconds must be between 120 and 900");
@@ -432,7 +445,28 @@ export function parseCli(argv) {
     waitMs: seconds * 1_000,
     closeAfter: !argv.includes("--keep-game-open"),
     base: loopbackBase(process.env.MC_COMPANION_URL ?? "http://127.0.0.1:8765"),
+    sandboxProfileRoot: resolveSandboxProfileRoot(
+      sandboxArg?.slice("--sandbox-profile-root=".length)
+        ?? process.env.MC_COMPANION_SANDBOX_PROFILE_ROOT,
+    ),
   };
+}
+
+export function resolveSandboxProfileRoot(raw) {
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const resolved = path.resolve(projectRoot, raw.trim());
+  const relative = path.relative(projectRoot, resolved);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("SandboxProfileRoot must be a project-local subdirectory");
+  }
+  return resolved;
+}
+
+export function hmclLaunchArguments(sandboxProfileRoot) {
+  const args = ["-WaitSeconds", "180"];
+  const resolved = resolveSandboxProfileRoot(sandboxProfileRoot ?? "");
+  if (resolved) args.push("-SandboxProfileRoot", resolved);
+  return args;
 }
 
 export async function runLiveFoodSurvivalRestartSmoke(options) {
@@ -472,7 +506,7 @@ export async function runLiveFoodSurvivalRestartSmoke(options) {
       (await fixture(options.base, companion.id, "inspect")).fixtureAck.status,
     ), "initial");
 
-    await sendMinecraftTChat(PROMPT);
+    await sendMinecraftTChat(PROMPT, options.base);
     const createdTasks = await waitForNewTasks(options.base, companion.id, priorIds);
     ownedTaskIds = new Set(createdTasks.map((created) => created.id));
     task = createdTasks[0] ?? null;
@@ -500,8 +534,12 @@ export async function runLiveFoodSurvivalRestartSmoke(options) {
       throw new Error(`Food survival task became ${duringRestart.status} before Minecraft could reconnect`);
     }
 
-    await runPowerShell("launch-hmcl-background.ps1", ["-WaitSeconds", "180"], 240_000);
-    await runPowerShell("enter-hmcl-test-world.ps1", worldEntryArguments(baseline.worldId), 330_000);
+    await runPowerShell("launch-hmcl-background.ps1", hmclLaunchArguments(options.sandboxProfileRoot), 240_000);
+    await runPowerShell(
+      "enter-hmcl-test-world.ps1",
+      worldEntryArguments(baseline.worldId, options.base),
+      330_000,
+    );
     await waitForReconnect(options.base, companion.id, baseline.worldId, baseline.dimension);
     reconnected = true;
     const restart = (await fixture(options.base, companion.id, "verify-restart")).fixtureAck.status;
@@ -535,8 +573,12 @@ export async function runLiveFoodSurvivalRestartSmoke(options) {
   } finally {
     if (gameStopped && !reconnected) {
       try {
-        await runPowerShell("launch-hmcl-background.ps1", ["-WaitSeconds", "180"], 240_000);
-        await runPowerShell("enter-hmcl-test-world.ps1", worldEntryArguments(baseline.worldId), 330_000);
+        await runPowerShell("launch-hmcl-background.ps1", hmclLaunchArguments(options.sandboxProfileRoot), 240_000);
+        await runPowerShell(
+          "enter-hmcl-test-world.ps1",
+          worldEntryArguments(baseline.worldId, options.base),
+          330_000,
+        );
         await waitForReconnect(options.base, companion.id, baseline.worldId, baseline.dimension);
         reconnected = true;
       } catch (error) {
@@ -554,6 +596,15 @@ export async function runLiveFoodSurvivalRestartSmoke(options) {
         await waitForIdle(options.base, companion.id);
       } catch (error) {
         cleanupErrors.push(error);
+        try {
+          const recovery = validateFixtureAcknowledgement(
+            (await fixture(options.base, companion.id, "recover-cleanup")).fixtureAck,
+            "recover-cleanup",
+          );
+          if (result) result.recoveryCleanup = recovery.status;
+        } catch (recoveryError) {
+          cleanupErrors.push(recoveryError);
+        }
       }
       try {
         const cleanup = validateFixtureAcknowledgement(

@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("background Minecraft chat posts Unicode code points through PostMessageW", async () => {
+test("background Minecraft chat posts UTF-16 WM_CHAR units through PostMessageW", async () => {
   const source = await readFile(new URL("./send-minecraft-chat-background.ps1", import.meta.url), "utf8");
   assert.match(source, /EntryPoint\s*=\s*"PostMessageW"/u);
-  assert.match(source, /0x0109/u);
-  assert.match(source, /ConvertToUtf32/u);
+  assert.match(source, /foreach \(char codeUnit in value\)/u);
+  assert.match(source, /0x0102/u);
+  assert.doesNotMatch(source, /0x0109|ConvertToUtf32/u);
   assert.match(source, /DraftOnly/u);
   assert.match(source, /Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String/u);
   assert.match(source, /clientUiState/u);

@@ -122,6 +122,18 @@ final class FoodSurvivalLiveFixtureTest {
     }
 
     @Test
+    void checkpointsStrictTargetsAcrossMultipleCookingBatches() {
+        assertEquals(18, FoodSurvivalLiveFixture.checkpointCoveredCount(10, 8, 0));
+        assertEquals(18, FoodSurvivalLiveFixture.checkpointCoveredCount(13, 8, 3));
+        assertEquals(15, FoodSurvivalLiveFixture.checkpointCoveredCount(10, 5, 0));
+        assertEquals(4, FoodSurvivalLiveFixture.checkpointCoveredCount(0, 4, 0));
+
+        assertTrue(FoodSurvivalLiveFixture.restartProgressValid(8, 4, 14, 8, 3, 16));
+        assertTrue(FoodSurvivalLiveFixture.restartProgressValid(0, 0, 16, 8, 3, 16));
+        assertFalse(FoodSurvivalLiveFixture.restartProgressValid(7, 2, 15, 8, 3, 16));
+    }
+
+    @Test
     void acceptsOnlyTaggedInputsAndLedgerBoundedRaceOutputFromTheOwnedEmptyFurnace() {
         FoodSurvivalLiveFixture.FurnaceCleanupEvidence evidence =
             new FoodSurvivalLiveFixture.FurnaceCleanupEvidence(true, true, true, true, 6, 2, 3, 1);

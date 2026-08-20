@@ -13,6 +13,9 @@ param(
     [ValidateRange(0, 180)]
     [int]$NoLogMenuGraceSeconds = 75,
 
+    [ValidateLength(1, 256)]
+    [string]$ControlBaseUri = "http://127.0.0.1:8765",
+
     [int]$MinecraftProcessId = 0,
 
     [long]$NativeWindowHandle = 0,
@@ -108,13 +111,16 @@ public static class MinecraftBackgroundInput
 '@
 }
 
-$configuredBaseUri = if ([string]::IsNullOrWhiteSpace($env:MC_COMPANION_URL)) {
-    "http://127.0.0.1:8765/"
-} else {
+$configuredBaseUri = if ($PSBoundParameters.ContainsKey("ControlBaseUri")) {
+    [string]$ControlBaseUri
+} elseif (-not [string]::IsNullOrWhiteSpace($env:MC_COMPANION_URL)) {
     [string]$env:MC_COMPANION_URL
+} else {
+    [string]$ControlBaseUri
 }
 $baseUri = [Uri]$configuredBaseUri
-if ($baseUri.Scheme -ne "http" -or $baseUri.Host -notin @("127.0.0.1", "localhost", "::1")) {
+if ($baseUri.Scheme -ne "http" -or
+    $baseUri.Host.ToLowerInvariant() -notin @("127.0.0.1", "localhost", "::1", "[::1]")) {
     throw "The Minecraft entry check must use the loopback control service"
 }
 $builder = [UriBuilder]$baseUri

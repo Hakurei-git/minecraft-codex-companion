@@ -339,7 +339,12 @@ public final class NpcTaskEngine {
             npc.setStatus("正在从上次失败点恢复建造");
         }
         if (active != null) {
-            if (!TaskPriorityPolicy.shouldPreempt(next.priority, active.priority)) {
+            boolean replaceAutonomousFood = TaskPriorityPolicy.explicitFoodReplacesAutonomousReserve(
+                next.id,
+                next.kind,
+                active.id
+            );
+            if (!replaceAutonomousFood && !TaskPriorityPolicy.shouldPreempt(next.priority, active.priority)) {
                 next.pauseReason = "等待更高优先级任务 " + active.id;
                 pausedWorks.addLast(next);
                 if (!next.id.startsWith("local:")) {
@@ -347,7 +352,11 @@ public final class NpcTaskEngine {
                 }
                 return;
             }
-            pauseActive("被优先级 " + next.priority + " 的任务打断");
+            if (replaceAutonomousFood) {
+                discardActiveAutonomousFood();
+            } else {
+                pauseActive("被优先级 " + next.priority + " 的任务打断");
+            }
         }
         switch (next.kind) {
             case "follow" -> {
@@ -607,6 +616,17 @@ public final class NpcTaskEngine {
         sendProgressUpdate(work, activeProgress(work), "任务已暂停：" + reason, "paused");
     }
 
+    private void discardActiveAutonomousFood() {
+        ActiveWork work = active;
+        if (work == null || !work.id.startsWith("local:auto-food:")) return;
+        suspendLifeInteraction(work);
+        recoverAllTaskFurnaces(work, "explicit-food-replaces-autonomous-reserve");
+        active = null;
+        npc.cancelManagedEating();
+        npc.getNavigation().stop();
+        npc.setTarget(null);
+    }
+
     private boolean resumePausedWork() {
         ActiveWork resumed = TaskPriorityPolicy.highestPriorityFirst(pausedWorks, work -> work.priority);
         if (resumed == null) return false;
@@ -640,6 +660,7 @@ public final class NpcTaskEngine {
     }
 
     private void maybeStartAutonomousFoodReserve() {
+        if (FoodSurvivalLiveFixture.suppressesAutonomousFoodReserve(npc)) return;
         String activeKind = active == null ? "" : active.kind;
         int reserve = safeProvisioningFoodCount();
         int provisioningTarget = autonomousFoodProvisionTarget();
@@ -5350,8 +5371,7 @@ public final class NpcTaskEngine {
         work.completed = Math.min(work.requestedCount, foodItems);
         if (FoodProvisionPolicy.shouldComplete(foodItems, work.requestedCount)) {
             String rawFood = findRawProvisioningFood(work);
-            if (rawFood != null) {
-                beginProvisionFoodCooking(work, rawFood);
+            if (rawFood != null && beginProvisionFoodCooking(work, rawFood)) {
                 tickProvisionFoodCooking(work);
                 return;
             }
@@ -5469,12 +5489,18 @@ public final class NpcTaskEngine {
         return null;
     }
 
-    private void beginProvisionFoodCooking(ActiveWork work, String inputId) {
+    private boolean beginProvisionFoodCooking(ActiveWork work, String inputId) {
         Recipe<?> recipe = findCookingRecipe(inputId);
-        if (recipe == null) return;
+        if (recipe == null) return false;
+        int target = FoodProvisionPolicy.cookingTarget(
+            work.requestedCount,
+            provisioningFoodCount(work),
+            inventoryCount(inputId)
+        );
+        if (target <= 0) return false;
         work.foodCookingInputId = inputId;
         work.foodCookingOutputId = itemId(recipe.getResultItem(npc.level().registryAccess()));
-        work.foodCookingTargetCount = inventoryCount(inputId);
+        work.foodCookingTargetCount = target;
         work.foodCookedCount = 0;
         work.loaded = 0;
         work.workstation = null;
@@ -5482,6 +5508,7 @@ public final class NpcTaskEngine {
         work.smeltStartedTick = -1;
         work.skippedWorkstationTargets.clear();
         progress(work, activeProgress(work), "已取得生食，准备烹饪 " + work.foodCookingTargetCount + " 份 " + inputId);
+        return true;
     }
 
     private void tickProvisionFoodCooking(ActiveWork work) {

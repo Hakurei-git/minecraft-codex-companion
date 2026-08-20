@@ -59,6 +59,13 @@ final class FoodProvisionPolicy {
         return foodItems >= Math.max(1, requestedReserve);
     }
 
+    static int cookingTarget(int requested, int qualifyingFood, int rawAvailable) {
+        int raw = Math.max(0, rawAvailable);
+        int alreadyCookedOrReady = Math.max(0, qualifyingFood - raw);
+        int stillNeeded = Math.max(0, Math.max(1, requested) - alreadyCookedOrReady);
+        return Math.min(raw, stillNeeded);
+    }
+
     static boolean mayHunt(
         boolean adult,
         boolean named,
