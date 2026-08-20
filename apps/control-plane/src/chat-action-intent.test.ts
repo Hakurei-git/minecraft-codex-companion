@@ -276,6 +276,11 @@ describe("parseDeterministicChatAction", () => {
     expect(parseDeterministicChatAction("继续畜牧", "PlayerOne")).toMatchObject({
       operation: "resume-goal",
     });
+    expect(parseDeterministicChatAction(
+      "唯唯，刚才的回复我看到了。你现在在房子里的哪个位置，接下来想陪我做什么？继续用你平时的语气回答。",
+      "PlayerOne",
+      "唯",
+    )).toBeNull();
   });
 
   it("understands natural build corrections and material-family preferences", () => {
