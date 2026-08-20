@@ -289,7 +289,44 @@ export const BUILTIN_BUILD_TEMPLATES: readonly BuiltInBuildTemplate[] = [
   },
 ] as const;
 
-const nextToCompanion = { placement: "companion", offset: { x: 3, y: 0, z: 3 } } as const;
+// Under the home-compound policy placementAnchor is the authoritative blueprint
+// origin. Do not retain the legacy +3/+3 companion offset: applying it later in
+// the bridge would shift the full blueprint outside the bounds that the control
+// service already checked for ring distance and facility clearance.
+const nextToCompanion = { placement: "companion" } as const;
+const residentialCompound = {
+  sitePolicy: "home-compound",
+  compoundPlacement: {
+    zone: "residential",
+    minDistance: 8,
+    maxDistance: 24,
+    facilityClearance: 12,
+    terrainPreparation: "light",
+    protectedBounds: [],
+  },
+} as const;
+const productionCompound = {
+  sitePolicy: "home-compound",
+  compoundPlacement: {
+    zone: "production",
+    minDistance: 16,
+    maxDistance: 40,
+    facilityClearance: 12,
+    terrainPreparation: "light",
+    protectedBounds: [],
+  },
+} as const;
+const industrialCompound = {
+  sitePolicy: "home-compound",
+  compoundPlacement: {
+    zone: "industrial",
+    minDistance: 40,
+    maxDistance: 64,
+    facilityClearance: 12,
+    terrainPreparation: "light",
+    protectedBounds: [],
+  },
+} as const;
 
 export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] = [
   {
@@ -307,14 +344,14 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
     name: "建造基础刷石机",
     description: "在角色旁边自动建造无命令、无 NBT 的可用刷石机，并通过真实右键交互放入水源与岩浆源；生存模式会自动补齐圆石，但背包中仍需各有一个对应桶。",
     parameters: [],
-    steps: [{ label: "建造并注入刷石机流体", task: { kind: "build", planId: BUILTIN_BUILD_IDS.cobblestoneGenerator, ...nextToCompanion } }],
+    steps: [{ label: "建造并注入刷石机流体", task: { kind: "build", planId: BUILTIN_BUILD_IDS.cobblestoneGenerator, ...nextToCompanion, ...industrialCompound } }],
   },
   {
     id: "build.basic-shelter",
     name: "建造基础住宅",
     description: "在接令时锁定的位置建造住宅；生存模式由同一个可恢复建造任务按所选材料族查仓、制作、熔炼或采集，创造模式直接施工。",
     parameters: [],
-    steps: [{ label: "建造基础住宅", task: { kind: "build", planId: BUILTIN_BUILD_IDS.basicShelter, ...nextToCompanion } }],
+    steps: [{ label: "建造基础住宅", task: { kind: "build", planId: BUILTIN_BUILD_IDS.basicShelter, ...nextToCompanion, ...residentialCompound } }],
   },
   {
     id: "build.crop-farm",
@@ -325,7 +362,7 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
       { name: "radius", description: "农务半径", type: "integer", required: false, defaultValue: 12, minimum: 1, maximum: 64 },
     ],
     steps: [
-      { label: "建造农田框架", task: { kind: "build", planId: BUILTIN_BUILD_IDS.cropFarm, ...nextToCompanion, sitePolicy: "outdoor" } },
+      { label: "建造农田框架", task: { kind: "build", planId: BUILTIN_BUILD_IDS.cropFarm, ...nextToCompanion, ...productionCompound } },
       { label: "照料并补种已有农田", task: { kind: "farm", cropId: "${cropId}", action: "plant", radius: "${radius}" } },
     ],
   },
@@ -335,7 +372,7 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
     description: "建造分类仓库并整理家园容器；生存材料由同一个建造任务按选定材料族与真实配方补齐。",
     parameters: [],
     steps: [
-      { label: "建造分类仓库", task: { kind: "build", planId: BUILTIN_BUILD_IDS.storageRoom, ...nextToCompanion } },
+      { label: "建造分类仓库", task: { kind: "build", planId: BUILTIN_BUILD_IDS.storageRoom, ...nextToCompanion, ...residentialCompound } },
       { label: "整理家园仓库", task: { kind: "organize-storage", radius: 24 } },
     ],
   },
@@ -344,7 +381,7 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
     name: "建造石砖小屋",
     description: "在接令时锁定的位置建造石砖与玻璃小屋；缺少材料时由建造任务的本地材料链补齐。",
     parameters: [],
-    steps: [{ label: "建造石砖小屋", task: { kind: "build", planId: BUILTIN_BUILD_IDS.stoneCottage, ...nextToCompanion } }],
+    steps: [{ label: "建造石砖小屋", task: { kind: "build", planId: BUILTIN_BUILD_IDS.stoneCottage, ...nextToCompanion, ...residentialCompound } }],
   },
   {
     id: "build.animal-pen",
@@ -353,7 +390,7 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
     parameters: [],
     steps: [{
       label: "建造动物围栏",
-      task: { kind: "build", planId: BUILTIN_BUILD_IDS.animalPen, ...nextToCompanion, sitePolicy: "outdoor" },
+      task: { kind: "build", planId: BUILTIN_BUILD_IDS.animalPen, ...nextToCompanion, ...productionCompound },
     }],
   },
   {
@@ -368,7 +405,7 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
     steps: [
       {
         label: "建造动物围栏",
-        task: { kind: "build", planId: BUILTIN_BUILD_IDS.animalPen, ...nextToCompanion, sitePolicy: "outdoor" },
+        task: { kind: "build", planId: BUILTIN_BUILD_IDS.animalPen, ...nextToCompanion, ...productionCompound },
       },
       { label: "牵回并安置牲畜", task: { kind: "ranch", action: "establish", animalType: "${animalType}", count: "${count}", radius: "${radius}" } },
     ],
@@ -378,21 +415,21 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
     name: "建造瞭望塔",
     description: "建造带内部梯子和顶部护栏的木石瞭望塔。",
     parameters: [],
-    steps: [{ label: "建造瞭望塔", task: { kind: "build", planId: BUILTIN_BUILD_IDS.watchtower, ...nextToCompanion } }],
+    steps: [{ label: "建造瞭望塔", task: { kind: "build", planId: BUILTIN_BUILD_IDS.watchtower, ...nextToCompanion, ...productionCompound } }],
   },
   {
     id: "build.mob-farm",
     name: "建造基础黑暗刷怪塔",
     description: "用普通圆石建造黑暗平台、坠落井和收集开口；不生成、不获取也不放置刷怪笼，不使用命令或 NBT。",
     parameters: [],
-    steps: [{ label: "建造黑暗刷怪塔", task: { kind: "build", planId: BUILTIN_BUILD_IDS.mobFarm, ...nextToCompanion } }],
+    steps: [{ label: "建造黑暗刷怪塔", task: { kind: "build", planId: BUILTIN_BUILD_IDS.mobFarm, ...nextToCompanion, ...industrialCompound } }],
   },
   {
     id: "build.tree-farm",
     name: "建造规则树场",
     description: "建造带八个种植位的规则树场基座；树苗种类和后续砍伐可再用种植、采集命令指定。",
     parameters: [],
-    steps: [{ label: "建造规则树场", task: { kind: "build", planId: BUILTIN_BUILD_IDS.treeFarm, ...nextToCompanion } }],
+    steps: [{ label: "建造规则树场", task: { kind: "build", planId: BUILTIN_BUILD_IDS.treeFarm, ...nextToCompanion, ...productionCompound } }],
   },
   {
     id: "craft.starter-tools",

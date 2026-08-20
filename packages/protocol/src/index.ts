@@ -38,6 +38,19 @@ export const vec3Schema = z.object({
 });
 export type Vec3 = z.infer<typeof vec3Schema>;
 
+/** Integer block-grid coordinates used by blueprints and protected bounds. */
+export const blockVec3Schema = z.object({
+  x: z.number().int(),
+  y: z.number().int(),
+  z: z.number().int(),
+}).strict();
+
+const buildSizeSchema = z.object({
+  x: z.number().int().positive(),
+  y: z.number().int().positive(),
+  z: z.number().int().positive(),
+}).strict();
+
 export const inventoryItemSchema = z.object({
   id: z.string().min(1),
   displayName: z.string().min(1),
@@ -404,6 +417,41 @@ export const buildMaterialPreferenceSchema = z.object({
 });
 export type BuildMaterialPreference = z.infer<typeof buildMaterialPreferenceSchema>;
 
+export const compoundPlacementZoneSchema = z.enum(["residential", "production", "industrial"]);
+export type CompoundPlacementZone = z.infer<typeof compoundPlacementZoneSchema>;
+
+const compoundProtectedBoundsSchema = z.object({
+  min: blockVec3Schema,
+  max: blockVec3Schema,
+}).strict().superRefine((bounds, context) => {
+  for (const axis of ["x", "y", "z"] as const) {
+    if (bounds.min[axis] <= bounds.max[axis]) continue;
+    context.addIssue({
+      code: "custom",
+      message: `protected bounds min.${axis} must not exceed max.${axis}`,
+      path: ["max", axis],
+    });
+  }
+});
+
+/**
+ * A bounded home-compound placement contract shared by the control service and
+ * Forge. Distances are the shortest horizontal gap between the remembered
+ * house bounds and the complete blueprint bounds, never the NPC/request point.
+ */
+export const compoundPlacementSchema = z.object({
+  zone: compoundPlacementZoneSchema,
+  minDistance: z.number().int().min(0).max(128),
+  maxDistance: z.number().int().min(1).max(128),
+  facilityClearance: z.number().int().min(12).max(32).default(12),
+  terrainPreparation: z.enum(["none", "light"]).default("light"),
+  protectedBounds: z.array(compoundProtectedBoundsSchema).max(64).default([]),
+}).strict().refine((value) => value.maxDistance >= value.minDistance, {
+  message: "maxDistance must be greater than or equal to minDistance",
+  path: ["maxDistance"],
+});
+export type CompoundPlacement = z.infer<typeof compoundPlacementSchema>;
+
 const taskBase = {
   requestedBy: z.string().trim().min(1).max(64).default("user"),
   note: z.string().max(500).optional(),
@@ -492,7 +540,8 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     offset: vec3Schema.optional(),
     placementAnchor: vec3Schema.optional(),
     homeBounds: z.object({ min: vec3Schema, max: vec3Schema }).optional(),
-    sitePolicy: z.enum(["default", "outdoor"]).optional(),
+    sitePolicy: z.enum(["default", "outdoor", "home-compound"]).optional(),
+    compoundPlacement: compoundPlacementSchema.optional(),
     materialPreference: buildMaterialPreferenceSchema.optional(),
   }),
   z.object({
@@ -502,6 +551,8 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     arguments: z.record(z.string().max(64), z.unknown()).default({}),
     placementAnchor: vec3Schema.optional(),
     homeBounds: z.object({ min: vec3Schema, max: vec3Schema }).optional(),
+    sitePolicy: z.enum(["default", "outdoor", "home-compound"]).optional(),
+    compoundPlacement: compoundPlacementSchema.optional(),
     materialMode: z.enum(["survival", "creative"]).optional(),
     materialPreference: buildMaterialPreferenceSchema.optional(),
   }),
@@ -1071,7 +1122,7 @@ const buildPropertiesSchema = z.record(
 ).refine((properties) => Object.keys(properties).length <= 32, "A block may have at most 32 properties");
 
 export const buildBlockSchema = z.object({
-  position: vec3Schema,
+  position: blockVec3Schema,
   blockId: resourceLocationSchema,
   properties: buildPropertiesSchema.default({}),
 });
@@ -1090,7 +1141,7 @@ export type BuildSource = z.infer<typeof buildSourceSchema>;
 export const buildPlanDraftSchema = z.object({
   name: z.string().min(1).max(120),
   source: buildSourceSchema,
-  origin: vec3Schema,
+  origin: blockVec3Schema,
   blocks: z.array(buildBlockSchema).min(1).max(250_000),
 });
 export type BuildPlanDraft = z.infer<typeof buildPlanDraftSchema>;
@@ -1116,7 +1167,7 @@ export type BuildImageOptions = z.infer<typeof buildImageOptionsSchema>;
 export const buildImportRequestSchema = z.object({
   name: z.string().trim().min(1).max(120),
   source: buildImportSourceSchema,
-  origin: vec3Schema,
+  origin: blockVec3Schema,
   fileName: z.string().trim().min(1).max(260).optional(),
   filePath: z.string().trim().min(1).max(4096).optional(),
   dataBase64: z.string().min(1).max(64 * 1024 * 1024).optional(),
@@ -1149,8 +1200,8 @@ export const buildPlanSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
   source: buildSourceSchema,
-  origin: vec3Schema,
-  size: vec3Schema,
+  origin: blockVec3Schema,
+  size: buildSizeSchema,
   blocks: z.array(buildBlockSchema).max(250_000),
   requiredItems: z.record(z.string(), z.number().int().nonnegative()),
   confirmed: z.boolean(),

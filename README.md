@@ -44,7 +44,7 @@ Movement, gathering, crafting, smelting, storage, combat, dragon care, and const
 GitHub Releases provide two editions:
 
 - **[Windows Setup EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**: the complete edition for normal Windows users. It installs the local runtime and Forge bridge without requiring Node.js or a manual mod build.
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.8)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.9)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
 
 The installer does not embed or migrate accounts, API keys, Antigravity conversations, Minecraft worlds, or machine-specific paths.
 
@@ -159,6 +159,16 @@ For an irregular or player-built house, record the boundary from Minecraft `T` c
 3. If the bed or roof changed, send `重新识别我的房屋范围` to refresh the automatic scan.
 
 The two-corner command stores a conservative rectangular boundary, uses the current bed anchor, and is persisted in the local facility journal. A later snapshot will not overwrite a manual boundary unless the bed moves outside the old 24-block home circle or the player explicitly rescans. No world save, API key, conversation content, or external file is uploaded for this operation.
+
+### Home-compound building placement
+
+Automatic construction measures the shortest horizontal gap from the **complete blueprint bounds** to the remembered **house bounds**. It does not measure from the NPC, bed, or blueprint origin:
+
+- residential buildings: 8-24 blocks outside the house;
+- production facilities such as crop farms, ranches, animal pens, tree farms, and watchtowers: 16-40 blocks;
+- industrial facilities such as mob farms and cobblestone generators: 40-64 blocks.
+
+Every candidate keeps at least 12 blocks of clearance from remembered facilities. The Forge executor rechecks terrain and protected blocks before and during construction, may perform only bounded light preparation, and fails without placing blocks when no safe site exists. It never silently expands the search to a remote 96-160-block site. Existing distant farms and ranches are preserved as secondary outposts; ordinary requests use a new home-primary facility, while an explicit request for the old or remote facility may reuse it. Player-specified coordinates and confirmed plan origins remain authoritative.
 
 ## Capabilities
 

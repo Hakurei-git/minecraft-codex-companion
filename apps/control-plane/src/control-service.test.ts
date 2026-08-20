@@ -8,6 +8,49 @@ import { ControlService } from "./control-service.js";
 import { BUILTIN_BUILD_IDS } from "./builtin-content.js";
 import { SimulatorBackend } from "./simulator-backend.js";
 
+type TestBounds = {
+  min: { x: number; y: number; z: number };
+  max: { x: number; y: number; z: number };
+};
+
+function horizontalBoundsGap(left: TestBounds, right: TestBounds): number {
+  const dx = left.max.x < right.min.x
+    ? right.min.x - left.max.x
+    : right.max.x < left.min.x
+      ? left.min.x - right.max.x
+      : 0;
+  const dz = left.max.z < right.min.z
+    ? right.min.z - left.max.z
+    : right.max.z < left.min.z
+      ? left.min.z - right.max.z
+      : 0;
+  return Math.sqrt(dx ** 2 + dz ** 2);
+}
+
+function boundsOverlapWithMargin(left: TestBounds, right: TestBounds, margin: number): boolean {
+  return left.max.x >= right.min.x - margin
+    && left.min.x <= right.max.x + margin
+    && left.max.z >= right.min.z - margin
+    && left.min.z <= right.max.z + margin;
+}
+
+function planBoundsAt(
+  service: ControlService,
+  planId: string,
+  origin: { x: number; y: number; z: number },
+): TestBounds {
+  const plan = service.getBuildPlan(planId);
+  const occupied = plan.blocks.filter((entry) => entry.blockId !== "minecraft:air");
+  if (occupied.length === 0) throw new Error("plan has no occupied test bounds");
+  const xs = occupied.map((entry) => entry.position.x);
+  const ys = occupied.map((entry) => entry.position.y);
+  const zs = occupied.map((entry) => entry.position.z);
+  return {
+    min: { x: origin.x + Math.min(...xs), y: origin.y + Math.min(...ys), z: origin.z + Math.min(...zs) },
+    max: { x: origin.x + Math.max(...xs), y: origin.y + Math.max(...ys), z: origin.z + Math.max(...zs) },
+  };
+}
+
 class ConcurrentPendingBackend extends SimulatorBackend {
   readonly supportsConcurrentTasks = true;
   readonly sentChat: string[] = [];
@@ -77,6 +120,33 @@ class MacroCaptureBackend extends SimulatorBackend {
     this.tasks.push(structuredClone(task));
     callbacks.onProgress(1, `${task.spec.kind} complete`, "active");
     return Promise.resolve(`${task.spec.kind} complete`);
+  }
+}
+
+class FarFromHomeCaptureBackend extends MacroCaptureBackend {
+  readonly npcPosition = { x: 512, y: 80, z: -512 };
+  readonly homePosition = { x: 0, y: 64, z: 0 };
+  readonly homeBounds: TestBounds = {
+    min: { x: -4, y: 63, z: -4 },
+    max: { x: 4, y: 72, z: 4 },
+  };
+
+  override snapshot(): WorldSnapshot {
+    const snapshot = super.snapshot();
+    return {
+      ...snapshot,
+      position: { ...this.npcPosition },
+      ownerPosition: { ...this.homePosition },
+      homeState: {
+        dimension: snapshot.dimension,
+        position: { ...this.homePosition },
+        bounds: structuredClone(this.homeBounds),
+        temporary: false,
+        coreRadius: 24,
+        boundarySource: "manual",
+        confidence: 1,
+      },
+    };
   }
 }
 
@@ -369,6 +439,7 @@ describe("ControlService", () => {
       skillId: "build.basic-shelter",
       arguments: {},
       placementAnchor: { x: 10, y: 64, z: 10 },
+      sitePolicy: "default" as const,
       materialMode: "survival" as const,
       materialPreference: {
         source: "inventory" as const,
@@ -641,6 +712,85 @@ describe("ControlService", () => {
     }
   });
 
+  it("persists a locked compound site and legacy outpost classification across restart", async () => {
+    const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "mc-home-compound-"));
+    try {
+      const first = new ControlService({ stateDirectory });
+      const initialBackend = new ConcurrentPendingBackend();
+      const snapshot = initialBackend.snapshot();
+      first.registerFacility({
+        worldId: snapshot.worldId,
+        dimension: snapshot.dimension,
+        type: "home",
+        name: "Persistent house boundary",
+        position: snapshot.position,
+        bounds: {
+          min: { x: snapshot.position.x - 4, y: snapshot.position.y - 1, z: snapshot.position.z - 4 },
+          max: { x: snapshot.position.x + 4, y: snapshot.position.y + 8, z: snapshot.position.z + 4 },
+        },
+        tags: ["home", "manual-boundary"],
+        properties: { source: "test", boundarySource: "manual", confidence: 1 },
+      });
+      const legacyFarm = first.registerFacility({
+        worldId: snapshot.worldId,
+        dimension: snapshot.dimension,
+        type: "farm",
+        name: "Persistent legacy outpost",
+        position: { x: snapshot.position.x + 120, y: snapshot.position.y, z: snapshot.position.z },
+        bounds: {
+          min: { x: snapshot.position.x + 116, y: snapshot.position.y, z: snapshot.position.z - 4 },
+          max: { x: snapshot.position.x + 124, y: snapshot.position.y + 1, z: snapshot.position.z + 4 },
+        },
+        tags: ["crop", "farmland"],
+        properties: { source: "legacy.agent-journal" },
+      });
+      first.registerBackend(initialBackend);
+      const task = first.assignTask(initialBackend.id, {
+        kind: "build",
+        planId: BUILTIN_BUILD_IDS.cobblestoneGenerator,
+        requestedBy: "PlayerOne",
+      }, "antigravity-autoplay");
+      expect(first.getTask(task.id).status).toBe("running");
+      if (task.spec.kind !== "build" || !task.spec.placementAnchor || !task.spec.compoundPlacement) {
+        throw new Error("missing persisted compound site");
+      }
+      const lockedAnchor = structuredClone(task.spec.placementAnchor);
+      const lockedPlacement = structuredClone(task.spec.compoundPlacement);
+
+      const second = new ControlService({ stateDirectory });
+      expect(second.getTask(task.id).spec).toMatchObject({
+        kind: "build",
+        placementAnchor: lockedAnchor,
+        compoundPlacement: lockedPlacement,
+      });
+      expect(second.listFacilities(snapshot.worldId).find((facility) => facility.id === legacyFarm.id)).toMatchObject({
+        properties: {
+          compoundZone: "production",
+          compoundRole: "secondary-outpost",
+          homeCompoundCompliant: false,
+          placementPolicyVersion: 2,
+        },
+      });
+
+      const recoveryBackend = new RecoveringBackend();
+      second.registerBackend(recoveryBackend);
+      for (let attempt = 0; attempt < 100 && second.getTask(task.id).status !== "succeeded"; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(second.getTask(task.id)).toMatchObject({
+        status: "succeeded",
+        spec: {
+          kind: "build",
+          placementAnchor: lockedAnchor,
+          compoundPlacement: lockedPlacement,
+        },
+      });
+      expect(recoveryBackend.resumedIds).toEqual([task.id]);
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("expands a declarative macro into validated backend tasks", async () => {
     const service = new ControlService();
     service.registerBackend(new SimulatorBackend());
@@ -679,17 +829,29 @@ describe("ControlService", () => {
     expect(survivalTask.spec).toMatchObject({
       kind: "macro",
       materialMode: "survival",
-      placementAnchor: { x: -156, y: 76, z: -62 },
+      compoundPlacement: {
+        zone: "residential",
+        minDistance: 8,
+        maxDistance: 24,
+        facilityClearance: 12,
+      },
     });
+    if (survivalTask.spec.kind !== "macro" || !survivalTask.spec.placementAnchor) {
+      throw new Error("missing locked macro placement");
+    }
     expect(survival.tasks.map((child) => child.spec.kind)).toEqual(["build"]);
     expect(survival.tasks.at(-1)?.spec).toMatchObject({
       kind: "build",
-      placementAnchor: { x: -156, y: 76, z: -62 },
+      sitePolicy: "home-compound",
+      placementAnchor: survivalTask.spec.placementAnchor,
+      compoundPlacement: survivalTask.spec.compoundPlacement,
       materialPreference: {
         source: "inventory",
         preferredBlockId: "minecraft:dark_oak_planks",
       },
     });
+    expect(survivalTask.spec).not.toHaveProperty("offset");
+    expect(survival.tasks.at(-1)?.spec).not.toHaveProperty("offset");
 
     const creative = new MacroCaptureBackend("creative");
     const creativeService = new ControlService();
@@ -704,7 +866,387 @@ describe("ControlService", () => {
     expect(creative.tasks.map((child) => child.spec.kind)).toEqual(["build"]);
   });
 
-  it("routes a new crop farm to an outdoor anchor and preserves the Forge site guard", async () => {
+  it.each([
+    {
+      zone: "residential" as const,
+      planId: BUILTIN_BUILD_IDS.basicShelter,
+      minDistance: 8,
+      maxDistance: 24,
+    },
+    {
+      zone: "production" as const,
+      planId: BUILTIN_BUILD_IDS.cropFarm,
+      minDistance: 16,
+      maxDistance: 40,
+    },
+    {
+      zone: "industrial" as const,
+      planId: BUILTIN_BUILD_IDS.cobblestoneGenerator,
+      minDistance: 40,
+      maxDistance: 64,
+    },
+  ])("places a $zone blueprint by its full bounds inside the $minDistance-$maxDistance home ring", async ({
+    zone,
+    planId,
+    minDistance,
+    maxDistance,
+  }) => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const home = backend.snapshot().position;
+    const assigned = service.assignTask(backend.id, {
+      kind: "build",
+      planId,
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+
+    expect(assigned.spec).toMatchObject({
+      kind: "build",
+      placement: "companion",
+      sitePolicy: "home-compound",
+      placementAnchor: expect.objectContaining({ y: home.y }),
+      compoundPlacement: {
+        zone,
+        minDistance,
+        maxDistance,
+        facilityClearance: 12,
+      },
+    });
+    if (assigned.spec.kind !== "build" || !assigned.spec.placementAnchor) {
+      throw new Error("missing bounded home-compound placement");
+    }
+    const placedBounds = planBoundsAt(service, planId, assigned.spec.placementAnchor);
+    const homeBounds = { min: home, max: home };
+    expect(horizontalBoundsGap(placedBounds, homeBounds)).toBeGreaterThanOrEqual(minDistance);
+    expect(horizontalBoundsGap(placedBounds, homeBounds)).toBeLessThanOrEqual(maxDistance);
+
+    for (let attempt = 0; attempt < 50 && service.getTask(assigned.id).status !== "succeeded"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(backend.tasks[0]?.spec).toMatchObject({
+      kind: "build",
+      placementAnchor: assigned.spec.placementAnchor,
+      compoundPlacement: assigned.spec.compoundPlacement,
+    });
+  });
+
+  it("defaults an unknown confirmed blueprint to the production ring", () => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const plan = service.previewBuild({
+      name: "Custom utility platform",
+      source: "json",
+      origin: { x: 0, y: 0, z: 0 },
+      blocks: [
+        { position: { x: 0, y: 0, z: 0 }, blockId: "minecraft:stone", properties: {} },
+        { position: { x: 2, y: 0, z: 4 }, blockId: "minecraft:stone", properties: {} },
+      ],
+    });
+    service.confirmBuild(plan.id);
+
+    const assigned = service.assignTask(backend.id, {
+      kind: "build",
+      planId: plan.id,
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+
+    expect(assigned.spec).toMatchObject({
+      kind: "build",
+      sitePolicy: "home-compound",
+      compoundPlacement: {
+        zone: "production",
+        minDistance: 16,
+        maxDistance: 40,
+        facilityClearance: 12,
+      },
+    });
+  });
+
+  it("accepts an inclusive 64-by-64 blueprint for automatic compound placement", () => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const plan = service.previewBuild({
+      name: "Maximum compound footprint fixture",
+      source: "json",
+      origin: { x: 0, y: 0, z: 0 },
+      blocks: [
+        { position: { x: 0, y: 0, z: 0 }, blockId: "minecraft:stone", properties: {} },
+        { position: { x: 63, y: 0, z: 63 }, blockId: "minecraft:stone", properties: {} },
+      ],
+    });
+    service.confirmBuild(plan.id);
+
+    const assigned = service.assignTask(backend.id, {
+      kind: "build",
+      planId: plan.id,
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+
+    expect(assigned.spec).toMatchObject({
+      kind: "build",
+      sitePolicy: "home-compound",
+      compoundPlacement: { zone: "production" },
+    });
+  });
+
+  it.each([
+    { axis: "X", farCorner: { x: 64, y: 0, z: 0 } },
+    { axis: "Z", farCorner: { x: 0, y: 0, z: 64 } },
+  ])("rejects an inclusive 65-block $axis span before dispatch", ({ farCorner }) => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const plan = service.previewBuild({
+      name: "Oversized compound footprint fixture",
+      source: "json",
+      origin: { x: 0, y: 0, z: 0 },
+      blocks: [
+        { position: { x: 0, y: 0, z: 0 }, blockId: "minecraft:stone", properties: {} },
+        { position: farCorner, blockId: "minecraft:stone", properties: {} },
+      ],
+    });
+    service.confirmBuild(plan.id);
+
+    let caught: unknown;
+    try {
+      service.assignTask(backend.id, {
+        kind: "build",
+        planId: plan.id,
+        requestedBy: "PlayerOne",
+      }, "antigravity-autoplay");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: "HOME_COMPOUND_BLUEPRINT_TOO_LARGE",
+      statusCode: 422,
+      retryable: false,
+    });
+    expect(service.listTasks()).toHaveLength(0);
+    expect(backend.tasks).toHaveLength(0);
+  });
+
+  it("rounds remembered facility bounds outward to integer protected bounds", () => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const snapshot = backend.snapshot();
+    service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "storage",
+      name: "Fractional observed boundary",
+      position: { x: snapshot.position.x + 30.5, y: snapshot.position.y, z: snapshot.position.z + 30.5 },
+      bounds: {
+        min: { x: snapshot.position.x + 27.25, y: snapshot.position.y - 0.25, z: snapshot.position.z + 27.75 },
+        max: { x: snapshot.position.x + 33.25, y: snapshot.position.y + 4.25, z: snapshot.position.z + 33.75 },
+      },
+      tags: ["storage", "observed"],
+      properties: { source: "test" },
+    });
+
+    const assigned = service.assignTask(backend.id, {
+      kind: "build",
+      planId: BUILTIN_BUILD_IDS.basicShelter,
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+
+    expect(assigned.spec).toMatchObject({
+      kind: "build",
+      compoundPlacement: {
+        protectedBounds: expect.arrayContaining([{
+          min: { x: Math.floor(snapshot.position.x + 27.25), y: snapshot.position.y - 1, z: Math.floor(snapshot.position.z + 27.75) },
+          max: { x: Math.ceil(snapshot.position.x + 33.25), y: snapshot.position.y + 5, z: Math.ceil(snapshot.position.z + 33.75) },
+        }]),
+      },
+    });
+  });
+
+  it("fails closed on a malformed remembered facility boundary", () => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const snapshot = backend.snapshot();
+    service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "storage",
+      name: "Malformed observed boundary",
+      position: { x: snapshot.position.x + 20, y: snapshot.position.y, z: snapshot.position.z },
+      bounds: {
+        min: { x: snapshot.position.x + 24, y: snapshot.position.y, z: snapshot.position.z - 4 },
+        max: { x: snapshot.position.x + 16, y: snapshot.position.y + 4, z: snapshot.position.z + 4 },
+      },
+      tags: ["storage", "observed"],
+      properties: { source: "test" },
+    });
+
+    expect(() => service.assignTask(backend.id, {
+      kind: "build",
+      planId: BUILTIN_BUILD_IDS.basicShelter,
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay")).toThrow(expect.objectContaining({
+      code: "HOME_COMPOUND_PROTECTED_BOUNDS_INVALID",
+      statusCode: 422,
+    }));
+    expect(service.listTasks()).toHaveLength(0);
+    expect(backend.tasks).toHaveLength(0);
+  });
+
+  it("keeps locally remembered facilities ahead of a full caller-supplied protection list", () => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const snapshot = backend.snapshot();
+    const localBounds = {
+      min: { x: snapshot.position.x + 18, y: snapshot.position.y, z: snapshot.position.z + 18 },
+      max: { x: snapshot.position.x + 20, y: snapshot.position.y + 2, z: snapshot.position.z + 20 },
+    };
+    service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "storage",
+      name: "Authoritative local facility",
+      position: localBounds.min,
+      bounds: localBounds,
+      tags: ["storage"],
+      properties: { source: "test" },
+    });
+    const callerBounds = Array.from({ length: 64 }, (_, index) => ({
+      min: { x: 10_000 + index * 2, y: 64, z: 10_000 },
+      max: { x: 10_000 + index * 2, y: 65, z: 10_001 },
+    }));
+
+    const assigned = service.assignTask(backend.id, {
+      kind: "build",
+      planId: BUILTIN_BUILD_IDS.basicShelter,
+      requestedBy: "PlayerOne",
+      sitePolicy: "home-compound",
+      compoundPlacement: {
+        zone: "residential",
+        minDistance: 8,
+        maxDistance: 24,
+        facilityClearance: 12,
+        terrainPreparation: "light",
+        protectedBounds: callerBounds,
+      },
+    }, "antigravity-autoplay");
+
+    if (assigned.spec.kind !== "build" || !assigned.spec.compoundPlacement) {
+      throw new Error("missing protected compound contract");
+    }
+    expect(assigned.spec.compoundPlacement.protectedBounds).toHaveLength(64);
+    expect(assigned.spec.compoundPlacement.protectedBounds[0]).toEqual(localBounds);
+    expect(assigned.spec.compoundPlacement.protectedBounds).not.toContainEqual(callerBounds[63]);
+  });
+
+  it("keeps automatic placement around the remembered home while the NPC is far away", () => {
+    const backend = new FarFromHomeCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const assigned = service.assignTask(backend.id, {
+      kind: "build",
+      planId: BUILTIN_BUILD_IDS.cropFarm,
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+
+    if (assigned.spec.kind !== "build" || !assigned.spec.placementAnchor) {
+      throw new Error("missing home-relative placement");
+    }
+    const placedBounds = planBoundsAt(service, BUILTIN_BUILD_IDS.cropFarm, assigned.spec.placementAnchor);
+    expect(horizontalBoundsGap(placedBounds, backend.homeBounds)).toBeGreaterThanOrEqual(16);
+    expect(horizontalBoundsGap(placedBounds, backend.homeBounds)).toBeLessThanOrEqual(40);
+    expect(assigned.spec.placementAnchor.y).toBe(backend.homePosition.y);
+    expect(Math.hypot(
+      assigned.spec.placementAnchor.x - backend.npcPosition.x,
+      assigned.spec.placementAnchor.z - backend.npcPosition.z,
+    )).toBeGreaterThan(600);
+  });
+
+  it("fails without dispatching when the requested home ring has no clear candidate", () => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const home = backend.snapshot().position;
+    service.registerFacility({
+      worldId: backend.snapshot().worldId,
+      dimension: backend.snapshot().dimension,
+      type: "build",
+      name: "Compound exclusion fixture",
+      position: { ...home },
+      bounds: {
+        min: { x: home.x - 128, y: home.y - 8, z: home.z - 128 },
+        max: { x: home.x + 128, y: home.y + 32, z: home.z + 128 },
+      },
+      tags: ["test", "protected"],
+      properties: { source: "test" },
+    });
+
+    let caught: unknown;
+    try {
+      service.assignTask(backend.id, {
+        kind: "build",
+        planId: BUILTIN_BUILD_IDS.basicShelter,
+        requestedBy: "PlayerOne",
+      }, "antigravity-autoplay");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: "HOME_COMPOUND_SITE_NOT_FOUND",
+      statusCode: 409,
+      retryable: true,
+    });
+    expect(service.listTasks()).toHaveLength(0);
+    expect(backend.tasks).toHaveLength(0);
+  });
+
+  it("does not rewrite an explicitly supplied build coordinate", async () => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const placementAnchor = { x: 320, y: 91, z: -480 };
+    const offset = { x: 3, y: 1, z: -2 };
+    const assigned = service.assignTask(backend.id, {
+      kind: "build",
+      planId: BUILTIN_BUILD_IDS.basicShelter,
+      placement: "companion",
+      placementAnchor,
+      offset,
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+
+    expect(assigned.spec).toMatchObject({ kind: "build", placement: "companion", placementAnchor, offset });
+    expect(assigned.spec).not.toHaveProperty("sitePolicy");
+    expect(assigned.spec).not.toHaveProperty("compoundPlacement");
+    for (let attempt = 0; attempt < 50 && backend.tasks.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(backend.tasks[0]?.spec).toMatchObject({ kind: "build", placementAnchor, offset });
+  });
+
+  it("removes legacy relative offsets after automatic compound origin resolution", () => {
+    const backend = new MacroCaptureBackend("survival");
+    const service = new ControlService();
+    service.registerBackend(backend);
+    const assigned = service.assignTask(backend.id, {
+      kind: "build",
+      planId: BUILTIN_BUILD_IDS.cropFarm,
+      placement: "companion",
+      offset: { x: 3, y: 0, z: 3 },
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+
+    expect(assigned.spec).toMatchObject({ kind: "build", sitePolicy: "home-compound" });
+    expect(assigned.spec).not.toHaveProperty("offset");
+  });
+
+  it("routes a new crop farm into the production ring and preserves full-footprint clearance", async () => {
     const backend = new MacroCaptureBackend("survival");
     const service = new ControlService();
     service.registerBackend(backend);
@@ -736,26 +1278,29 @@ describe("ControlService", () => {
     expect(assigned.spec).toMatchObject({
       kind: "macro",
       placementAnchor: expect.objectContaining({ y: snapshot.position.y }),
+      compoundPlacement: {
+        zone: "production",
+        minDistance: 16,
+        maxDistance: 40,
+        facilityClearance: 12,
+      },
     });
     if (assigned.spec.kind !== "macro" || !assigned.spec.placementAnchor) throw new Error("missing crop-farm anchor");
-    const horizontalDistanceSquared = (assigned.spec.placementAnchor.x - snapshot.position.x) ** 2
-      + (assigned.spec.placementAnchor.z - snapshot.position.z) ** 2;
-    expect(horizontalDistanceSquared).toBeGreaterThanOrEqual(48 ** 2);
-    expect(
-      assigned.spec.placementAnchor.x >= protectedRanch.bounds!.min.x - 12
-      && assigned.spec.placementAnchor.x <= protectedRanch.bounds!.max.x + 12
-      && assigned.spec.placementAnchor.z >= protectedRanch.bounds!.min.z - 12
-      && assigned.spec.placementAnchor.z <= protectedRanch.bounds!.max.z + 12,
-    ).toBe(false);
+    const homeBounds = { min: snapshot.position, max: snapshot.position };
+    const farmBounds = planBoundsAt(service, BUILTIN_BUILD_IDS.cropFarm, assigned.spec.placementAnchor);
+    expect(horizontalBoundsGap(farmBounds, homeBounds)).toBeGreaterThanOrEqual(16);
+    expect(horizontalBoundsGap(farmBounds, homeBounds)).toBeLessThanOrEqual(40);
+    expect(boundsOverlapWithMargin(farmBounds, protectedRanch.bounds!, 12)).toBe(false);
     expect(backend.tasks.find((task) => task.spec.kind === "build")?.spec).toMatchObject({
       kind: "build",
-      sitePolicy: "outdoor",
+      sitePolicy: "home-compound",
       placementAnchor: assigned.spec.placementAnchor,
+      compoundPlacement: assigned.spec.compoundPlacement,
     });
   });
 
   it.each(["build.animal-pen", "life.establish-ranch"])(
-    "routes %s away from the house and preserves the Forge outdoor site guard",
+    "routes %s into the production ring and preserves the Forge compound site guard",
     async (skillId) => {
       const backend = new MacroCaptureBackend("survival");
       const service = new ControlService();
@@ -777,15 +1322,23 @@ describe("ControlService", () => {
       expect(assigned.spec).toMatchObject({
         kind: "macro",
         placementAnchor: expect.objectContaining({ y: snapshot.position.y }),
+        compoundPlacement: {
+          zone: "production",
+          minDistance: 16,
+          maxDistance: 40,
+          facilityClearance: 12,
+        },
       });
       if (assigned.spec.kind !== "macro" || !assigned.spec.placementAnchor) throw new Error("missing ranch anchor");
-      const horizontalDistanceSquared = (assigned.spec.placementAnchor.x - snapshot.position.x) ** 2
-        + (assigned.spec.placementAnchor.z - snapshot.position.z) ** 2;
-      expect(horizontalDistanceSquared).toBeGreaterThanOrEqual(48 ** 2);
+      const penBounds = planBoundsAt(service, BUILTIN_BUILD_IDS.animalPen, assigned.spec.placementAnchor);
+      const homeBounds = { min: snapshot.position, max: snapshot.position };
+      expect(horizontalBoundsGap(penBounds, homeBounds)).toBeGreaterThanOrEqual(16);
+      expect(horizontalBoundsGap(penBounds, homeBounds)).toBeLessThanOrEqual(40);
       expect(backend.tasks.find((task) => task.spec.kind === "build")?.spec).toMatchObject({
         kind: "build",
-        sitePolicy: "outdoor",
+        sitePolicy: "home-compound",
         placementAnchor: assigned.spec.placementAnchor,
+        compoundPlacement: assigned.spec.compoundPlacement,
       });
     },
   );
@@ -916,39 +1469,79 @@ describe("ControlService", () => {
     });
   });
 
-  it("routes a direct farm command to a same-dimension remembered field beyond the local scan", async () => {
+  it("does not reuse a legacy remote farm unless the request explicitly asks for it", async () => {
     const service = new ControlService();
     const backend = new MacroCaptureBackend("survival");
-    service.registerBackend(backend);
     const snapshot = backend.snapshot();
+    service.registerFacility({
+      worldId: snapshot.worldId,
+      dimension: snapshot.dimension,
+      type: "home",
+      name: "Remembered house",
+      position: snapshot.position,
+      bounds: {
+        min: { x: snapshot.position.x - 4, y: snapshot.position.y - 1, z: snapshot.position.z - 4 },
+        max: { x: snapshot.position.x + 4, y: snapshot.position.y + 8, z: snapshot.position.z + 4 },
+      },
+      tags: ["home", "manual-boundary"],
+      properties: { source: "test", boundarySource: "manual", confidence: 1 },
+    });
     const remoteFarm = service.registerFacility({
       worldId: snapshot.worldId,
       dimension: snapshot.dimension,
       type: "farm",
-      name: "Remembered outdoor farm",
-      position: { x: 40, y: 73, z: -190 },
+      name: "Legacy remote farm",
+      position: { x: snapshot.position.x + 120, y: snapshot.position.y, z: snapshot.position.z },
+      bounds: {
+        min: { x: snapshot.position.x + 116, y: snapshot.position.y, z: snapshot.position.z - 4 },
+        max: { x: snapshot.position.x + 124, y: snapshot.position.y + 1, z: snapshot.position.z + 4 },
+      },
       tags: ["crop", "farmland"],
-      properties: { source: "test.snapshot" },
+      properties: { source: "legacy.agent-journal" },
+    });
+    service.registerBackend(backend);
+
+    expect(service.listFacilities(snapshot.worldId).find((facility) => facility.id === remoteFarm.id)).toMatchObject({
+      properties: {
+        compoundZone: "production",
+        compoundRole: "secondary-outpost",
+        homeCompoundCompliant: false,
+        placementPolicyVersion: 2,
+      },
     });
 
-    const assigned = service.assignTask(backend.id, {
+    const ordinary = service.assignTask(backend.id, {
       kind: "farm",
       cropId: "minecraft:wheat",
       action: "cycle",
       radius: 12,
       requestedBy: "PlayerOne",
     }, "antigravity-autoplay");
-    for (let attempt = 0; attempt < 50 && service.getTask(assigned.id).status !== "succeeded"; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && service.getTask(ordinary.id).status !== "succeeded"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(ordinary.spec).toMatchObject({ kind: "farm", radius: 96 });
+    expect(ordinary.spec).not.toHaveProperty("placementAnchor");
+
+    const explicit = service.assignTask(backend.id, {
+      kind: "farm",
+      cropId: "minecraft:wheat",
+      action: "cycle",
+      radius: 12,
+      note: "请继续使用旧的农田",
+      requestedBy: "PlayerOne",
+    }, "antigravity-autoplay");
+    for (let attempt = 0; attempt < 50 && service.getTask(explicit.id).status !== "succeeded"; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    expect(backend.tasks).toHaveLength(1);
-    expect(backend.tasks[0]?.spec).toMatchObject({
+    expect(backend.tasks).toHaveLength(2);
+    expect(backend.tasks[1]?.spec).toMatchObject({
       kind: "farm",
       radius: 96,
       placementAnchor: remoteFarm.position,
     });
-    expect(service.getTask(assigned.id)).toMatchObject({ status: "succeeded", progress: 1 });
+    expect(service.getTask(explicit.id)).toMatchObject({ status: "succeeded", progress: 1 });
   });
 
   it("injects the nearest remembered farm into automatic food provisioning", () => {

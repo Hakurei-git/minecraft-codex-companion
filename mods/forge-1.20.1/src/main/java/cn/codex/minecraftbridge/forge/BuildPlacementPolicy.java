@@ -64,6 +64,172 @@ final class BuildPlacementPolicy {
         return "outdoor".equals(sitePolicy) && completedBlueprintBlocks <= 0;
     }
 
+    /** A compound origin is locked into the persisted plan after its first successful validation. */
+    static boolean shouldResolveHomeCompoundSite(
+        String sitePolicy,
+        int completedBlueprintBlocks,
+        boolean placementAlreadyLocked
+    ) {
+        return "home-compound".equals(sitePolicy)
+            && completedBlueprintBlocks <= 0
+            && !placementAlreadyLocked;
+    }
+
+    /** Shortest horizontal edge-to-edge distance between two complete blueprint/facility bounds. */
+    static double horizontalGap(NpcHomeStorage.Bounds left, NpcHomeStorage.Bounds right) {
+        if (left == null || right == null) return Double.POSITIVE_INFINITY;
+        long dx = left.max().getX() < right.min().getX()
+            ? (long) right.min().getX() - left.max().getX()
+            : right.max().getX() < left.min().getX()
+                ? (long) left.min().getX() - right.max().getX()
+                : 0;
+        long dz = left.max().getZ() < right.min().getZ()
+            ? (long) right.min().getZ() - left.max().getZ()
+            : right.max().getZ() < left.min().getZ()
+                ? (long) left.min().getZ() - right.max().getZ()
+                : 0;
+        return Math.hypot((double) dx, (double) dz);
+    }
+
+    static boolean insideCompoundRing(
+        NpcHomeStorage.Bounds candidate,
+        NpcHomeStorage.Bounds home,
+        int minimumDistance,
+        int maximumDistance
+    ) {
+        double distance = horizontalGap(candidate, home);
+        return distance >= Math.max(0, minimumDistance)
+            && distance <= Math.max(Math.max(0, minimumDistance), maximumDistance);
+    }
+
+    static boolean overlapsWithMargin(
+        NpcHomeStorage.Bounds left,
+        NpcHomeStorage.Bounds right,
+        int margin
+    ) {
+        if (left == null || right == null) return false;
+        long padding = Math.max(0, margin);
+        return left.max().getX() >= (long) right.min().getX() - padding
+            && left.min().getX() <= (long) right.max().getX() + padding
+            && left.max().getZ() >= (long) right.min().getZ() - padding
+            && left.min().getZ() <= (long) right.max().getZ() + padding;
+    }
+
+    /** Inclusive block-coordinate span guard; [0, 63] is 64 blocks, [0, 64] is not. */
+    static boolean inclusiveSpanAtMost(int minimum, int maximum, int maximumSize) {
+        return maximum >= minimum
+            && maximumSize > 0
+            && (long) maximum - minimum + 1L <= maximumSize;
+    }
+
+    /**
+     * Protected infrastructure is immutable during compound construction. An
+     * already exact matching block is skipped before this guard is reached;
+     * even a same-ID state correction could rotate a workstation or alter a
+     * redstone circuit that appeared after site discovery.
+     */
+    static boolean mayModifyCompoundTarget(
+        String currentBlockId,
+        String desiredBlockId,
+        boolean protectedInfrastructure
+    ) {
+        return !protectedInfrastructure;
+    }
+
+    static boolean compoundLockMatches(
+        String currentDimension,
+        BlockPos restoredOrigin,
+        String lockedDimension,
+        BlockPos lockedOrigin
+    ) {
+        return currentDimension != null
+            && !currentDimension.isBlank()
+            && currentDimension.equals(lockedDimension)
+            && restoredOrigin != null
+            && restoredOrigin.equals(lockedOrigin);
+    }
+
+    static int maximumTerrainDelta(String preparationMode) {
+        return "light".equals(preparationMode) ? 2 : 0;
+    }
+
+    /** Site discovery may clear plants/leaves, but never chooses occupied infrastructure. */
+    static boolean mayUseCompoundVolumeCell(
+        boolean air,
+        boolean replaceable,
+        boolean leaves,
+        boolean fluid,
+        boolean hasBlockEntity,
+        boolean protectedInfrastructure,
+        float destroySpeed
+    ) {
+        if (fluid || hasBlockEntity || protectedInfrastructure || destroySpeed < 0.0F) return false;
+        return air || replaceable || leaves;
+    }
+
+    static boolean isProtectedCompoundInfrastructureId(String blockId) {
+        if (blockId == null || blockId.isBlank()) return true;
+        String path = blockId.contains(":") ? blockId.substring(blockId.indexOf(':') + 1) : blockId;
+        return path.endsWith("_bed")
+            || path.endsWith("_door")
+            || path.endsWith("_trapdoor")
+            || path.endsWith("_fence")
+            || path.endsWith("_fence_gate")
+            || path.endsWith("_sign")
+            || path.endsWith("_wall_sign")
+            || path.endsWith("_hanging_sign")
+            || path.endsWith("_wall_hanging_sign")
+            || path.endsWith("_button")
+            || path.endsWith("_pressure_plate")
+            || path.endsWith("_rail")
+            || path.equals("rail")
+            || path.contains("redstone")
+            || path.contains("repeater")
+            || path.contains("comparator")
+            || path.contains("piston")
+            || path.contains("observer")
+            || path.contains("lever")
+            || path.contains("hopper")
+            || path.contains("dispenser")
+            || path.contains("dropper")
+            || path.contains("crafting_table")
+            || path.contains("furnace")
+            || path.contains("smoker")
+            || path.contains("stonecutter")
+            || path.contains("loom")
+            || path.contains("smithing_table")
+            || path.contains("cartography_table")
+            || path.contains("fletching_table")
+            || path.contains("grindstone")
+            || path.contains("anvil")
+            || path.contains("brewing_stand")
+            || path.contains("enchanting_table")
+            || path.contains("cauldron")
+            || path.contains("composter")
+            || path.contains("lectern")
+            || path.contains("bookshelf")
+            || path.contains("beehive")
+            || path.contains("bee_nest")
+            || path.contains("bell")
+            || path.contains("jukebox")
+            || path.contains("note_block")
+            || path.contains("respawn_anchor")
+            || path.contains("lodestone")
+            || path.contains("beacon")
+            || path.contains("chest")
+            || path.contains("barrel")
+            || path.contains("shulker_box")
+            || path.contains("spawner")
+            || path.endsWith("_crop")
+            || path.equals("wheat")
+            || path.equals("carrots")
+            || path.equals("potatoes")
+            || path.equals("beetroots")
+            || path.equals("nether_wart")
+            || path.equals("cocoa")
+            || path.endsWith("_stem");
+    }
+
     static boolean terrainFits(int minimumSurface, int maximumSurface, int maximumDelta) {
         return minimumSurface != Integer.MAX_VALUE
             && maximumSurface != Integer.MIN_VALUE

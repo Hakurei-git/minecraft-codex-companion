@@ -3,6 +3,7 @@ package cn.codex.minecraftbridge.forge;
 import cn.codex.minecraftbridge.client.BridgeConfig;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonElement;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
@@ -81,6 +82,7 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraftforge.common.ToolActions;
 
 import java.lang.reflect.Method;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Arrays;
@@ -88,6 +90,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -125,6 +128,14 @@ public final class NpcTaskEngine {
     private static final int OUTDOOR_BUILD_SEARCH_STEP = 8;
     private static final int OUTDOOR_BUILD_MAX_TERRAIN_DELTA = 3;
     private static final int OUTDOOR_BUILD_RELAXED_TERRAIN_DELTA = 6;
+    private static final int HOME_COMPOUND_SEARCH_STEP = 4;
+    private static final int HOME_COMPOUND_MAX_BLUEPRINT_SPAN = 64;
+    private static final int HOME_COMPOUND_MAX_PROTECTED_BOUNDS = 64;
+    private static final int HOME_COMPOUND_MAX_BLUEPRINT_CELLS = 65_536;
+    private static final int HOME_COMPOUND_MAX_CANDIDATE_PROBES = 8_192;
+    private static final int HOME_COMPOUND_MAX_BLOCK_PROBES = 131_072;
+    private static final int HOME_COMPOUND_MAX_HORIZONTAL_COORDINATE = 30_000_000;
+    private static final String HOME_COMPOUND_LOCK_KEY = "_codexHomeCompoundPlacement";
     private static final double DRAGON_MOUNTED_FLIGHT_STEP = 0.55D;
     private static final TicketType<UUID> TASK_CHUNK_TICKET = TicketType.create(
         "minecraft_codex_task",
@@ -317,6 +328,13 @@ public final class NpcTaskEngine {
             next.buildStandPathCursor = 0;
             next.lastDistance = -1;
             next.lastTeleportTarget = null;
+            // Initialization failures (including bounded site discovery) can
+            // occur before buildBlocks is assigned. Always reconstruct the
+            // registry-backed build state instead of replaying a half-built
+            // initialization checkpoint and dereferencing a null array.
+            next.initialized = false;
+            next.buildBlocks = null;
+            next.targetBlock = null;
             next.buildLastProgressTick = next.ticks;
             npc.setStatus("正在从上次失败点恢复建造");
         }
@@ -2636,6 +2654,59 @@ public final class NpcTaskEngine {
             fail(work, "制作前置采集超时", "CRAFT_PREREQUISITE_TIMEOUT");
         }
         return true;
+    }
+
+    private record BlueprintFootprint(
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        int minZ,
+        int maxZ,
+        List<BlockPos> occupiedCells,
+        List<BlockPos> groundCells
+    ) {}
+
+    private record CompoundPlacementSpec(
+        String zone,
+        int minimumDistance,
+        int maximumDistance,
+        int facilityClearance,
+        String terrainPreparation,
+        List<NpcHomeStorage.Bounds> protectedBounds
+    ) {}
+
+    private record CompoundBuildSite(
+        BlockPos origin,
+        List<BlockPos> foundationOffsets,
+        String foundationBlockId,
+        double homeDistance
+    ) {}
+
+    private record CompoundCandidate(int x, int z, double homeDistance, double preferredDistance) {}
+
+    private record CompoundPlacementLock(
+        String dimension,
+        BlockPos origin,
+        String zone,
+        Integer minimumDistance,
+        Integer maximumDistance,
+        Integer facilityClearance,
+        String terrainPreparation
+    ) {}
+
+    private static final class CompoundSearchBudget {
+        private int remainingBlockProbes = HOME_COMPOUND_MAX_BLOCK_PROBES;
+
+        boolean consumeBlockProbe() {
+            if (remainingBlockProbes <= 0) return false;
+            remainingBlockProbes--;
+            return true;
+        }
+
+        boolean exhausted() {
+            return remainingBlockProbes <= 0;
+        }
     }
 
     private boolean ensureFarmSeedGatherOnSurface(ActiveWork work, String itemId) {
@@ -6320,7 +6391,6 @@ public final class NpcTaskEngine {
                 fail(work, "建筑计划缺少方块或原点", "BUILD_PLAN_INVALID");
                 return;
             }
-            work.initialized = true;
             BlockPos restoredOrigin = work.buildOrigin;
             work.buildOrigin = restoredOrigin == null
                 ? block(work.plan.getAsJsonObject("origin"))
@@ -6333,7 +6403,53 @@ public final class NpcTaskEngine {
                     ? block(work.spec.getAsJsonObject("placementAnchor"))
                     : null;
                 NpcHomeStorage.Bounds rememberedHomeBounds = homeBounds(work.spec);
-                if (restoredOrigin == null) {
+                boolean homeCompound = "home-compound".equals(sitePolicy);
+                if (homeCompound && restoredOrigin == null) {
+                    BlockPos strictPlanOrigin = strictBlock(work.plan.getAsJsonObject("origin"));
+                    BlockPos strictPlacementAnchor = work.spec.has("placementAnchor")
+                        && work.spec.get("placementAnchor").isJsonObject()
+                        ? strictBlock(work.spec.getAsJsonObject("placementAnchor"))
+                        : null;
+                    if (strictPlanOrigin == null
+                        || work.spec.has("placementAnchor") && strictPlacementAnchor == null) {
+                        fail(work, "家园蓝图原点与选址锚点必须是完整整数坐标", "BUILD_PLAN_INVALID");
+                        return;
+                    }
+                    // Preserve the established plan-origin semantics; the
+                    // placement anchor is only an independently validated
+                    // preference supplied alongside that resolved plan.
+                    work.buildOrigin = strictPlanOrigin;
+                }
+                if (homeCompound && work.spec.has("homeBounds") && rememberedHomeBounds == null) {
+                    fail(work, "家园边界必须包含有序的六轴整数坐标", "BUILD_PLAN_INVALID");
+                    return;
+                }
+                boolean compoundLockPresent = work.plan.has(HOME_COMPOUND_LOCK_KEY);
+                CompoundPlacementLock compoundLock = compoundLockPresent
+                    ? compoundPlacementLock(work.plan)
+                    : null;
+                if (homeCompound && compoundLockPresent && (
+                    compoundLock == null
+                        || !BuildPlacementPolicy.compoundLockMatches(
+                            level.dimension().location().toString(),
+                            restoredOrigin,
+                            compoundLock.dimension(),
+                            compoundLock.origin()
+                        )
+                        || !compoundLockContractMatches(compoundLock, compoundPlacement(work.spec))
+                )) {
+                    fail(
+                        work,
+                        "家园施工锁与当前维度或建筑原点不一致，已拒绝移动锁定位置",
+                        "BUILD_CHECKPOINT_INVALID"
+                    );
+                    return;
+                }
+                if (homeCompound && !compoundLockPresent && restoredOrigin != null && work.buildIndex > 0) {
+                    fail(work, "家园建筑检查点缺少施工锁，已拒绝无锁恢复", "BUILD_CHECKPOINT_INVALID");
+                    return;
+                }
+                if (restoredOrigin == null && !homeCompound) {
                     BlockPos surfaceProbe = BuildPlacementPolicy.surfaceProbe(
                         placement,
                         work.buildOrigin,
@@ -6355,7 +6471,43 @@ public final class NpcTaskEngine {
                     );
                     work.buildOrigin = new BlockPos(work.buildOrigin.getX(), originY, work.buildOrigin.getZ());
                 }
-                if (BuildPlacementPolicy.shouldResolveOutdoorSite(sitePolicy, work.buildIndex)) {
+                boolean compoundPlacementLocked = homeCompound && compoundLockPresent;
+                if (BuildPlacementPolicy.shouldResolveHomeCompoundSite(
+                    sitePolicy,
+                    work.buildIndex,
+                    compoundPlacementLocked
+                )) {
+                    CompoundPlacementSpec compoundSpec = compoundPlacement(work.spec);
+                    if (compoundSpec == null) {
+                        work.buildOrigin = null;
+                        fail(work, "家园选址参数或受保护边界格式无效", "BUILD_PLAN_INVALID");
+                        return;
+                    }
+                    CompoundBuildSite compoundSite = findHomeCompoundBuildSite(
+                        level,
+                        work.buildOrigin,
+                        work.plan,
+                        rememberedHomeBounds,
+                        compoundSpec
+                    );
+                    if (compoundSite == null) {
+                        work.buildOrigin = null;
+                        fail(
+                            work,
+                            "房屋附近的目标分区没有安全施工位置；未扩大到远处，也未放置任何方块",
+                            "HOME_COMPOUND_SITE_NOT_FOUND"
+                        );
+                        return;
+                    }
+                    work.buildOrigin = compoundSite.origin();
+                    lockHomeCompoundPlacement(level, work.plan, compoundSite, compoundSpec);
+                    progress(
+                        work,
+                        0.0D,
+                        "已锁定家园" + compoundSpec.zone() + "分区施工点，距房屋边界 "
+                            + String.format(Locale.ROOT, "%.1f", compoundSite.homeDistance()) + " 格"
+                    );
+                } else if (BuildPlacementPolicy.shouldResolveOutdoorSite(sitePolicy, work.buildIndex)) {
                     BlockPos outdoorOrigin = findOutdoorBuildOrigin(
                         level,
                         work.buildOrigin,
@@ -6414,6 +6566,12 @@ public final class NpcTaskEngine {
             if (work.buildIndex == 0 && paletteMetadata.has("summary")) {
                 progress(work, 0.0D, paletteMetadata.get("summary").getAsString());
             }
+            // Mark the build initialized only after every validation, site lock,
+            // palette resolution and checkpoint check has succeeded.  A failed
+            // home-site lookup is recoverable; leaving this false lets the same
+            // task id retry through the complete initialization path instead of
+            // dereferencing a half-built checkpoint on the next tick.
+            work.initialized = true;
         }
         if (work.ticks - work.buildLastProgressTick > BUILD_MATERIAL_STALL_TIMEOUT_TICKS) {
             fail(work, "建造阶段长时间没有进展", "BUILD_STALLED");
@@ -6467,6 +6625,7 @@ public final class NpcTaskEngine {
         JsonObject entry = work.buildBlocks.get(work.buildIndex).getAsJsonObject();
         String blockId = string(entry, "blockId", "minecraft:air");
         BlockState currentState = npc.level().getBlockState(work.targetBlock);
+        if (!mayModifyBuildTarget(work, work.targetBlock, currentState, blockId)) return;
         boolean correctingState = id(currentState.getBlock()).equals(blockId)
             && !BuildPlacementPolicy.isFluidSource(blockId);
         if (correctingState) {
@@ -6525,6 +6684,12 @@ public final class NpcTaskEngine {
         // normal interaction did not consume an action. World-border and owner permission checks
         // keep this fallback from bypassing protection or placing outside the loaded world.
         if (!placed && !result.consumesAction() && !BuildPlacementPolicy.isFluidSource(blockId)) {
+            // Forge interaction hooks may change the target during useItemOn.
+            // Re-read and re-authorize it before the direct fallback so a
+            // newly inserted wire, workstation, crop or container is never
+            // overwritten in the same server tick.
+            BlockState latestState = npc.level().getBlockState(work.targetBlock);
+            if (!mayModifyBuildTarget(work, work.targetBlock, latestState, blockId)) return;
             placed = placeBuildBlockDirectly(work.targetBlock, blockId, item, sourceSlot);
         }
         if (!placed || !id(npc.level().getBlockState(work.targetBlock).getBlock()).equals(blockId)) {
@@ -6533,6 +6698,526 @@ public final class NpcTaskEngine {
         }
         if (!applyExactBuildState(work, work.targetBlock, entry)) return;
         finishBuildBlock(work, 0.025F);
+    }
+
+    private CompoundPlacementSpec compoundPlacement(JsonObject spec) {
+        if (spec == null) return null;
+        if (spec.has("compoundPlacement") && !spec.get("compoundPlacement").isJsonObject()) return null;
+        JsonObject requested = spec.has("compoundPlacement")
+            ? spec.getAsJsonObject("compoundPlacement")
+            : new JsonObject();
+        if (requested.has("zone") && !isStringPrimitive(requested.get("zone"))) return null;
+        String zone = requested.has("zone") ? requested.get("zone").getAsString() : "production";
+        if (!zone.equals("residential") && !zone.equals("production") && !zone.equals("industrial")) {
+            return null;
+        }
+        int zoneMinimum = switch (zone) {
+            case "residential" -> 8;
+            case "industrial" -> 40;
+            default -> 16;
+        };
+        int zoneMaximum = switch (zone) {
+            case "residential" -> 24;
+            case "industrial" -> 64;
+            default -> 40;
+        };
+        Integer requestedMinimum = strictOptionalInteger(requested, "minDistance", zoneMinimum);
+        Integer requestedMaximum = strictOptionalInteger(requested, "maxDistance", zoneMaximum);
+        Integer requestedClearance = strictOptionalInteger(requested, "facilityClearance", 12);
+        if (requestedMinimum == null || requestedMaximum == null || requestedClearance == null) return null;
+        int minimumDistance = Mth.clamp(requestedMinimum, zoneMinimum, zoneMaximum);
+        int maximumDistance = Mth.clamp(
+            requestedMaximum,
+            minimumDistance,
+            zoneMaximum
+        );
+        int facilityClearance = Mth.clamp(requestedClearance, 12, 32);
+        if (requested.has("terrainPreparation") && !isStringPrimitive(requested.get("terrainPreparation"))) {
+            return null;
+        }
+        String terrainPreparation = requested.has("terrainPreparation")
+            ? requested.get("terrainPreparation").getAsString()
+            : "light";
+        if (!terrainPreparation.equals("light") && !terrainPreparation.equals("none")) return null;
+        List<NpcHomeStorage.Bounds> protectedBounds = new ArrayList<>();
+        if (requested.has("protectedBounds")) {
+            if (!requested.get("protectedBounds").isJsonArray()) return null;
+            JsonArray entries = requested.getAsJsonArray("protectedBounds");
+            if (entries.size() > HOME_COMPOUND_MAX_PROTECTED_BOUNDS) return null;
+            for (int index = 0; index < entries.size(); index++) {
+                if (!entries.get(index).isJsonObject()) return null;
+                NpcHomeStorage.Bounds parsed = boundsFromJson(entries.get(index).getAsJsonObject());
+                if (parsed == null) return null;
+                protectedBounds.add(parsed);
+            }
+        }
+        return new CompoundPlacementSpec(
+            zone,
+            minimumDistance,
+            maximumDistance,
+            facilityClearance,
+            terrainPreparation,
+            List.copyOf(protectedBounds)
+        );
+    }
+
+    private BlueprintFootprint blueprintFootprint(JsonObject plan) {
+        if (plan == null || !plan.has("blocks") || !plan.get("blocks").isJsonArray()) return null;
+        JsonArray blocks = plan.getAsJsonArray("blocks");
+        if (blocks.isEmpty() || blocks.size() > HOME_COMPOUND_MAX_BLUEPRINT_CELLS) return null;
+        int minX = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE;
+        int maxZ = Integer.MIN_VALUE;
+        Set<BlockPos> occupied = new LinkedHashSet<>();
+        for (int index = 0; index < blocks.size(); index++) {
+            if (!blocks.get(index).isJsonObject()) return null;
+            JsonObject entry = blocks.get(index).getAsJsonObject();
+            if (!entry.has("blockId") || !isStringPrimitive(entry.get("blockId"))
+                || !entry.has("position") || !entry.get("position").isJsonObject()) return null;
+            BlockPos relative = strictBlock(entry.getAsJsonObject("position"));
+            if (relative == null) return null;
+            if (entry.get("blockId").getAsString().equals("minecraft:air")) continue;
+            occupied.add(relative.immutable());
+            if (occupied.size() > HOME_COMPOUND_MAX_BLUEPRINT_CELLS) return null;
+            minX = Math.min(minX, relative.getX());
+            maxX = Math.max(maxX, relative.getX());
+            minY = Math.min(minY, relative.getY());
+            maxY = Math.max(maxY, relative.getY());
+            minZ = Math.min(minZ, relative.getZ());
+            maxZ = Math.max(maxZ, relative.getZ());
+        }
+        if (occupied.isEmpty()
+            || !BuildPlacementPolicy.inclusiveSpanAtMost(
+                minX, maxX, HOME_COMPOUND_MAX_BLUEPRINT_SPAN
+            )
+            || !BuildPlacementPolicy.inclusiveSpanAtMost(
+                minY, maxY, HOME_COMPOUND_MAX_BLUEPRINT_SPAN
+            )
+            || !BuildPlacementPolicy.inclusiveSpanAtMost(
+                minZ, maxZ, HOME_COMPOUND_MAX_BLUEPRINT_SPAN
+            )) return null;
+        final int groundY = minY;
+        List<BlockPos> ground = occupied.stream()
+            .filter(position -> position.getY() == groundY)
+            .distinct()
+            .toList();
+        if (ground.isEmpty()) return null;
+        return new BlueprintFootprint(
+            minX,
+            maxX,
+            minY,
+            maxY,
+            minZ,
+            maxZ,
+            List.copyOf(occupied),
+            List.copyOf(ground)
+        );
+    }
+
+    private CompoundBuildSite findHomeCompoundBuildSite(
+        ServerLevel level,
+        BlockPos preferred,
+        JsonObject plan,
+        NpcHomeStorage.Bounds rememberedHomeBounds,
+        CompoundPlacementSpec placement
+    ) {
+        BlueprintFootprint footprint = blueprintFootprint(plan);
+        if (footprint == null) return null;
+        NpcHomeStorage.Bounds home = resolveHomeCompoundBounds(level, rememberedHomeBounds);
+        if (home == null || !validBounds(home)) return null;
+
+        long minOriginX = (long) home.min().getX() - placement.maximumDistance() - footprint.maxX();
+        long maxOriginX = (long) home.max().getX() + placement.maximumDistance() - footprint.minX();
+        long minOriginZ = (long) home.min().getZ() - placement.maximumDistance() - footprint.maxZ();
+        long maxOriginZ = (long) home.max().getZ() + placement.maximumDistance() - footprint.minZ();
+        if (!validCompoundOriginRange(minOriginX, maxOriginX)
+            || !validCompoundOriginRange(minOriginZ, maxOriginZ)) return null;
+        List<CompoundCandidate> candidates = new ArrayList<>();
+        Set<Long> unique = new HashSet<>();
+        addCompoundCandidate(candidates, unique, preferred.getX(), preferred.getZ(), preferred, footprint, home, placement);
+        long startX = Math.floorDiv(minOriginX, (long) HOME_COMPOUND_SEARCH_STEP) * HOME_COMPOUND_SEARCH_STEP;
+        if (startX < minOriginX) startX += HOME_COMPOUND_SEARCH_STEP;
+        long startZ = Math.floorDiv(minOriginZ, (long) HOME_COMPOUND_SEARCH_STEP) * HOME_COMPOUND_SEARCH_STEP;
+        if (startZ < minOriginZ) startZ += HOME_COMPOUND_SEARCH_STEP;
+        long xCount = startX > maxOriginX ? 0L : (maxOriginX - startX) / HOME_COMPOUND_SEARCH_STEP + 1L;
+        long zCount = startZ > maxOriginZ ? 0L : (maxOriginZ - startZ) / HOME_COMPOUND_SEARCH_STEP + 1L;
+        if (xCount <= 0L || zCount <= 0L
+            || xCount > HOME_COMPOUND_MAX_CANDIDATE_PROBES
+            || zCount > HOME_COMPOUND_MAX_CANDIDATE_PROBES
+            || xCount * zCount > HOME_COMPOUND_MAX_CANDIDATE_PROBES) return null;
+        for (long x = startX; x <= maxOriginX; x += HOME_COMPOUND_SEARCH_STEP) {
+            for (long z = startZ; z <= maxOriginZ; z += HOME_COMPOUND_SEARCH_STEP) {
+                addCompoundCandidate(
+                    candidates,
+                    unique,
+                    (int) x,
+                    (int) z,
+                    preferred,
+                    footprint,
+                    home,
+                    placement
+                );
+            }
+        }
+        candidates.sort(Comparator
+            .comparingInt((CompoundCandidate candidate) -> (
+                candidate.x() == preferred.getX() && candidate.z() == preferred.getZ()
+            ) ? 0 : 1)
+            .thenComparingDouble(CompoundCandidate::homeDistance)
+            .thenComparingDouble(CompoundCandidate::preferredDistance)
+            .thenComparingInt(CompoundCandidate::x)
+            .thenComparingInt(CompoundCandidate::z));
+        CompoundSearchBudget budget = new CompoundSearchBudget();
+        for (CompoundCandidate candidate : candidates) {
+            CompoundBuildSite site = validateHomeCompoundBuildSite(level, candidate, footprint, placement, budget);
+            if (site != null) return site;
+            if (budget.exhausted()) return null;
+        }
+        return null;
+    }
+
+    private void addCompoundCandidate(
+        List<CompoundCandidate> candidates,
+        Set<Long> unique,
+        int x,
+        int z,
+        BlockPos preferred,
+        BlueprintFootprint footprint,
+        NpcHomeStorage.Bounds home,
+        CompoundPlacementSpec placement
+    ) {
+        if (!validCompoundHorizontalCoordinate(x) || !validCompoundHorizontalCoordinate(z)) return;
+        long key = ((long) x << 32) ^ (z & 0xffffffffL);
+        if (!unique.add(key)) return;
+        long candidateMinX = (long) x + footprint.minX();
+        long candidateMaxX = (long) x + footprint.maxX();
+        long candidateMinZ = (long) z + footprint.minZ();
+        long candidateMaxZ = (long) z + footprint.maxZ();
+        if (!validCompoundHorizontalCoordinate(candidateMinX)
+            || !validCompoundHorizontalCoordinate(candidateMaxX)
+            || !validCompoundHorizontalCoordinate(candidateMinZ)
+            || !validCompoundHorizontalCoordinate(candidateMaxZ)) return;
+        NpcHomeStorage.Bounds candidateBounds = new NpcHomeStorage.Bounds(
+            new BlockPos((int) candidateMinX, 0, (int) candidateMinZ),
+            new BlockPos((int) candidateMaxX, 0, (int) candidateMaxZ)
+        );
+        if (!BuildPlacementPolicy.insideCompoundRing(
+            candidateBounds,
+            home,
+            placement.minimumDistance(),
+            placement.maximumDistance()
+        )) return;
+        for (NpcHomeStorage.Bounds protectedBounds : placement.protectedBounds()) {
+            if (BuildPlacementPolicy.overlapsWithMargin(
+                candidateBounds,
+                protectedBounds,
+                placement.facilityClearance()
+            )) return;
+        }
+        double dx = (double) x - preferred.getX();
+        double dz = (double) z - preferred.getZ();
+        candidates.add(new CompoundCandidate(
+            x,
+            z,
+            BuildPlacementPolicy.horizontalGap(candidateBounds, home),
+            dx * dx + dz * dz
+        ));
+    }
+
+    private CompoundBuildSite validateHomeCompoundBuildSite(
+        ServerLevel level,
+        CompoundCandidate candidate,
+        BlueprintFootprint footprint,
+        CompoundPlacementSpec placement,
+        CompoundSearchBudget budget
+    ) {
+        int minimumSurface = Integer.MAX_VALUE;
+        int maximumSurface = Integer.MIN_VALUE;
+        Map<Long, Integer> surfaces = new HashMap<>();
+        for (BlockPos relative : footprint.groundCells()) {
+            long targetX = (long) candidate.x() + relative.getX();
+            long targetZ = (long) candidate.z() + relative.getZ();
+            if (!validCompoundHorizontalCoordinate(targetX)
+                || !validCompoundHorizontalCoordinate(targetZ)) return null;
+            int x = (int) targetX;
+            int z = (int) targetZ;
+            BlockPos horizontalProbe = new BlockPos(x, preferredBuildProbeY(level), z);
+            // Never ticket or synchronously generate an unvalidated/out-of-
+            // border chunk during a search that may ultimately fail.
+            if (!level.getWorldBorder().isWithinBounds(horizontalProbe)
+                || !compoundChunkLoaded(level, x, z)
+                || !budget.consumeBlockProbe()) return null;
+            int surface = compoundSurfaceY(level, x, z, budget);
+            if (surface == Integer.MIN_VALUE) return null;
+            if (surface <= level.getMinBuildHeight() || surface >= level.getMaxBuildHeight()) return null;
+            BlockPos buildCell = new BlockPos(x, surface, z);
+            BlockPos support = buildCell.below();
+            BlockState supportState = level.getBlockState(support);
+            if (!level.getWorldBorder().isWithinBounds(buildCell)
+                || !level.getFluidState(buildCell).isEmpty()
+                || isProtectedCompoundInfrastructure(level, support, supportState)
+                || !supportState.isFaceSturdy(level, support, Direction.UP)) return null;
+            surfaces.put(horizontalColumnKey(relative.getX(), relative.getZ()), surface);
+            minimumSurface = Math.min(minimumSurface, surface);
+            maximumSurface = Math.max(maximumSurface, surface);
+            if (!BuildPlacementPolicy.terrainFits(
+                minimumSurface,
+                maximumSurface,
+                BuildPlacementPolicy.maximumTerrainDelta(placement.terrainPreparation())
+            )) return null;
+        }
+        if (maximumSurface == Integer.MIN_VALUE) return null;
+        long originY = (long) maximumSurface - footprint.minY();
+        long lowestTargetY = originY + footprint.minY();
+        long highestTargetY = originY + footprint.maxY();
+        if (originY < Integer.MIN_VALUE || originY > Integer.MAX_VALUE
+            || lowestTargetY < level.getMinBuildHeight()
+            || highestTargetY >= level.getMaxBuildHeight()) return null;
+        BlockPos origin = new BlockPos(candidate.x(), (int) originY, candidate.z());
+        for (BlockPos relative : footprint.occupiedCells()) {
+            BlockPos target = safeCompoundOffset(origin, relative);
+            if (target == null
+                || target.getY() < level.getMinBuildHeight()
+                || target.getY() >= level.getMaxBuildHeight()
+                || !level.getWorldBorder().isWithinBounds(target)
+                || !compoundChunkLoaded(level, target.getX(), target.getZ())
+                || !budget.consumeBlockProbe()) return null;
+            BlockState state = level.getBlockState(target);
+            boolean protectedInfrastructure = isProtectedCompoundInfrastructure(level, target, state);
+            if (!BuildPlacementPolicy.mayUseCompoundVolumeCell(
+                state.isAir(),
+                state.canBeReplaced(),
+                state.is(BlockTags.LEAVES),
+                !level.getFluidState(target).isEmpty(),
+                level.getBlockEntity(target) != null,
+                protectedInfrastructure,
+                state.getDestroySpeed(level, target)
+            )) return null;
+        }
+
+        List<BlockPos> foundationOffsets = new ArrayList<>();
+        if (placement.terrainPreparation().equals("light") && minimumSurface < maximumSurface) {
+            for (BlockPos relative : footprint.groundCells()) {
+                Integer surface = surfaces.get(horizontalColumnKey(relative.getX(), relative.getZ()));
+                if (surface == null) return null;
+                int floorY = origin.getY() + footprint.minY();
+                for (int y = surface; y < floorY; y++) {
+                    BlockPos target = safeCompoundOffset(
+                        origin,
+                        new BlockPos(relative.getX(), y - origin.getY(), relative.getZ())
+                    );
+                    if (target == null
+                        || target.getY() < level.getMinBuildHeight()
+                        || target.getY() >= level.getMaxBuildHeight()
+                        || !level.getWorldBorder().isWithinBounds(target)
+                        || !compoundChunkLoaded(level, target.getX(), target.getZ())
+                        || !budget.consumeBlockProbe()) return null;
+                    BlockState state = level.getBlockState(target);
+                    boolean protectedInfrastructure = isProtectedCompoundInfrastructure(level, target, state);
+                    if (!BuildPlacementPolicy.mayUseCompoundVolumeCell(
+                        state.isAir(),
+                        state.canBeReplaced(),
+                        state.is(BlockTags.LEAVES),
+                        !level.getFluidState(target).isEmpty(),
+                        level.getBlockEntity(target) != null,
+                        protectedInfrastructure,
+                        state.getDestroySpeed(level, target)
+                    )) return null;
+                    foundationOffsets.add(target.subtract(origin).immutable());
+                }
+            }
+        }
+        foundationOffsets.sort(Comparator
+            .comparingInt((BlockPos position) -> position.getY())
+            .thenComparingInt(position -> position.getX())
+            .thenComparingInt(position -> position.getZ()));
+        String foundationBlock = placement.zone().equals("industrial")
+            ? "minecraft:cobblestone"
+            : "minecraft:dirt";
+        return new CompoundBuildSite(
+            origin.immutable(),
+            List.copyOf(foundationOffsets),
+            foundationBlock,
+            candidate.homeDistance()
+        );
+    }
+
+    /** Descend through a shallow replaceable snow/plant cap to the real sturdy terrain. */
+    private int compoundSurfaceY(ServerLevel level, int x, int z, CompoundSearchBudget budget) {
+        int surface = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+        for (int depth = 0; depth <= 4; depth++) {
+            if (surface <= level.getMinBuildHeight() || !budget.consumeBlockProbe()) return Integer.MIN_VALUE;
+            BlockPos support = new BlockPos(x, surface - 1, z);
+            BlockState supportState = level.getBlockState(support);
+            if (supportState.isFaceSturdy(level, support, Direction.UP)) return surface;
+            boolean protectedInfrastructure = isProtectedCompoundInfrastructure(level, support, supportState);
+            if (!BuildPlacementPolicy.mayUseCompoundVolumeCell(
+                supportState.isAir(),
+                supportState.canBeReplaced(),
+                supportState.is(BlockTags.LEAVES),
+                !level.getFluidState(support).isEmpty(),
+                level.getBlockEntity(support) != null,
+                protectedInfrastructure,
+                supportState.getDestroySpeed(level, support)
+            )) return Integer.MIN_VALUE;
+            surface--;
+        }
+        return Integer.MIN_VALUE;
+    }
+
+    private boolean compoundChunkLoaded(ServerLevel level, int x, int z) {
+        int chunkX = x >> 4;
+        int chunkZ = z >> 4;
+        return level.getChunkSource().getChunkNow(chunkX, chunkZ) != null;
+    }
+
+    private static long horizontalColumnKey(int x, int z) {
+        return ((long) x << 32) ^ (z & 0xffffffffL);
+    }
+
+    private NpcHomeStorage.Bounds resolveHomeCompoundBounds(
+        ServerLevel level,
+        NpcHomeStorage.Bounds rememberedHomeBounds
+    ) {
+        if (rememberedHomeBounds != null) return rememberedHomeBounds;
+        ServerPlayer owner = npc.owner();
+        if (owner != null) {
+            NpcHomeStorage.Home home = NpcHomeStorage.resolve(owner);
+            if (home.dimension().equals(level.dimension())) {
+                if (home.bounds() != null) return home.bounds();
+                return new NpcHomeStorage.Bounds(home.position(), home.position());
+            }
+        }
+        BlockPos fallback = owner == null ? npc.blockPosition() : owner.blockPosition();
+        return new NpcHomeStorage.Bounds(fallback, fallback);
+    }
+
+    private CompoundPlacementLock compoundPlacementLock(JsonObject plan) {
+        if (plan == null || !plan.has(HOME_COMPOUND_LOCK_KEY)
+            || !plan.get(HOME_COMPOUND_LOCK_KEY).isJsonObject()) return null;
+        JsonObject lock = plan.getAsJsonObject(HOME_COMPOUND_LOCK_KEY);
+        Integer version = strictOptionalInteger(lock, "version", -1);
+        if (version == null || version != 1
+            || !lock.has("dimension") || !isStringPrimitive(lock.get("dimension"))
+            || lock.get("dimension").getAsString().isBlank()
+            || !lock.has("origin") || !lock.get("origin").isJsonObject()) return null;
+        BlockPos origin = strictBlock(lock.getAsJsonObject("origin"));
+        if (origin == null) return null;
+        String zone = null;
+        String terrainPreparation = null;
+        Integer minimumDistance = null;
+        Integer maximumDistance = null;
+        Integer facilityClearance = null;
+        if (lock.has("zone")) {
+            if (!isStringPrimitive(lock.get("zone")) || lock.get("zone").getAsString().isBlank()) return null;
+            zone = lock.get("zone").getAsString();
+        }
+        if (lock.has("terrainPreparation")) {
+            if (!isStringPrimitive(lock.get("terrainPreparation"))) return null;
+            terrainPreparation = lock.get("terrainPreparation").getAsString();
+        }
+        if (lock.has("minimumDistance")) {
+            minimumDistance = strictInteger(lock.get("minimumDistance"));
+            if (minimumDistance == null) return null;
+        }
+        if (lock.has("maximumDistance")) {
+            maximumDistance = strictInteger(lock.get("maximumDistance"));
+            if (maximumDistance == null) return null;
+        }
+        if (lock.has("facilityClearance")) {
+            facilityClearance = strictInteger(lock.get("facilityClearance"));
+            if (facilityClearance == null) return null;
+        }
+        return new CompoundPlacementLock(
+            lock.get("dimension").getAsString(),
+            origin.immutable(),
+            zone,
+            minimumDistance,
+            maximumDistance,
+            facilityClearance,
+            terrainPreparation
+        );
+    }
+
+    /**
+     * New locks persist the complete placement contract as well as the origin.
+     * Older locks only had dimension/origin; they remain readable for backward
+     * compatibility, while any partially populated new contract fails closed.
+     */
+    private boolean compoundLockContractMatches(
+        CompoundPlacementLock lock,
+        CompoundPlacementSpec placement
+    ) {
+        if (lock == null || placement == null) return false;
+        boolean legacy = lock.zone() == null
+            && lock.minimumDistance() == null
+            && lock.maximumDistance() == null
+            && lock.facilityClearance() == null
+            && lock.terrainPreparation() == null;
+        if (legacy) return true;
+        if (lock.zone() == null || lock.minimumDistance() == null || lock.maximumDistance() == null
+            || lock.facilityClearance() == null || lock.terrainPreparation() == null) return false;
+        return placement.zone().equals(lock.zone())
+            && placement.minimumDistance() == lock.minimumDistance()
+            && placement.maximumDistance() == lock.maximumDistance()
+            && placement.facilityClearance() == lock.facilityClearance()
+            && placement.terrainPreparation().equals(lock.terrainPreparation());
+    }
+
+    private void lockHomeCompoundPlacement(
+        ServerLevel level,
+        JsonObject plan,
+        CompoundBuildSite site,
+        CompoundPlacementSpec placement
+    ) {
+        JsonArray original = plan.getAsJsonArray("blocks");
+        if (!site.foundationOffsets().isEmpty()) {
+            JsonArray merged = new JsonArray();
+            Set<BlockPos> existing = new HashSet<>();
+            for (var element : original) {
+                if (!element.isJsonObject()) continue;
+                JsonObject entry = element.getAsJsonObject();
+                if (entry.has("blockId") && isStringPrimitive(entry.get("blockId"))
+                    && !entry.get("blockId").getAsString().equals("minecraft:air")
+                    && entry.has("position") && entry.get("position").isJsonObject()) {
+                    BlockPos position = strictBlock(entry.getAsJsonObject("position"));
+                    if (position != null) existing.add(position);
+                }
+            }
+            for (BlockPos relative : site.foundationOffsets()) {
+                if (existing.contains(relative)) continue;
+                JsonObject foundation = new JsonObject();
+                JsonObject position = new JsonObject();
+                position.addProperty("x", relative.getX());
+                position.addProperty("y", relative.getY());
+                position.addProperty("z", relative.getZ());
+                foundation.add("position", position);
+                foundation.addProperty("blockId", site.foundationBlockId());
+                foundation.add("properties", new JsonObject());
+                merged.add(foundation);
+            }
+            for (var element : original) merged.add(element.deepCopy());
+            plan.add("blocks", merged);
+        }
+        JsonObject lock = new JsonObject();
+        lock.addProperty("version", 1);
+        lock.addProperty("dimension", level.dimension().location().toString());
+        lock.addProperty("zone", placement.zone());
+        lock.addProperty("minimumDistance", placement.minimumDistance());
+        lock.addProperty("maximumDistance", placement.maximumDistance());
+        lock.addProperty("facilityClearance", placement.facilityClearance());
+        lock.addProperty("homeDistance", site.homeDistance());
+        lock.addProperty("terrainPreparation", placement.terrainPreparation());
+        lock.addProperty("foundationBlocks", site.foundationOffsets().size());
+        JsonObject origin = new JsonObject();
+        origin.addProperty("x", site.origin().getX());
+        origin.addProperty("y", site.origin().getY());
+        origin.addProperty("z", site.origin().getZ());
+        lock.add("origin", origin);
+        plan.add(HOME_COMPOUND_LOCK_KEY, lock);
     }
 
     /**
@@ -6675,10 +7360,98 @@ public final class NpcTaskEngine {
         return Mth.clamp(npc.blockPosition().getY(), level.getMinBuildHeight(), level.getMaxBuildHeight() - 1);
     }
 
+    /**
+     * Re-check the live block immediately before every compound placement,
+     * till or clearance action. Site discovery can be followed by lengthy
+     * material gathering, so its initial snapshot is never an authorization
+     * to destroy infrastructure added later.
+     */
+    private boolean mayModifyBuildTarget(
+        ActiveWork work,
+        BlockPos target,
+        BlockState currentState,
+        String desiredBlockId
+    ) {
+        if (!"home-compound".equals(string(work.spec, "sitePolicy", "default"))) return true;
+        if (!(npc.level() instanceof ServerLevel level) || target == null || currentState == null) {
+            fail(work, "无法验证家园施工位的实时保护状态", "BUILD_SITE_PROTECTED");
+            return false;
+        }
+        String currentBlockId = id(currentState.getBlock());
+        // A later blueprint entry may intentionally build on a block that an
+        // earlier entry of the same blueprint created (for example, a crop on
+        // its own farmland).  Treat that exact planned predecessor as owned by
+        // this task; all other live infrastructure remains fail-closed.
+        boolean taskOwnedTarget = isTaskOwnedBuildTarget(work, target, currentBlockId);
+        boolean protectedInfrastructure = !taskOwnedTarget
+            && isProtectedCompoundInfrastructure(level, target, currentState);
+        if (BuildPlacementPolicy.mayModifyCompoundTarget(
+            currentBlockId,
+            desiredBlockId,
+            protectedInfrastructure
+        )) return true;
+        fail(
+            work,
+            "家园施工位出现受保护方块，已停止且不会覆盖："
+                + currentBlockId + " @ " + target.toShortString(),
+            "BUILD_SITE_PROTECTED"
+        );
+        return false;
+    }
+
+    private boolean isTaskOwnedBuildTarget(ActiveWork work, BlockPos target, String currentBlockId) {
+        if (work == null || target == null || currentBlockId == null || work.buildOrigin == null
+            || work.buildBlocks == null || work.buildIndex <= 0) return false;
+        int limit = Math.min(work.buildIndex, work.buildBlocks.size());
+        for (int index = 0; index < limit; index++) {
+            JsonElement element = work.buildBlocks.get(index);
+            if (element == null || !element.isJsonObject()) continue;
+            JsonObject entry = element.getAsJsonObject();
+            if (!entry.has("position") || !entry.get("position").isJsonObject()
+                || !entry.has("blockId") || !isStringPrimitive(entry.get("blockId"))) continue;
+            BlockPos planned;
+            try {
+                planned = strictBlock(entry.getAsJsonObject("position"));
+            } catch (RuntimeException ignored) {
+                continue;
+            }
+            if (planned != null && planned.equals(target.subtract(work.buildOrigin))
+                && currentBlockId.equals(entry.get("blockId").getAsString())) return true;
+        }
+        return false;
+    }
+
+    private boolean isProtectedCompoundInfrastructure(
+        ServerLevel level,
+        BlockPos position,
+        BlockState state
+    ) {
+        return state == null
+            || position == null
+            || !level.getFluidState(position).isEmpty()
+            || level.getBlockEntity(position) != null
+            || state.is(BlockTags.LOGS)
+            || state.getBlock() instanceof CropBlock
+            || state.getBlock() instanceof FarmBlock
+            || state.getBlock() instanceof BedBlock
+            || state.getBlock() instanceof FenceBlock
+            || state.getBlock() instanceof FenceGateBlock
+            || state.getDestroySpeed(level, position) < 0.0F
+            || BuildPlacementPolicy.isProtectedCompoundInfrastructureId(id(state.getBlock()));
+    }
+
     /** Clears an ordinary obstacle through Forge's normal break hooks, then retries the same blueprint index. */
     private void tickBuildClearance(ActiveWork work, BlockState occupiedState) {
         BlockPos target = work.targetBlock;
         String occupiedId = id(occupiedState.getBlock());
+        JsonObject entry = work.buildBlocks != null
+            && work.buildIndex >= 0
+            && work.buildIndex < work.buildBlocks.size()
+            && work.buildBlocks.get(work.buildIndex).isJsonObject()
+            ? work.buildBlocks.get(work.buildIndex).getAsJsonObject()
+            : null;
+        String desiredId = entry == null ? "" : string(entry, "blockId", "");
+        if (!mayModifyBuildTarget(work, target, occupiedState, desiredId)) return;
         BlockEntity blockEntity = npc.level().getBlockEntity(target);
         boolean fluid = !npc.level().getFluidState(target).isEmpty();
         float destroySpeed = occupiedState.getDestroySpeed(npc.level(), target);
@@ -8030,6 +8803,12 @@ public final class NpcTaskEngine {
         BuildMaterialPrerequisitePolicy.MaterialPlan plan
     ) {
         BlockPos target = work.targetBlock;
+        // Tilling is a mutating build action too.  Re-authorize the live target
+        // immediately before touching it so a farm/crop/workstation inserted
+        // while materials were being gathered cannot be overwritten.  The
+        // helper allows a block that this same blueprint already placed, which
+        // is required when a crop entry follows its own farmland entry.
+        if (!mayModifyBuildTarget(work, target, currentState, string(entry, "blockId", ""))) return;
         if (currentState.canBeReplaced()) {
             String dirtId = plan.upstreamRequirements().isEmpty()
                 ? "minecraft:dirt"
@@ -8055,6 +8834,8 @@ public final class NpcTaskEngine {
             InteractionResult result = proxy.useItemOn(support, face, dirt, dirtSlot);
             boolean placed = npc.level().getBlockState(target).is(Blocks.DIRT);
             if (!placed && !result.consumesAction()) {
+                BlockState latestState = npc.level().getBlockState(target);
+                if (!mayModifyBuildTarget(work, target, latestState, dirtId)) return;
                 placed = placeBuildBlockDirectly(target, dirtId, dirtItem, dirtSlot);
             }
             if (!placed) {
@@ -15044,22 +15825,82 @@ public final class NpcTaskEngine {
 
     private static NpcHomeStorage.Bounds homeBounds(JsonObject source) {
         if (source == null || !source.has("homeBounds") || !source.get("homeBounds").isJsonObject()) return null;
-        JsonObject value = source.getAsJsonObject("homeBounds");
-        BlockPos min = value.has("min") && value.get("min").isJsonObject()
-            ? new BlockPos(
-                integer(value.getAsJsonObject("min"), "x", 0),
-                integer(value.getAsJsonObject("min"), "y", 0),
-                integer(value.getAsJsonObject("min"), "z", 0)
-            )
-            : null;
-        BlockPos max = value.has("max") && value.get("max").isJsonObject()
-            ? new BlockPos(
-                integer(value.getAsJsonObject("max"), "x", 0),
-                integer(value.getAsJsonObject("max"), "y", 0),
-                integer(value.getAsJsonObject("max"), "z", 0)
-            )
-            : null;
-        return min == null || max == null ? null : new NpcHomeStorage.Bounds(min, max);
+        return boundsFromJson(source.getAsJsonObject("homeBounds"));
+    }
+
+    private static NpcHomeStorage.Bounds boundsFromJson(JsonObject value) {
+        if (value == null
+            || !value.has("min") || !value.get("min").isJsonObject()
+            || !value.has("max") || !value.get("max").isJsonObject()) return null;
+        BlockPos min = strictBlock(value.getAsJsonObject("min"));
+        BlockPos max = strictBlock(value.getAsJsonObject("max"));
+        if (min == null || max == null) return null;
+        NpcHomeStorage.Bounds bounds = new NpcHomeStorage.Bounds(min, max);
+        return validBounds(bounds) ? bounds : null;
+    }
+
+    private static boolean isStringPrimitive(JsonElement value) {
+        return value != null
+            && value.isJsonPrimitive()
+            && value.getAsJsonPrimitive().isString();
+    }
+
+    private static Integer strictOptionalInteger(JsonObject source, String key, int fallback) {
+        if (source == null || !source.has(key)) return fallback;
+        return strictInteger(source.get(key));
+    }
+
+    private static Integer strictInteger(JsonElement value) {
+        if (value == null || value.isJsonNull() || !value.isJsonPrimitive()
+            || !value.getAsJsonPrimitive().isNumber()) return null;
+        try {
+            BigDecimal decimal = value.getAsBigDecimal().stripTrailingZeros();
+            if (decimal.scale() > 0) return null;
+            return decimal.intValueExact();
+        } catch (ArithmeticException | NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static BlockPos strictBlock(JsonObject value) {
+        if (value == null || !value.has("x") || !value.has("y") || !value.has("z")) return null;
+        Integer x = strictInteger(value.get("x"));
+        Integer y = strictInteger(value.get("y"));
+        Integer z = strictInteger(value.get("z"));
+        return x == null || y == null || z == null ? null : new BlockPos(x, y, z);
+    }
+
+    private static boolean validBounds(NpcHomeStorage.Bounds bounds) {
+        return bounds != null
+            && bounds.min().getX() <= bounds.max().getX()
+            && bounds.min().getY() <= bounds.max().getY()
+            && bounds.min().getZ() <= bounds.max().getZ()
+            && validCompoundHorizontalCoordinate(bounds.min().getX())
+            && validCompoundHorizontalCoordinate(bounds.max().getX())
+            && validCompoundHorizontalCoordinate(bounds.min().getZ())
+            && validCompoundHorizontalCoordinate(bounds.max().getZ());
+    }
+
+    private static boolean validCompoundOriginRange(long minimum, long maximum) {
+        return minimum <= maximum
+            && validCompoundHorizontalCoordinate(minimum)
+            && validCompoundHorizontalCoordinate(maximum);
+    }
+
+    private static boolean validCompoundHorizontalCoordinate(long value) {
+        return value >= -HOME_COMPOUND_MAX_HORIZONTAL_COORDINATE
+            && value <= HOME_COMPOUND_MAX_HORIZONTAL_COORDINATE;
+    }
+
+    private static BlockPos safeCompoundOffset(BlockPos origin, BlockPos relative) {
+        if (origin == null || relative == null) return null;
+        long x = (long) origin.getX() + relative.getX();
+        long y = (long) origin.getY() + relative.getY();
+        long z = (long) origin.getZ() + relative.getZ();
+        if (!validCompoundHorizontalCoordinate(x)
+            || !validCompoundHorizontalCoordinate(z)
+            || y < Integer.MIN_VALUE || y > Integer.MAX_VALUE) return null;
+        return new BlockPos((int) x, (int) y, (int) z);
     }
 
     private static JsonArray blocks(Iterable<BlockPos> positions) {

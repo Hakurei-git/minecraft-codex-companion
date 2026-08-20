@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_PROTOCOL_VERSION, actionSpecSchema, aiProviderDraftSchema, bridgeMessageSchema, buildPlanSchema, chatSettingsDraftSchema, declarativeSkillDraftSchema, declarativeSkillSchema, dragonStateSchema, facilityRecordSchema, goalRecordSchema, goalSpecSchema, liveFixtureRequestSchema, resourceReservationSchema, taskRecordSchema, taskSpecSchema, workGraphSchema, worldSnapshotSchema } from "./index.js";
+import { AGENT_PROTOCOL_VERSION, actionSpecSchema, aiProviderDraftSchema, bridgeMessageSchema, buildPlanDraftSchema, buildPlanSchema, chatSettingsDraftSchema, declarativeSkillDraftSchema, declarativeSkillSchema, dragonStateSchema, facilityRecordSchema, goalRecordSchema, goalSpecSchema, liveFixtureRequestSchema, resourceReservationSchema, taskRecordSchema, taskSpecSchema, workGraphSchema, worldSnapshotSchema } from "./index.js";
 
 describe("protocol schemas", () => {
   it("accepts the explicit multi-agent free-chat target", () => {
@@ -590,6 +590,167 @@ describe("protocol schemas", () => {
       placementAnchor: { x: 10, y: 64, z: -4 },
       materialMode: "survival",
     })).toMatchObject({ materialMode: "survival" });
+  });
+
+  it.each([
+    { zone: "residential", minDistance: 8, maxDistance: 24 },
+    { zone: "production", minDistance: 16, maxDistance: 40 },
+    { zone: "industrial", minDistance: 40, maxDistance: 64 },
+  ] as const)("validates the $zone home-compound placement contract", ({ zone, minDistance, maxDistance }) => {
+    expect(taskSpecSchema.parse({
+      kind: "build",
+      planId: `${zone}-template`,
+      placement: "companion",
+      sitePolicy: "home-compound",
+      compoundPlacement: { zone, minDistance, maxDistance },
+    })).toMatchObject({
+      sitePolicy: "home-compound",
+      compoundPlacement: {
+        zone,
+        minDistance,
+        maxDistance,
+        facilityClearance: 12,
+        terrainPreparation: "light",
+        protectedBounds: [],
+      },
+    });
+  });
+
+  it("preserves protected bounds on persistent macro tasks and rejects inverted rings", () => {
+    const compoundPlacement = {
+      zone: "production" as const,
+      minDistance: 16,
+      maxDistance: 40,
+      facilityClearance: 12,
+      terrainPreparation: "light" as const,
+      protectedBounds: [{
+        min: { x: -16, y: 64, z: -16 },
+        max: { x: -8, y: 72, z: -8 },
+      }],
+    };
+    expect(taskRecordSchema.parse({
+      id: "00000000-0000-4000-8000-000000000066",
+      companionId: "codex-forge",
+      spec: {
+        kind: "macro",
+        skillId: "build.crop-farm",
+        placementAnchor: { x: 24, y: 64, z: 0 },
+        compoundPlacement,
+      },
+      status: "running",
+      progress: 0.25,
+      message: "building in the production ring",
+      createdAt: "2026-08-20T00:00:00.000Z",
+      startedAt: "2026-08-20T00:00:01.000Z",
+      finishedAt: null,
+      error: null,
+    })).toMatchObject({
+      spec: {
+        placementAnchor: { x: 24, y: 64, z: 0 },
+        compoundPlacement,
+      },
+    });
+    expect(taskSpecSchema.parse({
+      kind: "macro",
+      skillId: "build.basic-shelter",
+      placementAnchor: { x: 40, y: 72, z: 40 },
+      sitePolicy: "default",
+    })).toMatchObject({
+      kind: "macro",
+      sitePolicy: "default",
+      placementAnchor: { x: 40, y: 72, z: 40 },
+    });
+    expect(() => taskSpecSchema.parse({
+      kind: "build",
+      planId: "invalid-template",
+      sitePolicy: "home-compound",
+      compoundPlacement: {
+        zone: "production",
+        minDistance: 40,
+        maxDistance: 16,
+      },
+    })).toThrow();
+    expect(() => taskSpecSchema.parse({
+      kind: "build",
+      planId: "unsafe-clearance-template",
+      sitePolicy: "home-compound",
+      compoundPlacement: {
+        zone: "production",
+        minDistance: 16,
+        maxDistance: 40,
+        facilityClearance: 11,
+      },
+    })).toThrow();
+  });
+
+  it.each([
+    {
+      label: "fractional coordinate",
+      protectedBounds: [{
+        min: { x: -16.5, y: 64, z: -16 },
+        max: { x: -8, y: 72, z: -8 },
+      }],
+    },
+    {
+      label: "inverted axis",
+      protectedBounds: [{
+        min: { x: -8, y: 64, z: -16 },
+        max: { x: -16, y: 72, z: -8 },
+      }],
+    },
+    {
+      label: "missing axis",
+      protectedBounds: [{
+        min: { x: -16, y: 64 },
+        max: { x: -8, y: 72, z: -8 },
+      }],
+    },
+    {
+      label: "unknown coordinate field",
+      protectedBounds: [{
+        min: { x: -16, y: 64, z: -16, radius: 12 },
+        max: { x: -8, y: 72, z: -8 },
+      }],
+    },
+    {
+      label: "more than 64 entries",
+      protectedBounds: Array.from({ length: 65 }, (_, index) => ({
+        min: { x: index, y: 64, z: index },
+        max: { x: index + 1, y: 72, z: index + 1 },
+      })),
+    },
+  ])("rejects malformed protected bounds fail-closed: $label", ({ protectedBounds }) => {
+    expect(() => taskSpecSchema.parse({
+      kind: "build",
+      planId: "protected-bounds-fixture",
+      sitePolicy: "home-compound",
+      compoundPlacement: {
+        zone: "production",
+        minDistance: 16,
+        maxDistance: 40,
+        protectedBounds,
+      },
+    })).toThrow();
+  });
+
+  it.each([
+    {
+      label: "fractional blueprint Y",
+      origin: { x: 0, y: 64, z: 0 },
+      position: { x: 0, y: 0.5, z: 0 },
+    },
+    {
+      label: "fractional blueprint origin",
+      origin: { x: 0.25, y: 64, z: 0 },
+      position: { x: 0, y: 0, z: 0 },
+    },
+  ])("requires integer block-grid coordinates: $label", ({ origin, position }) => {
+    expect(() => buildPlanDraftSchema.parse({
+      name: "Integer coordinate fixture",
+      source: "json",
+      origin,
+      blocks: [{ position, blockId: "minecraft:stone", properties: {} }],
+    })).toThrow();
   });
 
   it("requires a complete data-only security manifest on build plans", () => {

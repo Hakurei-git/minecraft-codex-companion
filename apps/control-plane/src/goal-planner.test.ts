@@ -7,6 +7,25 @@ import { ControlService } from "./control-service.js";
 import { SimulatorBackend } from "./simulator-backend.js";
 import type { CompanionAction, TaskRecord, WorldSnapshot } from "@mc/protocol";
 
+type TestBounds = {
+  min: { x: number; y: number; z: number };
+  max: { x: number; y: number; z: number };
+};
+
+function horizontalBoundsGap(left: TestBounds, right: TestBounds): number {
+  const dx = left.max.x < right.min.x
+    ? right.min.x - left.max.x
+    : right.max.x < left.min.x
+      ? left.min.x - right.max.x
+      : 0;
+  const dz = left.max.z < right.min.z
+    ? right.min.z - left.max.z
+    : right.max.z < left.min.z
+      ? left.min.z - right.max.z
+      : 0;
+  return Math.sqrt(dx ** 2 + dz ** 2);
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -604,15 +623,20 @@ describe("local Agent goal planner", () => {
         && facility.properties.invalidForCropWork !== true
       ));
       expect(recorded).toBeDefined();
-      const distanceFromHouse = (recorded!.position.x - backend.home.x) ** 2
-        + (recorded!.position.z - backend.home.z) ** 2;
-      expect(distanceFromHouse).toBeGreaterThanOrEqual(48 ** 2);
+      expect(recorded!.bounds).toBeDefined();
+      const distanceFromHouse = horizontalBoundsGap(recorded!.bounds!, {
+        min: backend.home,
+        max: backend.home,
+      });
+      expect(distanceFromHouse).toBeGreaterThanOrEqual(16);
+      expect(distanceFromHouse).toBeLessThanOrEqual(40);
 
       const buildAttempt = backend.tasks.find((task) => task.spec.kind === "build");
       expect(buildAttempt?.spec).toMatchObject({
         kind: "build",
-        sitePolicy: "outdoor",
+        sitePolicy: "home-compound",
         placementAnchor: recorded!.position,
+        compoundPlacement: { zone: "production", minDistance: 16, maxDistance: 40 },
       });
       const farmAttempts = backend.tasks.filter((task) => task.spec.kind === "farm");
       expect(farmAttempts.length).toBeGreaterThanOrEqual(2);
@@ -657,10 +681,10 @@ describe("local Agent goal planner", () => {
           skillId: "build.crop-farm",
         },
       });
-      expect(
-        (farm!.position.x - snapshot.position.x) ** 2
-        + (farm!.position.z - snapshot.position.z) ** 2,
-      ).toBeGreaterThanOrEqual(48 ** 2);
+      expect(farm!.bounds).toBeDefined();
+      const homeGap = horizontalBoundsGap(farm!.bounds!, { min: snapshot.position, max: snapshot.position });
+      expect(homeGap).toBeGreaterThanOrEqual(16);
+      expect(homeGap).toBeLessThanOrEqual(40);
 
       const laterGoal = service.submitGoal("codex-sim", {
         title: "照料田地",
@@ -1014,25 +1038,30 @@ describe("local Agent goal planner", () => {
       await waitForGoalStatus(service, goal.id, "succeeded", 10_000);
       const built = service.listFacilities(snapshot.worldId)
         .find((facility) => facility.sourceGoalId === goal.id && facility.type === "build");
+      expect(built).toBeDefined();
       expect(built).toMatchObject({
         tags: expect.arrayContaining(["build", "basic-shelter", "build.basic-shelter", "agent-goal"]),
-        position: snapshot.position,
+        position: { x: expect.any(Number), y: snapshot.position.y, z: expect.any(Number) },
         bounds: {
-          min: snapshot.position,
+          min: built!.position,
           max: {
-            x: snapshot.position.x + 6,
+            x: built!.position.x + 6,
             y: snapshot.position.y + 4,
-            z: snapshot.position.z + 6,
+            z: built!.position.z + 6,
           },
         },
         properties: {
           source: "agent.workGraph",
           nodeId: "build_requested_structure",
           skillId: "build.basic-shelter",
+          compoundZone: "residential",
           boundarySource: "blueprint",
           confidence: 1,
         },
       });
+      const shelterGap = horizontalBoundsGap(built!.bounds!, { min: snapshot.position, max: snapshot.position });
+      expect(shelterGap).toBeGreaterThanOrEqual(8);
+      expect(shelterGap).toBeLessThanOrEqual(24);
 
       const duplicate = service.submitGoal("codex-sim", {
         title: "再建造房子",

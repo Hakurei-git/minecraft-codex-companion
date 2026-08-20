@@ -237,4 +237,45 @@ describe("offline built-in content catalog", () => {
         expect.objectContaining({ task: expect.objectContaining({ kind: "build" }) }),
       ]));
   });
+
+  it("assigns every automatic built-in build to its bounded home-compound ring", () => {
+    const skills = new DeclarativeSkillStore().list();
+    const expectedZones = new Map<string, "residential" | "production" | "industrial">([
+      ["build.basic-shelter", "residential"],
+      ["build.storage-room", "residential"],
+      ["build.stone-cottage", "residential"],
+      ["build.crop-farm", "production"],
+      ["build.animal-pen", "production"],
+      ["life.establish-ranch", "production"],
+      ["build.watchtower", "production"],
+      ["build.tree-farm", "production"],
+      ["build.cobblestone-generator", "industrial"],
+      ["build.mob-farm", "industrial"],
+    ]);
+    const expectedRanges = {
+      residential: [8, 24],
+      production: [16, 40],
+      industrial: [40, 64],
+    } as const;
+
+    for (const [skillId, zone] of expectedZones) {
+      const buildSteps = skills.find((skill) => skill.id === skillId)?.steps
+        .filter((step) => step.task.kind === "build") ?? [];
+      expect(buildSteps.length, skillId).toBeGreaterThan(0);
+      for (const step of buildSteps) {
+        expect(step.task, `${skillId} must not shift the checked compound origin`).not.toHaveProperty("offset");
+        expect(taskSpecSchema.parse(step.task), skillId).toMatchObject({
+          kind: "build",
+          sitePolicy: "home-compound",
+          compoundPlacement: {
+            zone,
+            minDistance: expectedRanges[zone][0],
+            maxDistance: expectedRanges[zone][1],
+            facilityClearance: 12,
+            terrainPreparation: "light",
+          },
+        });
+      }
+    }
+  });
 });

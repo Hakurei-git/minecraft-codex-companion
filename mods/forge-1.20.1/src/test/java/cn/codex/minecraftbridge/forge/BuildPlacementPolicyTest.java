@@ -60,7 +60,74 @@ final class BuildPlacementPolicyTest {
         assertTrue(BuildPlacementPolicy.shouldResolveOutdoorSite("outdoor", 0));
         assertFalse(BuildPlacementPolicy.shouldResolveOutdoorSite("outdoor", 1));
         assertFalse(BuildPlacementPolicy.shouldResolveOutdoorSite("default", 0));
+        assertTrue(BuildPlacementPolicy.shouldResolveHomeCompoundSite("home-compound", 0, false));
+        assertFalse(BuildPlacementPolicy.shouldResolveHomeCompoundSite("home-compound", 1, false));
+        assertFalse(BuildPlacementPolicy.shouldResolveHomeCompoundSite("home-compound", 0, true));
         assertTrue(BuildPlacementPolicy.terrainFits(72, 75, 3));
         assertFalse(BuildPlacementPolicy.terrainFits(72, 76, 3));
+    }
+
+    @Test
+    void measuresTheWholeBlueprintAgainstTheHouseAndOtherFacilities() {
+        NpcHomeStorage.Bounds home = new NpcHomeStorage.Bounds(
+            new BlockPos(0, 60, 0),
+            new BlockPos(6, 75, 6)
+        );
+        NpcHomeStorage.Bounds farm = new NpcHomeStorage.Bounds(
+            new BlockPos(22, 64, 2),
+            new BlockPos(30, 65, 10)
+        );
+        NpcHomeStorage.Bounds nearbyPen = new NpcHomeStorage.Bounds(
+            new BlockPos(42, 64, 0),
+            new BlockPos(50, 68, 8)
+        );
+
+        assertEquals(16.0D, BuildPlacementPolicy.horizontalGap(farm, home), 0.0001D);
+        assertTrue(BuildPlacementPolicy.insideCompoundRing(farm, home, 16, 40));
+        assertFalse(BuildPlacementPolicy.insideCompoundRing(farm, home, 17, 40));
+        assertTrue(BuildPlacementPolicy.overlapsWithMargin(farm, nearbyPen, 12));
+        assertFalse(BuildPlacementPolicy.overlapsWithMargin(farm, nearbyPen, 11));
+    }
+
+    @Test
+    void lightPreparationAllowsOnlySmallVegetationOrLeafObstacles() {
+        assertEquals(0, BuildPlacementPolicy.maximumTerrainDelta("none"));
+        assertEquals(2, BuildPlacementPolicy.maximumTerrainDelta("light"));
+        assertTrue(BuildPlacementPolicy.mayUseCompoundVolumeCell(
+            true, true, false, false, false, false, 0.0F
+        ));
+        assertTrue(BuildPlacementPolicy.mayUseCompoundVolumeCell(
+            false, false, true, false, false, false, 0.2F
+        ));
+        assertFalse(BuildPlacementPolicy.mayUseCompoundVolumeCell(
+            false, false, false, false, false, false, 2.0F
+        ));
+        assertFalse(BuildPlacementPolicy.mayUseCompoundVolumeCell(
+            false, true, false, false, true, false, 2.0F
+        ));
+        assertTrue(BuildPlacementPolicy.inclusiveSpanAtMost(0, 63, 64));
+        assertFalse(BuildPlacementPolicy.inclusiveSpanAtMost(0, 64, 64));
+        assertTrue(BuildPlacementPolicy.compoundLockMatches(
+            "minecraft:overworld",
+            new BlockPos(12, 70, -8),
+            "minecraft:overworld",
+            new BlockPos(12, 70, -8)
+        ));
+        assertFalse(BuildPlacementPolicy.compoundLockMatches(
+            "minecraft:the_nether",
+            new BlockPos(12, 70, -8),
+            "minecraft:overworld",
+            new BlockPos(12, 70, -8)
+        ));
+        assertFalse(BuildPlacementPolicy.mayModifyCompoundTarget(
+            "minecraft:crafting_table", "minecraft:crafting_table", true
+        ));
+        assertTrue(BuildPlacementPolicy.mayModifyCompoundTarget(
+            "minecraft:tall_grass", "minecraft:dirt", false
+        ));
+        assertTrue(BuildPlacementPolicy.isProtectedCompoundInfrastructureId("minecraft:crafting_table"));
+        assertTrue(BuildPlacementPolicy.isProtectedCompoundInfrastructureId("minecraft:oak_fence"));
+        assertTrue(BuildPlacementPolicy.isProtectedCompoundInfrastructureId("minecraft:redstone_wire"));
+        assertFalse(BuildPlacementPolicy.isProtectedCompoundInfrastructureId("minecraft:tall_grass"));
     }
 }

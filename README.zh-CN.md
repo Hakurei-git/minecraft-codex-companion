@@ -44,7 +44,7 @@
 GitHub Releases 提供两种下载：
 
 - **[Windows 安装程序 EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**：普通用户使用的完整版本，不需要安装 Node.js 或手工构建模组。
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.8)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.9)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
 
 安装器不会内置或迁移账号、API Key、反重力会话、Minecraft 存档和本机路径。
 
@@ -190,6 +190,16 @@ $env:MC_BRIDGE_TOKEN = "至少16字符的自定义令牌"
 3. 床、屋顶或房屋结构改动后，输入 `重新识别我的房屋范围`，重新执行自动扫描。
 
 两角会保存一个保守的矩形边界，并与当前床锚点关联，写入本机设施日志，控制服务或 Minecraft 重启后仍可复用。普通快照不会覆盖手动边界；只有床移动到旧家园圈之外，或你明确要求重新识别时才会更新。这个操作不会上传存档、API Key、反重力会话内容或其他本地文件。
+
+### 家园环形建筑选址
+
+自动建造使用“**完整蓝图边界**到**房屋边界**的最短水平间距”，不会拿 NPC、床或蓝图原点冒充建筑距离：
+
+- 住宅类：距房屋 8-24 格；
+- 农田、牧场、动物围栏、树场和瞭望塔等生产设施：16-40 格；
+- 刷怪塔、刷石机等工业设施：40-64 格。
+
+每个候选位置与已记录设施至少保留 12 格间距。Forge 执行器会在选址和实际施工时重复检查地形与受保护方块，只允许有上限的轻量整地；没有安全位置就保持零放置并明确失败，绝不会静默扩展到 96-160 格外。已有的远程农田和牧场不会删除，而是降级为次级据点；普通命令会在家附近新建/使用主设施，只有明确说“旧农田”“远处牧场”等才复用远程据点。玩家明确给出的坐标或已确认蓝图原点仍然优先，不会被自动环形选址改写。
 
 ## HMCL 安全克隆
 

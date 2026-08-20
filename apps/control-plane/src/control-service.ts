@@ -11,6 +11,8 @@ import type {
   ChatSettingsDraft,
   Companion,
   CompanionAction,
+  CompoundPlacement,
+  CompoundPlacementZone,
   DeclarativeSkill,
   DeclarativeSkillDraft,
   FacilityRecord,
@@ -34,6 +36,7 @@ import {
   AGENT_PROTOCOL_VERSION,
   capabilitySchema,
   chatMessageSchema,
+  compoundPlacementSchema,
   facilityRecordSchema,
   goalRecordSchema,
   goalSpecSchema,
@@ -54,6 +57,7 @@ import { planGoal } from "./goal-planner.js";
 import { TaskJournal } from "./task-journal.js";
 import { redactSensitiveText } from "./skill-security.js";
 import { commitAiTaskDecision } from "./ai-task-decision.js";
+import { BUILTIN_BUILD_IDS } from "./builtin-content.js";
 import { z } from "zod";
 
 interface RuntimeCompanion {
@@ -122,7 +126,55 @@ const BUILD_FAILURE_AUTO_RESUME_WINDOW_MS = 3 * 60_000;
 // controls the bounded block scan after the NPC reaches the recorded anchor.
 const MIN_OUTDOOR_FARM_SCAN_RADIUS = 96;
 const FARM_FACILITY_CLUSTER_RADIUS = 96;
-const OUTDOOR_FARM_HOME_CLEARANCE = 48;
+const HOME_COMPOUND_POLICY_VERSION = 2;
+const HOME_COMPOUND_MAX_BLUEPRINT_SPAN = 64;
+const HOME_COMPOUND_MAX_HORIZONTAL_COORDINATE = 30_000_000;
+const HOME_COMPOUND_GRID_STEP = 4;
+const HOME_COMPOUND_DEFAULT_CLEARANCE = 12;
+const HOME_COMPOUND_MAX_CONTROL_CANDIDATES = 20_000;
+const HOME_COMPOUND_ZONES: Readonly<Record<CompoundPlacementZone, Readonly<{
+  minDistance: number;
+  maxDistance: number;
+}>>> = {
+  residential: { minDistance: 8, maxDistance: 24 },
+  production: { minDistance: 16, maxDistance: 40 },
+  industrial: { minDistance: 40, maxDistance: 64 },
+};
+const BUILTIN_BUILD_ZONES: Readonly<Record<string, CompoundPlacementZone>> = {
+  [BUILTIN_BUILD_IDS.basicShelter]: "residential",
+  [BUILTIN_BUILD_IDS.storageRoom]: "residential",
+  [BUILTIN_BUILD_IDS.stoneCottage]: "residential",
+  [BUILTIN_BUILD_IDS.cropFarm]: "production",
+  [BUILTIN_BUILD_IDS.animalPen]: "production",
+  [BUILTIN_BUILD_IDS.treeFarm]: "production",
+  [BUILTIN_BUILD_IDS.watchtower]: "production",
+  [BUILTIN_BUILD_IDS.cobblestoneGenerator]: "industrial",
+  [BUILTIN_BUILD_IDS.mobFarm]: "industrial",
+};
+
+type FacilityBounds = NonNullable<FacilityDraft["bounds"]>;
+
+function horizontalBoundsGap(left: FacilityBounds, right: FacilityBounds): number {
+  const dx = left.max.x < right.min.x
+    ? right.min.x - left.max.x
+    : right.max.x < left.min.x
+      ? left.min.x - right.max.x
+      : 0;
+  const dz = left.max.z < right.min.z
+    ? right.min.z - left.max.z
+    : right.max.z < left.min.z
+      ? left.min.z - right.max.z
+      : 0;
+  return Math.sqrt(dx ** 2 + dz ** 2);
+}
+
+function boundsOverlapWithMargin(left: FacilityBounds, right: FacilityBounds, margin: number): boolean {
+  const padding = Math.max(0, margin);
+  return left.max.x >= right.min.x - padding
+    && left.min.x <= right.max.x + padding
+    && left.max.z >= right.min.z - padding
+    && left.min.z <= right.max.z + padding;
+}
 // Antigravity can spend 60 seconds waiting for a turn and another recovery
 // cycle before it reaches the MCP call. Keep the one-shot decision guard alive
 // for the whole turn so a late model cannot bypass it with a direct chat reply.
@@ -849,7 +901,6 @@ export class ControlService {
   #syncSnapshotFacilities(companionId: string, snapshot: WorldSnapshot): void {
     const now = new Date().toISOString();
     const drafts = this.#facilityDraftsFromSnapshot(snapshot, companionId);
-    if (drafts.length === 0) return;
     let synced = 0;
     for (const draft of drafts) {
       try {
@@ -864,14 +915,83 @@ export class ControlService {
         });
       }
     }
-    if (synced === 0) return;
+    const reclassified = this.#reclassifyHomeCompoundFacilities(snapshot, now);
+    if (synced === 0 && reclassified === 0) return;
     this.#persistAgentState();
     this.events.publish({
       type: "system",
       companionId,
-      message: `Agent facilities synchronized from snapshot: ${synced}`,
-      data: { worldId: snapshot.worldId, facilityCount: synced },
+      message: `Agent facilities synchronized from snapshot: ${synced}; compound classifications: ${reclassified}`,
+      data: { worldId: snapshot.worldId, facilityCount: synced, reclassifiedFacilities: reclassified },
     });
+  }
+
+  #facilityBoundsOrPoint(facility: FacilityRecord): FacilityBounds {
+    return facility.bounds ?? {
+      min: { ...facility.position },
+      max: { ...facility.position },
+    };
+  }
+
+  #compoundZoneForFacility(facility: FacilityRecord): CompoundPlacementZone | null {
+    if (facility.type === "storage") {
+      const blueprintStorage = typeof facility.properties.blueprintPlanId === "string"
+        || facility.properties.skillId === "build.storage-room"
+        || facility.tags.includes("build.storage-room")
+        || facility.tags.includes("storage-room");
+      return blueprintStorage ? "residential" : null;
+    }
+    if (facility.type === "farm" || facility.type === "ranch") return "production";
+    if (facility.type === "redstone") return "industrial";
+    if (facility.type !== "build") return null;
+    const planId = typeof facility.properties.blueprintPlanId === "string"
+      ? facility.properties.blueprintPlanId
+      : typeof facility.properties.planId === "string"
+        ? facility.properties.planId
+        : "";
+    const skillId = typeof facility.properties.skillId === "string" ? facility.properties.skillId : "";
+    return this.#compoundZoneForBuild(planId, skillId, facility.name);
+  }
+
+  #reclassifyHomeCompoundFacilities(snapshot: WorldSnapshot, now: string): number {
+    const home = this.#rememberedHomeFacility(snapshot);
+    if (!home?.bounds) return 0;
+    let changed = 0;
+    for (const facility of this.#agentState.facilities) {
+      if (facility.id === home.id || facility.worldId !== snapshot.worldId
+        || facility.dimension !== snapshot.dimension) continue;
+      const zone = this.#compoundZoneForFacility(facility);
+      if (!zone) continue;
+      const defaults = HOME_COMPOUND_ZONES[zone]!;
+      const distance = horizontalBoundsGap(this.#facilityBoundsOrPoint(facility), home.bounds);
+      const compliant = distance >= defaults.minDistance && distance <= defaults.maxDistance;
+      const role = compliant
+        ? "primary-home-facility"
+        : distance > defaults.maxDistance
+          ? "secondary-outpost"
+          : "secondary-noncompliant";
+      const previousDistance = typeof facility.properties.homeDistance === "number"
+        ? facility.properties.homeDistance
+        : Number.NaN;
+      if (facility.properties.homeFacilityId === home.id
+        && facility.properties.compoundZone === zone
+        && facility.properties.compoundRole === role
+        && facility.properties.homeCompoundCompliant === compliant
+        && Math.abs(previousDistance - distance) < 0.01
+        && facility.properties.placementPolicyVersion === HOME_COMPOUND_POLICY_VERSION) continue;
+      facility.properties = {
+        ...facility.properties,
+        homeFacilityId: home.id,
+        compoundZone: zone,
+        compoundRole: role,
+        homeCompoundCompliant: compliant,
+        homeDistance: Math.round(distance * 100) / 100,
+        placementPolicyVersion: HOME_COMPOUND_POLICY_VERSION,
+      };
+      facility.updatedAt = now;
+      changed += 1;
+    }
+    return changed;
   }
 
   #facilityDraftsFromSnapshot(snapshot: WorldSnapshot, companionId: string): FacilityDraft[] {
@@ -1284,11 +1404,13 @@ export class ControlService {
 
   #requeueBuildTask(runtime: RuntimeCompanion, task: TaskRecord, owner: string): TaskRecord {
     if (task.spec.kind === "macro") {
+      task.spec = this.#prepareMacroSpec(runtime, task.spec);
       const steps = this.#resolveMacroSteps(task.spec);
       steps.forEach((step) => this.#assertTaskAllowed(runtime, step.task));
       this.#macroSteps.set(task.id, steps);
     } else {
       if (task.spec.kind === "farm") task.spec = this.#prepareFarmSpec(runtime, task.spec);
+      if (task.spec.kind === "build") task.spec = this.#prepareBuildSpec(runtime, task.spec);
       this.#assertTaskAllowed(runtime, task.spec);
     }
     task.status = "queued";
@@ -1558,15 +1680,52 @@ export class ControlService {
     spec: Extract<TaskSpec, { kind: "macro" }>,
   ): Extract<TaskSpec, { kind: "macro" }> {
     const snapshot = runtime.backend.snapshot();
-    const placementAnchor = spec.placementAnchor
-      ?? (["build.crop-farm", "build.animal-pen", "life.establish-ranch"].includes(spec.skillId)
-        ? this.#outdoorFarmBuildAnchor(snapshot)
-        : snapshot.position);
     const homeBounds = spec.homeBounds ?? this.#rememberedHomeBounds(snapshot);
+    const buildStep = this.#firstMacroBuildTask(spec);
+    if (!buildStep) {
+      return {
+        ...spec,
+        placementAnchor: spec.placementAnchor ?? snapshot.position,
+        ...(homeBounds ? { homeBounds } : {}),
+        materialMode: spec.materialMode
+          ?? snapshot.materialMode
+          ?? (snapshot.gameMode === "creative" ? "creative" : "survival"),
+      };
+    }
+    const explicitPlacement = (spec.sitePolicy !== undefined && spec.sitePolicy !== "home-compound")
+      || (spec.placementAnchor !== undefined
+        && spec.compoundPlacement === undefined
+        && spec.sitePolicy !== "home-compound")
+      || buildStep.placement === "plan-origin"
+      || buildStep.sitePolicy === "default"
+      || buildStep.sitePolicy === "outdoor";
+    if (explicitPlacement) {
+      return {
+        ...spec,
+        sitePolicy: spec.sitePolicy ?? buildStep.sitePolicy ?? "default",
+        ...(homeBounds ? { homeBounds } : {}),
+        materialMode: spec.materialMode
+          ?? snapshot.materialMode
+          ?? (snapshot.gameMode === "creative" ? "creative" : "survival"),
+      };
+    }
+    const plan = this.buildPlans.get(buildStep.planId);
+    const zone = spec.compoundPlacement?.zone
+      ?? buildStep.compoundPlacement?.zone
+      ?? this.#compoundZoneForBuild(plan.id, spec.skillId, plan.name);
+    const compoundPlacement = this.#normalizeCompoundPlacement(
+      snapshot,
+      spec.compoundPlacement ?? buildStep.compoundPlacement,
+      zone,
+    );
+    const placementAnchor = spec.placementAnchor
+      ?? this.#homeCompoundBuildAnchor(snapshot, plan, compoundPlacement, homeBounds);
     return {
       ...spec,
       placementAnchor,
       ...(homeBounds ? { homeBounds } : {}),
+      sitePolicy: "home-compound",
+      compoundPlacement,
       materialMode: spec.materialMode
         ?? snapshot.materialMode
         ?? (snapshot.gameMode === "creative" ? "creative" : "survival"),
@@ -1574,7 +1733,16 @@ export class ControlService {
   }
 
   #rememberedHomeBounds(snapshot: WorldSnapshot): NonNullable<FacilityDraft["bounds"]> | undefined {
-    const remembered = this.#agentState.facilities
+    const remembered = this.#rememberedHomeFacility(snapshot);
+    return remembered?.bounds ?? (
+      snapshot.homeState?.dimension === snapshot.dimension
+        ? snapshot.homeState.bounds
+        : undefined
+    );
+  }
+
+  #rememberedHomeFacility(snapshot: WorldSnapshot): FacilityRecord | undefined {
+    return this.#agentState.facilities
       .filter((facility) => facility.worldId === snapshot.worldId)
       .filter((facility) => facility.dimension === snapshot.dimension)
       .filter((facility) => facility.type === "home" && facility.bounds)
@@ -1584,7 +1752,261 @@ export class ControlService {
         if (leftManual !== rightManual) return rightManual - leftManual;
         return (right.lastUsedAt ?? right.updatedAt).localeCompare(left.lastUsedAt ?? left.updatedAt);
       })[0];
-    return remembered?.bounds;
+  }
+
+  #homeBoundsForSnapshot(snapshot: WorldSnapshot): FacilityBounds {
+    const remembered = this.#rememberedHomeBounds(snapshot);
+    if (remembered) return remembered;
+    const anchor = snapshot.homeState?.dimension === snapshot.dimension
+      ? snapshot.homeState.position
+      : snapshot.ownerPosition ?? snapshot.position;
+    return { min: { ...anchor }, max: { ...anchor } };
+  }
+
+  #firstMacroBuildTask(spec: Extract<TaskSpec, { kind: "macro" }>): Extract<TaskSpec, { kind: "build" }> | undefined {
+    return this.skills.resolve(spec.skillId, spec.arguments)
+      .filter((step) => step.whenMaterialMode === "always" || step.whenMaterialMode === spec.materialMode)
+      .map((step) => step.task)
+      .find((task): task is Extract<TaskSpec, { kind: "build" }> => task.kind === "build");
+  }
+
+  #compoundZoneForBuild(planId: string, skillId = "", planName = ""): CompoundPlacementZone {
+    const builtIn = BUILTIN_BUILD_ZONES[planId];
+    if (builtIn) return builtIn;
+    const text = `${skillId} ${planName}`.toLocaleLowerCase("en-US");
+    if (/(?:mob[-_. ]?farm|cobblestone[-_. ]?generator|刷怪|刷石|industrial)/iu.test(text)) return "industrial";
+    if (/(?:shelter|storage|cottage|house|home|住宅|小屋|仓库)/iu.test(text)) return "residential";
+    return "production";
+  }
+
+  #normalizeCompoundPlacement(
+    snapshot: WorldSnapshot,
+    requested: CompoundPlacement | undefined,
+    zone: CompoundPlacementZone,
+  ): CompoundPlacement {
+    const validatedRequest = requested ? compoundPlacementSchema.parse(requested) : undefined;
+    const defaults = HOME_COMPOUND_ZONES[zone]!;
+    const requestedMin = validatedRequest?.minDistance ?? defaults.minDistance;
+    const requestedMax = validatedRequest?.maxDistance ?? defaults.maxDistance;
+    const minDistance = Math.min(defaults.maxDistance, Math.max(defaults.minDistance, requestedMin));
+    const maxDistance = Math.min(defaults.maxDistance, Math.max(minDistance, requestedMax));
+    const facilityClearance = Math.min(32, Math.max(
+      HOME_COMPOUND_DEFAULT_CLEARANCE,
+      validatedRequest?.facilityClearance ?? HOME_COMPOUND_DEFAULT_CLEARANCE,
+    ));
+    const homeBounds = this.#homeBoundsForSnapshot(snapshot);
+    const rememberedProtectedBounds = this.#agentState.facilities
+      .filter((facility) => facility.worldId === snapshot.worldId)
+      .filter((facility) => facility.dimension === snapshot.dimension)
+      .filter((facility) => facility.type !== "home")
+      .sort((left, right) => (
+        horizontalBoundsGap(this.#facilityBoundsOrPoint(left), homeBounds)
+        - horizontalBoundsGap(this.#facilityBoundsOrPoint(right), homeBounds)
+      ))
+      .map((facility) => this.#integerProtectedBounds(this.#facilityBoundsOrPoint(facility)));
+    const seenProtectedBounds = new Set<string>();
+    // Authoritative local facility memory comes first. An imported/provider
+    // task must not consume all 64 slots with caller-supplied decoys and thereby
+    // evict the real house-side infrastructure from Forge's protection list.
+    const protectedBounds = [...rememberedProtectedBounds, ...(validatedRequest?.protectedBounds ?? [])]
+      .map((bounds) => this.#integerProtectedBounds(bounds))
+      .filter((bounds) => {
+        const key = JSON.stringify(bounds);
+        if (seenProtectedBounds.has(key)) return false;
+        seenProtectedBounds.add(key);
+        return true;
+      })
+      .slice(0, 64)
+      .map((bounds) => structuredClone(bounds));
+    return compoundPlacementSchema.parse({
+      zone,
+      minDistance,
+      maxDistance,
+      facilityClearance,
+      terrainPreparation: validatedRequest?.terrainPreparation ?? "light",
+      protectedBounds,
+    });
+  }
+
+  #integerProtectedBounds(bounds: FacilityBounds): FacilityBounds {
+    if (bounds.min.x > bounds.max.x || bounds.min.y > bounds.max.y || bounds.min.z > bounds.max.z) {
+      throw new ControlError({
+        code: "HOME_COMPOUND_PROTECTED_BOUNDS_INVALID",
+        message: "现有设施边界无效，已停止家园自动选址",
+        statusCode: 422,
+        retryable: false,
+      });
+    }
+    const normalized: FacilityBounds = {
+      min: {
+        x: Math.floor(bounds.min.x),
+        y: Math.floor(bounds.min.y),
+        z: Math.floor(bounds.min.z),
+      },
+      max: {
+        x: Math.ceil(bounds.max.x),
+        y: Math.ceil(bounds.max.y),
+        z: Math.ceil(bounds.max.z),
+      },
+    };
+    if (![...Object.values(normalized.min), ...Object.values(normalized.max)].every(Number.isSafeInteger)) {
+      throw new ControlError({
+        code: "HOME_COMPOUND_PROTECTED_BOUNDS_INVALID",
+        message: "现有设施边界超出可安全表示的方块坐标，已停止家园自动选址",
+        statusCode: 422,
+        retryable: false,
+      });
+    }
+    return normalized;
+  }
+
+  #relativeBuildBounds(plan: BuildPlan): FacilityBounds {
+    // Air entries are non-placement markers and Forge skips them. Including an
+    // outlying air marker here would make the control-plane footprint disagree
+    // with the executor and could reject an otherwise safe site.
+    const occupied = plan.blocks.filter((block) => block.blockId !== "minecraft:air");
+    if (occupied.length === 0) {
+      throw new ControlError({
+        code: "HOME_COMPOUND_BLUEPRINT_EMPTY",
+        message: "该蓝图没有可放置方块，无法进行家园自动选址",
+        statusCode: 422,
+        retryable: false,
+      });
+    }
+    if (!occupied.every((block) => (
+      Number.isSafeInteger(block.position.x)
+      && Number.isSafeInteger(block.position.y)
+      && Number.isSafeInteger(block.position.z)
+      && Math.abs(block.position.x) <= HOME_COMPOUND_MAX_HORIZONTAL_COORDINATE
+      && Math.abs(block.position.z) <= HOME_COMPOUND_MAX_HORIZONTAL_COORDINATE
+    ))) {
+      throw new ControlError({
+        code: "HOME_COMPOUND_BLUEPRINT_COORDINATES_INVALID",
+        message: "该蓝图包含超出安全方块坐标范围的位置，无法自动选址",
+        statusCode: 422,
+        retryable: false,
+      });
+    }
+    const xs = occupied.map((block) => block.position.x);
+    const ys = occupied.map((block) => block.position.y);
+    const zs = occupied.map((block) => block.position.z);
+    return {
+      min: { x: Math.min(...xs), y: Math.min(...ys), z: Math.min(...zs) },
+      max: { x: Math.max(...xs), y: Math.max(...ys), z: Math.max(...zs) },
+    };
+  }
+
+  #boundsAtOrigin(relative: FacilityBounds, origin: FacilityDraft["position"]): FacilityBounds {
+    return {
+      min: {
+        x: origin.x + relative.min.x,
+        y: origin.y + relative.min.y,
+        z: origin.z + relative.min.z,
+      },
+      max: {
+        x: origin.x + relative.max.x,
+        y: origin.y + relative.max.y,
+        z: origin.z + relative.max.z,
+      },
+    };
+  }
+
+  #homeCompoundBuildAnchor(
+    snapshot: WorldSnapshot,
+    plan: BuildPlan,
+    placement: CompoundPlacement,
+    rememberedBounds?: FacilityBounds,
+  ): FacilityDraft["position"] {
+    const relative = this.#relativeBuildBounds(plan);
+    const width = relative.max.x - relative.min.x + 1;
+    const depth = relative.max.z - relative.min.z + 1;
+    const height = relative.max.y - relative.min.y + 1;
+    if (width > HOME_COMPOUND_MAX_BLUEPRINT_SPAN
+      || height > HOME_COMPOUND_MAX_BLUEPRINT_SPAN
+      || depth > HOME_COMPOUND_MAX_BLUEPRINT_SPAN) {
+      throw new ControlError({
+        code: "HOME_COMPOUND_BLUEPRINT_TOO_LARGE",
+        message: "该蓝图超过家园自动选址的 64×64 范围，请预览后明确指定位置",
+        statusCode: 422,
+        retryable: false,
+      });
+    }
+    const homeBounds = this.#integerProtectedBounds(
+      rememberedBounds ?? this.#homeBoundsForSnapshot(snapshot),
+    );
+    const rememberedHome = this.#rememberedHomeFacility(snapshot);
+    const homeAnchor = snapshot.homeState?.dimension === snapshot.dimension
+      ? snapshot.homeState.position
+      : rememberedHome?.position ?? snapshot.ownerPosition ?? snapshot.position;
+    const minOriginX = Math.floor(homeBounds.min.x - placement.maxDistance - relative.max.x);
+    const maxOriginX = Math.ceil(homeBounds.max.x + placement.maxDistance - relative.min.x);
+    const minOriginZ = Math.floor(homeBounds.min.z - placement.maxDistance - relative.max.z);
+    const maxOriginZ = Math.ceil(homeBounds.max.z + placement.maxDistance - relative.min.z);
+    const searchCoordinates = [minOriginX, maxOriginX, minOriginZ, maxOriginZ];
+    const blueprintCoordinates = [
+      minOriginX + relative.min.x,
+      minOriginX + relative.max.x,
+      maxOriginX + relative.min.x,
+      maxOriginX + relative.max.x,
+      minOriginZ + relative.min.z,
+      minOriginZ + relative.max.z,
+      maxOriginZ + relative.min.z,
+      maxOriginZ + relative.max.z,
+    ];
+    const candidateColumns = Math.floor((maxOriginX - minOriginX) / HOME_COMPOUND_GRID_STEP) + 1;
+    const candidateRows = Math.floor((maxOriginZ - minOriginZ) / HOME_COMPOUND_GRID_STEP) + 1;
+    if (!searchCoordinates.every((value) => Number.isSafeInteger(value)
+      && Math.abs(value) <= HOME_COMPOUND_MAX_HORIZONTAL_COORDINATE)
+      || !blueprintCoordinates.every((value) => Number.isSafeInteger(value)
+        && Math.abs(value) <= HOME_COMPOUND_MAX_HORIZONTAL_COORDINATE)
+      || !Number.isSafeInteger(candidateColumns)
+      || !Number.isSafeInteger(candidateRows)
+      || candidateColumns <= 0
+      || candidateRows <= 0
+      || candidateColumns * candidateRows > HOME_COMPOUND_MAX_CONTROL_CANDIDATES) {
+      throw new ControlError({
+        code: "HOME_COMPOUND_SEARCH_BOUNDS_INVALID",
+        message: "房屋边界过大或坐标异常，已停止有界自动选址",
+        statusCode: 422,
+        retryable: false,
+      });
+    }
+    const candidates: Array<{
+      position: FacilityDraft["position"];
+      homeDistance: number;
+      travelDistance: number;
+    }> = [];
+    for (let x = minOriginX; x <= maxOriginX; x += HOME_COMPOUND_GRID_STEP) {
+      for (let z = minOriginZ; z <= maxOriginZ; z += HOME_COMPOUND_GRID_STEP) {
+        const position = { x, y: homeAnchor.y, z };
+        const candidateBounds = this.#boundsAtOrigin(relative, position);
+        const homeDistance = horizontalBoundsGap(candidateBounds, homeBounds);
+        if (homeDistance < placement.minDistance || homeDistance > placement.maxDistance) continue;
+        if (placement.protectedBounds.some((bounds) => (
+          boundsOverlapWithMargin(candidateBounds, bounds, placement.facilityClearance)
+        ))) continue;
+        const travelDistance = (snapshot.position.x - position.x) ** 2
+          + (snapshot.position.z - position.z) ** 2;
+        candidates.push({ position, homeDistance, travelDistance });
+      }
+    }
+    candidates.sort((left, right) => {
+      if (left.homeDistance !== right.homeDistance) return left.homeDistance - right.homeDistance;
+      if (left.travelDistance !== right.travelDistance) return left.travelDistance - right.travelDistance;
+      if (left.position.x !== right.position.x) return left.position.x - right.position.x;
+      return left.position.z - right.position.z;
+    });
+    const selected = candidates[0];
+    if (!selected) {
+      throw new ControlError({
+        code: "HOME_COMPOUND_SITE_NOT_FOUND",
+        message: "房屋附近的目标分区已被现有设施占用；未扩大到远处，也未放置任何方块",
+        statusCode: 409,
+        retryable: true,
+        suggestedRecovery: "整理家园附近空间、明确指定位置，或要求使用旧的远程设施。",
+      });
+    }
+    return selected.position;
   }
 
   #prepareProvisionFoodSpec(
@@ -1601,6 +2023,7 @@ export class ControlService {
       .filter((facility) => facility.dimension === snapshot.dimension)
       .filter((facility) => facility.type === "farm")
       .filter((facility) => !this.#isInvalidCropFarm(facility))
+      .filter((facility) => !this.#isHomeCompoundSecondary(facility))
       .sort((left, right) => {
         const leftDistance = (left.position.x - reference.x) ** 2 + (left.position.z - reference.z) ** 2;
         const rightDistance = (right.position.x - reference.x) ** 2 + (right.position.z - reference.z) ** 2;
@@ -1613,71 +2036,30 @@ export class ControlService {
     runtime: RuntimeCompanion,
     spec: Extract<TaskSpec, { kind: "build" }>,
   ): Extract<TaskSpec, { kind: "build" }> {
-    if (spec.homeBounds) return spec;
-    const bounds = this.#rememberedHomeBounds(runtime.backend.snapshot());
-    return bounds ? { ...spec, homeBounds: bounds } : spec;
-  }
-
-  /**
-   * A newly-created field belongs outside the current house. Prefer a point
-   * beyond the remembered home/build/storage cluster; Forge performs the final
-   * terrain and open-sky validation before placing the blueprint.
-   */
-  #outdoorFarmBuildAnchor(snapshot: WorldSnapshot): FacilityDraft["position"] {
-    const base = snapshot.homeState?.dimension === snapshot.dimension
-      ? snapshot.homeState.position
-      : snapshot.ownerPosition ?? snapshot.position;
-    const diagonal = Math.round(OUTDOOR_FARM_HOME_CLEARANCE / Math.sqrt(2));
-    const offsets = [
-      { x: OUTDOOR_FARM_HOME_CLEARANCE, z: 0 },
-      { x: -OUTDOOR_FARM_HOME_CLEARANCE, z: 0 },
-      { x: 0, z: OUTDOOR_FARM_HOME_CLEARANCE },
-      { x: 0, z: -OUTDOOR_FARM_HOME_CLEARANCE },
-      { x: diagonal, z: diagonal },
-      { x: diagonal, z: -diagonal },
-      { x: -diagonal, z: diagonal },
-      { x: -diagonal, z: -diagonal },
-    ];
-    // Outdoor construction must avoid not only the house cluster but also
-    // remembered ranches and bounded crop fields. Point-only observed farmland
-    // records are intentionally ignored here because one field can emit dozens
-    // of block observations and distort candidate ranking.
-    const protectedFacilities = this.#agentState.facilities
-      .filter((facility) => facility.worldId === snapshot.worldId)
-      .filter((facility) => facility.dimension === snapshot.dimension)
-      .filter((facility) => ["home", "build", "storage", "ranch"].includes(facility.type)
-        || (facility.type === "farm" && facility.bounds !== undefined));
-    const candidates = offsets.map((offset, order) => {
-      const position = { x: base.x + offset.x, y: base.y, z: base.z + offset.z };
-      const overlapsExpandedBounds = protectedFacilities.some((facility) => {
-        if (!facility.bounds) return false;
-        const margin = 12;
-        return position.x >= facility.bounds.min.x - margin
-          && position.x <= facility.bounds.max.x + margin
-          && position.z >= facility.bounds.min.z - margin
-          && position.z <= facility.bounds.max.z + margin;
-      });
-      const nearestResidentialDistance = protectedFacilities.length === 0
-        ? Number.POSITIVE_INFINITY
-        : Math.min(...protectedFacilities.map((facility) => (
-          (facility.position.x - position.x) ** 2
-          + (facility.position.z - position.z) ** 2
-        )));
-      const travelDistance = (snapshot.position.x - position.x) ** 2
-        + (snapshot.position.z - position.z) ** 2;
-      return { position, overlapsExpandedBounds, nearestResidentialDistance, travelDistance, order };
-    });
-    candidates.sort((left, right) => {
-      if (left.overlapsExpandedBounds !== right.overlapsExpandedBounds) {
-        return left.overlapsExpandedBounds ? 1 : -1;
-      }
-      if (left.nearestResidentialDistance !== right.nearestResidentialDistance) {
-        return right.nearestResidentialDistance - left.nearestResidentialDistance;
-      }
-      if (left.travelDistance !== right.travelDistance) return left.travelDistance - right.travelDistance;
-      return left.order - right.order;
-    });
-    return candidates[0]!.position;
+    const snapshot = runtime.backend.snapshot();
+    const homeBounds = spec.homeBounds ?? this.#rememberedHomeBounds(snapshot);
+    const explicitPlacement = (spec.sitePolicy !== undefined && spec.sitePolicy !== "home-compound")
+      || spec.placement === "plan-origin"
+      || (spec.placementAnchor !== undefined
+        && spec.compoundPlacement === undefined
+        && spec.sitePolicy !== "home-compound");
+    if (explicitPlacement) return homeBounds ? { ...spec, homeBounds } : spec;
+    const plan = this.buildPlans.get(spec.planId);
+    const zone = spec.compoundPlacement?.zone ?? this.#compoundZoneForBuild(plan.id, "", plan.name);
+    const compoundPlacement = this.#normalizeCompoundPlacement(snapshot, spec.compoundPlacement, zone);
+    const { offset: _legacyOffset, ...compoundSpec } = spec;
+    return {
+      ...compoundSpec,
+      placement: "companion",
+      sitePolicy: "home-compound",
+      // placementAnchor is already the checked blueprint origin. Legacy
+      // companion-relative offsets would move the real plan after clearance
+      // and ring validation, so automatic compound placement normalizes them.
+      placementAnchor: spec.placementAnchor
+        ?? this.#homeCompoundBuildAnchor(snapshot, plan, compoundPlacement, homeBounds),
+      ...(homeBounds ? { homeBounds } : {}),
+      compoundPlacement,
+    };
   }
 
   /**
@@ -1698,11 +2080,13 @@ export class ControlService {
       };
     }
     const reference = spec.placementAnchor ?? snapshot.position;
+    const allowRemote = this.#explicitlyAllowsRemoteFacility(spec.note);
     const candidates = this.#agentState.facilities
       .filter((facility) => facility.worldId === snapshot.worldId)
       .filter((facility) => facility.dimension === snapshot.dimension)
       .filter((facility) => facility.type === "farm")
       .filter((facility) => facility.properties.invalidForCropWork !== true)
+      .filter((facility) => allowRemote || !this.#isHomeCompoundSecondary(facility))
       // Crop work must not accidentally route to a remembered tree farm. Old
       // records without subtype tags remain eligible for backwards
       // compatibility, while explicit crop/farmland records are preferred by
@@ -1775,6 +2159,17 @@ export class ControlService {
     return facility.type === "farm" && facility.properties.invalidForCropWork === true;
   }
 
+  #explicitlyAllowsRemoteFacility(text: string | undefined): boolean {
+    return /(?:旧(?:的)?(?:农田|牧场|设施)|远处(?:的)?(?:农田|牧场|设施)|远程据点|旧据点|secondary\s+outpost|remote\s+(?:farm|ranch|facility|outpost))/iu
+      .test(text ?? "");
+  }
+
+  #isHomeCompoundSecondary(facility: FacilityRecord): boolean {
+    return facility.properties.homeCompoundCompliant === false
+      || facility.properties.compoundRole === "secondary-outpost"
+      || facility.properties.compoundRole === "secondary-noncompliant";
+  }
+
   /** Persist the resolved outdoor facility anchor on the parent macro. */
   #rememberResolvedFarmAnchor(parent: TaskRecord, stepTask: TaskSpec): void {
     if (parent.spec.kind !== "macro" || stepTask.kind !== "farm" || !stepTask.placementAnchor) return;
@@ -1835,18 +2230,36 @@ export class ControlService {
           };
         }
         if (step.task.kind !== "build") return { label: step.label, task: step.task };
+        const childSpec = {
+          ...step.task,
+          ...(step.task.placement === "companion"
+            ? { placementAnchor: step.task.placementAnchor ?? spec.placementAnchor }
+            : {}),
+          ...(step.task.kind === "build" && spec.homeBounds && !step.task.homeBounds
+            ? { homeBounds: spec.homeBounds }
+            : {}),
+          ...(spec.sitePolicy && spec.sitePolicy !== "home-compound"
+            ? { sitePolicy: spec.sitePolicy, compoundPlacement: undefined }
+            : spec.compoundPlacement
+            ? {
+                sitePolicy: "home-compound" as const,
+                compoundPlacement: spec.compoundPlacement,
+              }
+            : step.task.compoundPlacement
+              ? { compoundPlacement: step.task.compoundPlacement }
+              : {}),
+          materialPreference: step.task.materialPreference ?? spec.materialPreference,
+        } satisfies Extract<TaskSpec, { kind: "build" }>;
+        const automaticCompound = spec.sitePolicy === "home-compound"
+          || spec.compoundPlacement !== undefined
+          || step.task.sitePolicy === "home-compound"
+          || step.task.compoundPlacement !== undefined;
+        const compoundChildSpec = automaticCompound
+          ? (({ offset: _legacyOffset, ...withoutLegacyOffset }) => withoutLegacyOffset)(childSpec)
+          : childSpec;
         return {
           label: step.label,
-          task: {
-            ...step.task,
-            ...(step.task.placement === "companion"
-              ? { placementAnchor: step.task.placementAnchor ?? spec.placementAnchor }
-              : {}),
-            ...(step.task.kind === "build" && spec.homeBounds && !step.task.homeBounds
-              ? { homeBounds: spec.homeBounds }
-              : {}),
-            materialPreference: step.task.materialPreference ?? spec.materialPreference,
-          },
+          task: compoundChildSpec,
         };
       });
     if (!ranchChatFixture) return resolved;
@@ -2179,6 +2592,7 @@ export class ControlService {
         taskKind: task.spec.kind,
         companionId: task.companionId,
         planId: task.spec.planId,
+        ...this.#homeCompoundFacilityProperties(task, snapshot, bounds, position),
         ...(blueprint ? { blueprintPlanId: blueprint.plan.id, boundarySource: "blueprint", confidence: 1 } : {}),
       },
     }, now);
@@ -2226,6 +2640,7 @@ export class ControlService {
         taskKind: parent.spec.kind,
         companionId: parent.companionId,
         skillId,
+        ...this.#homeCompoundFacilityProperties(parent, snapshot, bounds, position),
         ...(blueprint ? { blueprintPlanId: blueprint.plan.id, boundarySource: "blueprint", confidence: 1 } : {}),
       },
     }, now);
@@ -2238,6 +2653,37 @@ export class ControlService {
     if (skillId === "life.establish-ranch" || skillId === "build.animal-pen") return "ranch";
     if (skillId.includes("cobblestone-generator") || skillId.includes("mob-farm")) return "redstone";
     return skillId.startsWith("build.") ? "build" : null;
+  }
+
+  #homeCompoundFacilityProperties(
+    task: TaskRecord,
+    snapshot: WorldSnapshot,
+    bounds?: FacilityBounds,
+    resolvedPosition?: FacilityDraft["position"],
+  ): Record<string, unknown> {
+    const placement = task.spec.kind === "build" || task.spec.kind === "macro"
+      ? task.spec.compoundPlacement
+      : undefined;
+    if (!placement) return {};
+    const home = this.#rememberedHomeFacility(snapshot);
+    const homeBounds = home?.bounds ?? this.#rememberedHomeBounds(snapshot);
+    if (!homeBounds) return {
+      compoundZone: placement.zone,
+      placementPolicyVersion: HOME_COMPOUND_POLICY_VERSION,
+    };
+    const position = resolvedPosition ?? this.#facilityPositionForCompletedTask(task, snapshot);
+    if (!position) return {};
+    const facilityBounds = bounds ?? { min: { ...position }, max: { ...position } };
+    const distance = horizontalBoundsGap(facilityBounds, homeBounds);
+    const compliant = distance >= placement.minDistance && distance <= placement.maxDistance;
+    return {
+      ...(home ? { homeFacilityId: home.id } : {}),
+      compoundZone: placement.zone,
+      compoundRole: compliant ? "primary-home-facility" : "secondary-outpost",
+      homeCompoundCompliant: compliant,
+      homeDistance: Math.round(distance * 100) / 100,
+      placementPolicyVersion: HOME_COMPOUND_POLICY_VERSION,
+    };
   }
 
   #markRecoveryUnsupported(task: TaskRecord): void {
@@ -2535,12 +2981,18 @@ export class ControlService {
           || existing.position.y !== position.y
           || existing.position.z !== position.z;
         const boundsChanged = bounds && JSON.stringify(existing.bounds) !== JSON.stringify(bounds);
-        if (!positionChanged && !boundsChanged) return;
+        const compoundProperties = snapshot
+          ? this.#homeCompoundFacilityProperties(task, snapshot, bounds, position)
+          : {};
+        const compoundChanged = Object.entries(compoundProperties)
+          .some(([key, value]) => JSON.stringify(existing.properties[key]) !== JSON.stringify(value));
+        if (!positionChanged && !boundsChanged && !compoundChanged) return;
         if (positionChanged) existing.position = position;
         if (bounds) existing.bounds = bounds;
         existing.updatedAt = now;
         existing.properties = {
           ...existing.properties,
+          ...compoundProperties,
           correctedFromLegacyAnchor: true,
           correctedAt: now,
           ...(blueprint ? {
@@ -2585,6 +3037,7 @@ export class ControlService {
         companionId: goal.companionId,
         ...(task.spec.kind === "macro" ? { skillId: task.spec.skillId } : {}),
         ...(task.spec.kind === "build" ? { planId: task.spec.planId } : {}),
+        ...this.#homeCompoundFacilityProperties(task, snapshot, bounds, position),
         ...(blueprint ? {
           blueprintPlanId: blueprint.plan.id,
           boundarySource: "blueprint",
@@ -2687,7 +3140,7 @@ export class ControlService {
           : snapshot.ownerPosition;
         const outsideCurrentHouse = !home || (
           (anchor.x - home.x) ** 2 + (anchor.z - home.z) ** 2
-        ) >= (OUTDOOR_FARM_HOME_CLEARANCE / 2) ** 2;
+        ) >= HOME_COMPOUND_ZONES.production!.minDistance ** 2;
         if (outsideCurrentHouse) return anchor;
       }
       // Immediately after a real farm task the NPC is normally standing at the
@@ -2965,16 +3418,28 @@ export class ControlService {
   ): FacilityRecord[] {
     const worldId = action.worldId ?? goal.worldId;
     const tags = new Set(action.tags);
+    const allowRemote = this.#explicitlyAllowsRemoteFacility(goal.spec.objective);
     return this.#agentState.facilities
       .filter((facility) => facility.worldId === worldId)
       .filter((facility) => !action.dimension || facility.dimension === action.dimension)
       .filter((facility) => !action.type || facility.type === action.type)
       .filter((facility) => !this.#isInvalidCropFarm(facility))
+      .filter((facility) => allowRemote || !this.#isHomeCompoundSecondary(facility))
       .filter((facility) => !action.owner || facility.owner === action.owner)
       .filter((facility) => tags.size === 0 || action.tags.every((tag) => facility.tags.includes(tag)))
-      .sort((left, right) => (
-        (right.lastUsedAt ?? right.updatedAt).localeCompare(left.lastUsedAt ?? left.updatedAt)
-      ))
+      .sort((left, right) => {
+        const leftPrimary = left.properties.compoundRole === "primary-home-facility" ? 1 : 0;
+        const rightPrimary = right.properties.compoundRole === "primary-home-facility" ? 1 : 0;
+        if (leftPrimary !== rightPrimary) return rightPrimary - leftPrimary;
+        const leftDistance = typeof left.properties.homeDistance === "number"
+          ? left.properties.homeDistance
+          : Number.POSITIVE_INFINITY;
+        const rightDistance = typeof right.properties.homeDistance === "number"
+          ? right.properties.homeDistance
+          : Number.POSITIVE_INFINITY;
+        if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+        return (right.lastUsedAt ?? right.updatedAt).localeCompare(left.lastUsedAt ?? left.updatedAt);
+      })
       .slice(0, action.limit);
   }
 

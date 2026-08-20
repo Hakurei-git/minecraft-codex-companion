@@ -1,6 +1,6 @@
 {
   "name": "@mc/dashboard",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "test": "vitest run --configLoader runner"
   },
   "dependencies": {
-    "@mc/protocol": "0.1.8",
+    "@mc/protocol": "0.1.9",
     "lucide-react": "^0.539.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

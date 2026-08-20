@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$OutputRoot = "",
     [switch]$SkipSourceBuild,
@@ -282,7 +282,7 @@ if (-not $forgeBuildForced) {
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $PSScriptRoot "run-forge-tests-in-process.ps1"),
-        "-ExpectedTestCount", "444"
+        "-ExpectedTestCount", "446"
     ) $projectRoot
 }
 $baritoneJar = Get-SingleFile (Join-Path $projectRoot "vendor\baritone") "baritone-api-forge-1.20.1-*.jar" "Baritone JAR"
@@ -422,7 +422,7 @@ Invoke-Checked $csc @(
 
 $productionPackage = [ordered]@{
     name = 'minecraft-codex-companion-portable-runtime'
-    version = '0.1.8'
+    version = '0.1.9'
     private = $true
     type = 'module'
     dependencies = [ordered]@{
@@ -475,7 +475,7 @@ Assert-TransparentRuntime $stage
 $manifest = [ordered]@{
     format = 2
     name = 'Minecraft Codex Companion Portable'
-    version = '0.1.8'
+    version = '0.1.9'
     platform = 'win32-x64'
     packaging = [ordered]@{
         model = 'transparent-multi-file'
@@ -493,7 +493,7 @@ $manifest = [ordered]@{
         sha256 = $bridgeJarHash
         packagedSha256 = $packagedBridgeJarHash
         forcedRerun = $forgeBuildForced
-        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-444-tests' }
+        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-446-tests' }
     }
     signatures = @(@($launcherExe, $clientExe, $pickerExe, $secretExe) | ForEach-Object {
         Get-SignatureEvidence $_ $stage

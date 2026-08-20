@@ -5,7 +5,7 @@
 ### Choose an edition
 
 - `MinecraftCodexCompanion-Setup.exe` is the normal user entry point. The single-file installer contains the local Companion service, Dashboard, Forge 1.20.1 mod, and setup application. It does not require a separate Node.js installation or manual JAR build.
-- `MinecraftCodexCompanion-AgentKit-v0.1.8.zip` is an optional AI integration package. Download it when importing the Minecraft Skill/MCP configuration into Codex, Claude, Antigravity, or another AI client. It does not replace the EXE or the in-game mod.
+- `MinecraftCodexCompanion-AgentKit-v0.1.9.zip` is an optional AI integration package. Download it when importing the Minecraft Skill/MCP configuration into Codex, Claude, Antigravity, or another AI client. It does not replace the EXE or the in-game mod.
 
 The EXE does not include a Minecraft account, the Minecraft game, or HMCL login state. Prepare an HMCL environment that can enter a Forge 1.20.1 world. Full live acceptance currently covers HMCL single-player worlds.
 
@@ -72,6 +72,10 @@ Report your health, hunger, equipment, and current task.
 - Smart planning cannot use player messages or imported content to authorize local file reads, key disclosure, arbitrary URLs, permission bypass, or code execution.
 
 Smart AI creates an additional provider request for complex or unrecognized actions and therefore consumes additional input and output tokens. The output-budget control limits requested planning output, not all provider billing. Explicit multi-agent planning usually costs more because advisers and the coordinator are separate model calls. Free-chat replies consume tokens independently. Smart AI disabled means recognized local action chains use no planning-model tokens; it does not make enabled free chat token-free.
+
+### Home-compound placement
+
+Automatic builds use the complete blueprint boundary relative to the remembered house boundary: residential buildings use the 8-24-block ring, production facilities use 16-40 blocks, and industrial facilities use 40-64 blocks. Candidates keep at least 12 blocks from remembered facilities. No safe candidate means a visible zero-placement failure; the executor does not silently build 96-160 blocks away. Existing distant farms and ranches remain secondary outposts and are reused only when explicitly requested. Player-specified coordinates are preserved.
 
 ### Language support
 
