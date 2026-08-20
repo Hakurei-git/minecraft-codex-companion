@@ -735,6 +735,42 @@ describe("ControlService", () => {
     });
   });
 
+  it.each(["build.animal-pen", "life.establish-ranch"])(
+    "routes %s away from the house and preserves the Forge outdoor site guard",
+    async (skillId) => {
+      const backend = new MacroCaptureBackend("survival");
+      const service = new ControlService();
+      service.registerBackend(backend);
+      const snapshot = backend.snapshot();
+      const assigned = service.assignTask(backend.id, {
+        kind: "macro",
+        skillId,
+        arguments: skillId === "life.establish-ranch"
+          ? { animalType: "minecraft:sheep", count: 2, radius: 128 }
+          : {},
+        requestedBy: "PlayerOne",
+      }, "antigravity-autoplay");
+
+      for (let attempt = 0; attempt < 50 && service.getTask(assigned.id).status !== "succeeded"; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(assigned.spec).toMatchObject({
+        kind: "macro",
+        placementAnchor: expect.objectContaining({ y: snapshot.position.y }),
+      });
+      if (assigned.spec.kind !== "macro" || !assigned.spec.placementAnchor) throw new Error("missing ranch anchor");
+      const horizontalDistanceSquared = (assigned.spec.placementAnchor.x - snapshot.position.x) ** 2
+        + (assigned.spec.placementAnchor.z - snapshot.position.z) ** 2;
+      expect(horizontalDistanceSquared).toBeGreaterThanOrEqual(48 ** 2);
+      expect(backend.tasks.find((task) => task.spec.kind === "build")?.spec).toMatchObject({
+        kind: "build",
+        sitePolicy: "outdoor",
+        placementAnchor: assigned.spec.placementAnchor,
+      });
+    },
+  );
+
   it("remembers a direct crop-farm macro once without shadowing its later farm step", async () => {
     const service = new ControlService();
     const backend = new MacroCaptureBackend("survival");

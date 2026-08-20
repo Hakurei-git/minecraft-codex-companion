@@ -1559,7 +1559,7 @@ export class ControlService {
   ): Extract<TaskSpec, { kind: "macro" }> {
     const snapshot = runtime.backend.snapshot();
     const placementAnchor = spec.placementAnchor
-      ?? (spec.skillId === "build.crop-farm"
+      ?? (["build.crop-farm", "build.animal-pen", "life.establish-ranch"].includes(spec.skillId)
         ? this.#outdoorFarmBuildAnchor(snapshot)
         : snapshot.position);
     const homeBounds = spec.homeBounds ?? this.#rememberedHomeBounds(snapshot);

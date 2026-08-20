@@ -351,7 +351,10 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
     name: "建造动物围栏",
     description: "建造带栅栏门的九格动物围栏，不生成或移动生物。",
     parameters: [],
-    steps: [{ label: "建造动物围栏", task: { kind: "build", planId: BUILTIN_BUILD_IDS.animalPen, ...nextToCompanion } }],
+    steps: [{
+      label: "建造动物围栏",
+      task: { kind: "build", planId: BUILTIN_BUILD_IDS.animalPen, ...nextToCompanion, sitePolicy: "outdoor" },
+    }],
   },
   {
     id: "life.establish-ranch",
@@ -363,7 +366,10 @@ export const ADDITIONAL_BUILTIN_SKILL_DRAFTS: readonly DeclarativeSkillDraft[] =
       { name: "radius", description: "远程寻找半径", type: "integer", required: false, defaultValue: 128, minimum: 16, maximum: 512 },
     ],
     steps: [
-      { label: "建造动物围栏", task: { kind: "build", planId: BUILTIN_BUILD_IDS.animalPen, ...nextToCompanion } },
+      {
+        label: "建造动物围栏",
+        task: { kind: "build", planId: BUILTIN_BUILD_IDS.animalPen, ...nextToCompanion, sitePolicy: "outdoor" },
+      },
       { label: "牵回并安置牲畜", task: { kind: "ranch", action: "establish", animalType: "${animalType}", count: "${count}", radius: "${radius}" } },
     ],
   },
