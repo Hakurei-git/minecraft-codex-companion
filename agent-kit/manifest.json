@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "minecraft-codex-companion-agent-kit",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "skillEntry": "skill/play-minecraft/SKILL.md",
   "documentation": {
     "default": "README.md",

@@ -44,7 +44,7 @@ Movement, gathering, crafting, smelting, storage, combat, dragon care, and const
 GitHub Releases provide two editions:
 
 - **[Windows Setup EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**: the complete edition for normal Windows users. It installs the local runtime and Forge bridge without requiring Node.js or a manual mod build.
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.9)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.10)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
 
 The installer does not embed or migrate accounts, API keys, Antigravity conversations, Minecraft worlds, or machine-specific paths.
 
