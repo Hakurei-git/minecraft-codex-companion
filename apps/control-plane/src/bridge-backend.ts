@@ -322,7 +322,7 @@ export class WebSocketBridgeBackend implements CompanionBackend {
   }
 
   async sendChat(message: string): Promise<void> {
-    if (this.#base.backend !== "forge-1.20.1") {
+    if (!["forge-1.20.1", "neoforge-1.21.1"].includes(this.#base.backend)) {
       await this.sendBridgeCommand({ type: "chat", message });
       return;
     }

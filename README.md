@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>A local-first Minecraft Forge 1.20.1 AI NPC companion for Codex, Claude-compatible APIs, and Antigravity MCP.</strong>
+  <strong>A local-first Minecraft companion for Forge 1.20.1, NeoForge 1.21.1, Codex, Claude-compatible APIs, and Antigravity MCP.</strong>
 </p>
 
 <p align="center">
@@ -43,16 +43,16 @@ Movement, gathering, crafting, smelting, storage, combat, dragon care, and const
 
 GitHub Releases provide two editions:
 
-- **[Windows Setup EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**: the complete edition for normal Windows users. It installs the local runtime and Forge bridge without requiring Node.js or a manual mod build.
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.10)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
+- **[Windows Setup EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**: the complete edition for normal Windows users. It installs the local runtime plus Forge 1.20.1 and NeoForge 1.21.1 bridges without requiring Node.js or a manual mod build.
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.11)**: a small Skill and MCP import package for supported AI clients. It contains instructions and a loopback MCP example, not the game runtime. The EXE-installed control service and Minecraft bridge must still be running on the same PC.
 
 The installer does not embed or migrate accounts, API keys, Antigravity conversations, Minecraft worlds, or machine-specific paths.
 
 ## Two-minute setup
 
 1. Download the Windows Setup EXE from the latest release and verify the published SHA-256.
-2. Select the detected HMCL launcher and Forge 1.20.1 source instance, then choose your player name, NPC name, persona, and optional 128×64 skin.
-3. Create the isolated companion instance, launch it from HMCL, and enter a new disposable single-player world for the first check.
+2. Select the detected HMCL launcher and a Forge 1.20.1 or NeoForge 1.21.1 source instance, then choose your player name, companion name, persona, and optional 128×64 Forge NPC skin.
+3. Let the EXE update and directly launch that exact HMCL source instance, then enter a disposable world for the first check. Forge provides an independent in-world NPC; NeoForge exposes the current client player through the same bridge protocol.
 4. Open the local Dashboard, select Codex, a Claude-compatible provider, or Antigravity MCP, and configure free chat and optional Smart AI. Press `T` in Minecraft to start talking or assigning work.
 
 ## Compatibility and automatic discovery
@@ -65,7 +65,7 @@ On first launch, the portable app checks a bounded set of user-level locations f
 
 The app does not recursively scan drives or read account files. Incorrect or missing results can be replaced with the Browse controls. `MC_HMCL_PATH`, `MC_MINECRAFT_ROOT`, and `MC_ANTIGRAVITY_CONFIG_PATH` are optional explicit overrides.
 
-Full live acceptance currently covers **HMCL with a Forge 1.20.1 single-player world**. HMCL Microsoft-account login and the official Minecraft Launcher have not completed live acceptance, so this release does not claim support for those flows.
+Release acceptance covers the two HMCL source-loader paths packaged by the EXE: **Forge 1.20.1 with an in-world NPC** and **NeoForge 1.21.1 with a client-player bridge**, including a reused fixed Antigravity conversation and natural-language Minecraft `T` chat. HMCL Microsoft-account login and the official Minecraft Launcher have not completed live acceptance, so this release does not claim support for those flows.
 
 ## Tested mod integrations
 
@@ -76,7 +76,7 @@ The Forge bridge contains explicit adapters for these optional third-party drago
 | Book of Dragons | `bookofdragons` | `bookofdragons-1.31-1.20.1` | Observe ownership/state, feed, heal, tame, egg care, follow/stay, mount/dismount, shared riding, flight, landing, recall, terrain recovery, and combat assistance |
 | Saints Dragons | `saintsdragons` | `saintsdragons-0.8.2+forge-1.20.1-alpha` | Observe ownership/state, feed, heal, tame, egg care, follow/stay, mount/dismount, shared riding, flight, landing, recall, terrain recovery, and combat assistance |
 
-These third-party mod JARs are **not bundled** in either release asset. The EXE preserves compatible mods already present in the selected HMCL source instance when it creates the isolated clone. The versions above are the live-tested compatibility targets; other releases may change their internal entity APIs and are not claimed as verified.
+These third-party mod JARs are **not bundled** in either release asset. The EXE preserves compatible mods already present in the selected HMCL source instance while installing its loader-specific bridge directly. The versions above are the live-tested compatibility targets; other releases may change their internal entity APIs and are not claimed as verified.
 
 ## Language support
 
@@ -108,7 +108,7 @@ Free chat is a separate switch. Disabling Smart AI does not disable ordinary AI 
 
 ## Basic setup from source
 
-Requirements: Node.js 24+, PowerShell 5.1+, Java 17 for Forge 1.20.1, and Java 21 for the optional NeoForge 1.21.1 source build.
+Requirements: Node.js 24+, PowerShell 5.1+, Java 17 or newer for Forge 1.20.1, and Java 21 or newer for NeoForge 1.21.1.
 
 ```powershell
 npm install
@@ -122,11 +122,11 @@ The control service listens on loopback by default:
 - MCP: `http://127.0.0.1:8765/mcp`
 - Game bridge: `ws://127.0.0.1:8765/bridge`
 
-## HMCL isolated instance
+## Direct HMCL source instance
 
-Do not test by modifying a normal modpack instance or an important world. The installer creates a separate Forge 1.20.1 clone and does not copy `saves`, `logs`, or `screenshots`. Start the cloned instance and create a disposable test world first.
+The current EXE does not create or launch a `-Codex` clone. It installs or updates only the managed bridge/configuration files in the selected Forge 1.20.1 or NeoForge 1.21.1 source instance, switches HMCL to that exact instance, verifies the launch-button instance name, and starts it directly. Back up important worlds and use a disposable test world for the first check.
 
-The Forge NPC has independent health, hunger, equipment, and inventory. Right-click to open its inventory; sneak-right-click toggles follow and stay. Dashboard and MCP controls also provide summon, recall, follow, and stay actions.
+The Forge NPC has independent health, hunger, equipment, and inventory. Right-click to open its inventory; sneak-right-click toggles follow and stay. Dashboard and MCP controls also provide summon, recall, follow, and stay actions. NeoForge 1.21.1 uses the current client player rather than spawning the Forge NPC; its `T` chat, observations, and compatible task actions still use the same loopback service.
 
 ## In-game chat
 

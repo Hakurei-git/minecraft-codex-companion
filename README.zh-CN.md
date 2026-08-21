@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>面向 Codex、Claude 兼容 API 与反重力 MCP 的本地优先 Minecraft Forge 1.20.1 AI NPC 陪玩系统。</strong>
+  <strong>面向 Forge 1.20.1、NeoForge 1.21.1、Codex、Claude 兼容 API 与反重力 MCP 的本地优先 Minecraft AI 陪玩系统。</strong>
 </p>
 
 <p align="center">
@@ -44,15 +44,15 @@
 GitHub Releases 提供两种下载：
 
 - **[Windows 安装程序 EXE](https://github.com/Hakurei-git/minecraft-codex-companion/releases/latest)**：普通用户使用的完整版本，不需要安装 Node.js 或手工构建模组。
-- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.10)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
+- **[AgentKit ZIP](https://github.com/Hakurei-git/minecraft-codex-companion/releases/tag/v0.1.11)**：给支持 Skill/MCP 的 AI 客户端导入；它只包含 AI 操作说明与本机 MCP 示例，不包含游戏运行时，仍需在同一台电脑运行 EXE 安装的控制服务和 Minecraft 桥。
 
 安装器不会内置或迁移账号、API Key、反重力会话、Minecraft 存档和本机路径。
 
 ## 两分钟安装流程
 
 1. 从最新 Release 下载 Windows 安装程序 EXE，并核对页面公布的 SHA-256。
-2. 选择自动发现的 HMCL 与 Forge 1.20.1 源实例，再设置玩家名、NPC 名字、人格和可选的 128×64 皮肤。
-3. 创建隔离陪玩实例，在 HMCL 中启动这个新实例，并先进入新建的临时单人世界检查。
+2. 选择自动发现的 HMCL 与 Forge 1.20.1 或 NeoForge 1.21.1 源实例，再设置玩家名、同伴名字、人格和可选的 Forge NPC 128×64 皮肤。
+3. 让 EXE 更新并直接启动所选的精确 HMCL 源实例，先进入临时世界检查。Forge 会生成独立游戏内 NPC；NeoForge 通过同一协议控制当前客户端玩家。
 4. 打开本地 Dashboard，选择 Codex、Claude 兼容服务或反重力 MCP，按需开启自由聊天与智能 AI；回到游戏按 `T` 即可聊天或下达任务。
 
 首次运行会在本机有限的用户级候选目录中自动发现：
@@ -63,7 +63,7 @@ GitHub Releases 提供两种下载：
 
 找不到时仍可用“浏览”按钮手工选择。自动发现不递归扫描磁盘，不读取账号文件，也不会把发现到的路径上传或写进发布包。可通过 `MC_HMCL_PATH`、`MC_MINECRAFT_ROOT` 和 `MC_ANTIGRAVITY_CONFIG_PATH` 显式覆盖。
 
-当前完整实机验收基于 **HMCL + Forge 1.20.1 单人世界**。HMCL 使用微软正版账号的登录流程理论上不改变实例克隆和 NPC 桥接，但尚未用正版账号完成实机验收；官方 Minecraft Launcher 的实例安装与自动启动也尚未验证，因此当前版本不把它们标记为已支持。正版用户建议先在 HMCL 中完成微软账号登录，再选择对应 Forge 1.20.1 实例。
+本版 EXE 对两个 HMCL 源加载器路径做发布验收：**Forge 1.20.1 游戏内 NPC**与 **NeoForge 1.21.1 客户端玩家桥**，均验证固定复用同一条反重力会话及 Minecraft `T` 自然语言链路。HMCL 微软正版账号登录与官方 Minecraft Launcher 尚未完成实机验收，因此当前版本不宣称支持这些流程。
 
 ## 已适配模组
 
@@ -74,7 +74,7 @@ Forge 桥为以下两个可选第三方龙模组实现了专用适配器：
 | Book of Dragons | `bookofdragons` | `bookofdragons-1.31-1.20.1` | 识别归属与状态、喂食、治疗、驯服、照顾龙蛋、跟随/等待、上龙/下龙、共享骑乘、飞行、降落、召回、地形脱困和协助战斗 |
 | Saints Dragons | `saintsdragons` | `saintsdragons-0.8.2+forge-1.20.1-alpha` | 识别归属与状态、喂食、治疗、驯服、照顾龙蛋、跟随/等待、上龙/下龙、共享骑乘、飞行、降落、召回、地形脱困和协助战斗 |
 
-这两个第三方模组 JAR **不会打包进** EXE 或 AgentKit。EXE 创建隔离实例时会保留所选 HMCL 源实例中已有的兼容模组。上表是已完成实机测试的目标版本；其他版本可能改变内部实体 API，目前不宣称已经验证。
+这两个第三方模组 JAR **不会打包进** EXE 或 AgentKit。EXE 向所选 HMCL 源实例直接安装对应桥接时会保留其中已有的兼容模组。上表是已完成实机测试的目标版本；其他版本可能改变内部实体 API，目前不宣称已经验证。
 
 ## 三种 AI 入口
 
@@ -201,9 +201,9 @@ $env:MC_BRIDGE_TOKEN = "至少16字符的自定义令牌"
 
 每个候选位置与已记录设施至少保留 12 格间距。Forge 执行器会在选址和实际施工时重复检查地形与受保护方块，只允许有上限的轻量整地；没有安全位置就保持零放置并明确失败，绝不会静默扩展到 96-160 格外。已有的远程农田和牧场不会删除，而是降级为次级据点；普通命令会在家附近新建/使用主设施，只有明确说“旧农田”“远处牧场”等才复用远程据点。玩家明确给出的坐标或已确认蓝图原点仍然优先，不会被自动环形选址改写。
 
-## HMCL 安全克隆
+## HMCL 源实例直连
 
-不要把桥接模组直接放进正在玩的整合包实例，更不要直接在原来的重要存档中测试。安装器只创建新版本目录，不复制 `saves`、`logs` 或 `screenshots`，目标目录已存在时会直接停止。
+新版 EXE 不创建或启动名称带 `-Codex` 的副本。它只更新所选 Forge 1.20.1 或 NeoForge 1.21.1 源实例中的受管桥接/配置文件，随后把 HMCL 切换到该精确实例；只有启动按钮自身显示同一实例名时才会启动。首次测试前请备份重要世界并进入临时测试世界。
 
 先构建对应模组：
 
@@ -213,38 +213,17 @@ npm run build:forge
 npm run build:neoforge
 ```
 
-Forge 1.20.1 的自动寻路使用项目内已校验的官方 Baritone API Forge `v1.10.3`，位于 `vendor\baritone`；来源与哈希记录见该目录的 `README.md`。也可以通过 `-BaritoneJar` 指定其他兼容构件。先预览克隆操作：
+Forge 1.20.1 的自动寻路使用项目内已校验的官方 Baritone API Forge `v1.10.3`，位于 `vendor\baritone`；来源与哈希记录见该目录的 `README.md`。点击 EXE 的“安装 / 更新桥接”或“一键准备并启动”即可原子更新所选源实例；被替换的受管文件会备份到当前用户的 Companion 本机状态目录。
 
-```powershell
-$launcherPath = Read-Host "HMCL .exe or .jar path"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-hmcl-clone.ps1 `
-  -SourceVersion "Your_Forge_1.20.1" `
-  -TargetVersion "Your_Forge_1.20.1-Codex" `
-  -OwnerName "YourMinecraftName" `
-  -LauncherPath $launcherPath `
-  -WhatIf
-```
+Forge NPC 模式直接运行在所选源实例的当前单人世界；只有使用 NeoForge 远程玩家或 Mineflayer 角色时才需要独立账号和可连接的服务器。
 
-确认路径后去掉 `-WhatIf` 执行。脚本会复制整合包配置和模组、安装桥接模组、生成独立桥配置，并创建一个空的 `saves` 目录。完成后打开 HMCL：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\open-hmcl.ps1 -LauncherPath $launcherPath
-```
-
-在 HMCL 中只启动新克隆实例，并新建空世界进行验证。Forge NPC 模式直接运行在当前单人世界；只有使用 NeoForge 远程玩家或 Mineflayer 角色时才需要独立账号和可连接的服务器。
-
-Forge 1.20.1 的默认模式不需要第二个账号或开放局域网：进入克隆实例的世界后，模组会为当前玩家生成唯一的游戏内 NPC。NPC 是白色长发、红瞳、白色猫耳和长尾的猫娘外观，带独立生命、饥饿、装备与背包；右键打开背包，潜行右键切换跟随/等待。NPC 倒地后会保留物品并在 10 秒后恢复。
+Forge 1.20.1 的默认模式不需要第二个账号或开放局域网：进入所选源实例的世界后，模组会为当前玩家生成唯一的游戏内 NPC。NPC 是白色长发、红瞳、白色猫耳和长尾的猫娘外观，带独立生命、饥饿、装备与背包；右键打开背包，潜行右键切换跟随/等待。NPC 倒地后会保留物品并在 10 秒后恢复。
 
 “给我一把钻石镐”会提交一条可持久化的制作任务。背包和家中箱子都没有钻石时，NPC 先准备至少 32 个梯子、32 个火把、1 把状态良好的铁镐和 1 把备用铁镐；随后优先寻找可见且可达的洞穴，没有入口时挖一格宽、两格高的安全阶梯到 Y=-58，再按 32 格长度、3 格间隔左右交替开分支。矿石只有在洞穴中裸露或被矿道挖开后才会识别，发现首块后才追踪相连矿脉；水、岩浆、沙砾、保护方块和不可破坏方块会触发改道。矿道、入口标记、火把、当前分支和最后安全站位会随 Minecraft 存档恢复，战斗插队后继续原任务。
 
 最终反重力链路使用 `npm run smoke:live-final-diamond`。它要求自由聊天、反重力 MCP 和智能 AI 均已启用，通过 Minecraft `T` 精确发送“给我制作一把钻石镐并交给我”，并验证同一反重力会话只提交一个任务、深矿准备、Y=-58 阶梯/分支、火把、钻石、按需丢弃多组石头、制作、实体交付、开始/终态游戏回复以及可逆清理。脚本只连接 `127.0.0.1`，不会读取模型地址、Key、反重力会话正文、Minecraft 日志或截图。
 
-构建新版 Forge JAR 后，必须先完全退出克隆游戏，再用安全升级器替换；它不会读取进程命令行，只检查窗口式 Java 客户端、操作克隆实例中的桥接 JAR，并保留世界、配置和其他模组。若自定义启动器用控制台式 `java.exe` 启动游戏，仍需自行先退出；Windows 文件锁会作为最终保护：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\update-hmcl-clone.ps1 `
-  -TargetVersion "Your_Forge_1.20.1-Codex"
-```
+构建新版桥接 JAR 后，必须先完全退出对应源实例，再通过 EXE 的“安装 / 更新桥接”替换。程序只处理受管桥接文件并保留世界、其他配置和其他模组；Windows 文件锁仍是最终保护。
 
 Dashboard 与 MCP 都可对 NPC 执行 `summon`、`recall`、`follow`、`stay`。MCP 工具名为 `mc_control_companion`。
 
@@ -352,7 +331,7 @@ npm run smoke:capabilities
 - Dashboard 没有同伴：确认游戏或 worker 已启动，桥地址为 `ws://127.0.0.1:8765/bridge`，两端令牌完全一致。
 - 游戏聊天没有回复：自由聊天关闭时使用 `@Codex`、`@Claude`、`@多代理` 或 `@反重力`；自由聊天开启时检查 `playerName` 和响应端。Mineflayer 还需要一个 `chatLeader`。
 - 多代理协作降级：确认至少 Codex 本机登录或 Codex 自定义配置可用；Claude 未配置时仍会由 Codex 顾问和协调器继续，但不会伪造 Claude 方案。协作模式只产生一条最终游戏回复。
-- 游戏里看不到 NPC：确认克隆实例已升级到 Forge 模组 `0.2.0`，再使用 Dashboard 的“召回”或 MCP `mc_control_companion` 的 `recall`；旧 `0.1.0` 只会控制玩家自身。
+- 游戏里看不到 NPC：确认界面所选源实例已升级到当前 Forge 桥接模组，再使用 Dashboard 的“召回”或 MCP `mc_control_companion` 的 `recall`；旧 `0.1.0` 只会控制玩家自身。
 - 反重力自由聊天没有回复：确认响应端是“反重力 MCP”、反重力程序正在运行，并在便携客户端查看“自动触发已就绪”；核对会话标题后点“按标题绑定会话”。网络刚恢复或会话假忙时，可直接在 Minecraft 的 `T` 聊天输入“恢复反重力”，也可点“恢复反重力会话”。普通聊天不需要 `@`，手动 MCP 模式才需要轮询 `mc_list_chat_messages`。
 - Claude 测试失败：确认地址支持 Anthropic Messages API 和工具调用，而不是只支持 OpenAI Chat Completions。
 - 移动/采集失败：Forge NPC 不依赖 Baritone；检查目标是否受领地保护、路径是否完全封闭、背包是否已满，以及未开作弊时是否仍在远程步行。NeoForge 或 Mineflayer 再检查各自的导航能力和服务器兼容性。

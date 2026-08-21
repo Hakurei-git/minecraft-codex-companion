@@ -103,7 +103,9 @@ public static class MinecraftBackgroundInput
 
     public static void ReleaseCursorCapture(IntPtr hWnd)
     {
-        PostMessage(hWnd, 0x0008, IntPtr.Zero, IntPtr.Zero); // WM_KILLFOCUS
+        // A synthetic WM_KILLFOCUS makes fullscreen GLFW minimize itself.
+        // Releasing Win32 capture and clipping is sufficient and keeps the
+        // verified Minecraft window available for background messages.
         ReleaseCapture();
         ClipCursor(IntPtr.Zero);
     }
@@ -141,7 +143,9 @@ function Get-ConnectedCompanions {
     try {
         $response = Invoke-RestMethod -Uri ([Uri]::new($baseUri, "api/companions")) -TimeoutSec 3
         return @($response.companions) | Where-Object {
-            $_.connected -eq $true -and $_.embodiment -eq "in-world-npc"
+            $_.connected -eq $true -and
+            $_.backend -in @("forge-1.20.1", "neoforge-1.21.1") -and
+            $_.embodiment -in @("in-world-npc", "remote-player")
         }
     } catch {
         return @()
@@ -217,15 +221,28 @@ if (-not $SkipLogInspection) {
     }
     $config = Get-Content -LiteralPath $configPath -Raw -Encoding utf8 | ConvertFrom-Json
     $instancePath = Join-Path ([string]$config.minecraftRoot) ("versions\" + [string]$config.targetVersion)
-    $latestLog = Join-Path $instancePath "logs\latest.log"
+    # Forge source instances use their version directory as gameDir, while the
+    # selected NeoForge source instance uses the shared Minecraft root. Probe
+    # only those two exact, configuration-derived locations and require a log
+    # written after this verified Java process started.
+    $latestLogCandidates = @(
+        (Join-Path $instancePath "logs\latest.log")
+        (Join-Path ([string]$config.minecraftRoot) "logs\latest.log")
+    ) | Select-Object -Unique
     $minecraftProcess = Get-Process -Id $resolvedMinecraftProcessId -ErrorAction Stop
     $menuDeadline = (Get-Date).AddSeconds($WaitSeconds)
     do {
         Start-Sleep -Milliseconds 500
-        $logInfo = Get-Item -LiteralPath $latestLog -ErrorAction SilentlyContinue
-        $menuReady = $null -ne $logInfo -and
-            $logInfo.LastWriteTime -ge $minecraftProcess.StartTime -and
-            [bool](Select-String -LiteralPath $latestLog -Pattern "Sound engine started" -SimpleMatch -Quiet)
+        $menuReady = $false
+        foreach ($latestLog in $latestLogCandidates) {
+            $logInfo = Get-Item -LiteralPath $latestLog -ErrorAction SilentlyContinue
+            if ($null -ne $logInfo -and
+                $logInfo.LastWriteTime -ge $minecraftProcess.StartTime -and
+                [bool](Select-String -LiteralPath $latestLog -Pattern "Sound engine started" -SimpleMatch -Quiet)) {
+                $menuReady = $true
+                break
+            }
+        }
     } while (-not $menuReady -and (Get-Date) -lt $menuDeadline)
     if (-not $menuReady) { throw "Minecraft Forge main menu was not ready before timeout" }
 }
@@ -237,9 +254,10 @@ if ($handle -eq [IntPtr]::Zero) {
 $wasMinimized = [MinecraftBackgroundInput]::IsIconic($handle)
 $minimizedAfterWorldSelection = $false
 if ($wasMinimized) {
-    # SW_SHOWNOACTIVATE restores GLFW's client size without taking focus from
-    # the application the user is currently working in.
-    [void][MinecraftBackgroundInput]::ShowWindowAsync($handle, 4)
+    # Fullscreen GLFW does not reliably restore its client area with
+    # SW_SHOWNOACTIVATE. SW_RESTORE is bounded to the verified game HWND; the
+    # window is minimized again after world selection.
+    [void][MinecraftBackgroundInput]::ShowWindowAsync($handle, 9)
     [MinecraftBackgroundInput]::ReleaseCursorCapture($handle)
 }
 try {
@@ -328,7 +346,7 @@ try {
             $handle = $replacementHandle
         }
         if ([MinecraftBackgroundInput]::IsIconic($handle)) {
-            [void][MinecraftBackgroundInput]::ShowWindowAsync($handle, 4)
+            [void][MinecraftBackgroundInput]::ShowWindowAsync($handle, 9)
             [MinecraftBackgroundInput]::ReleaseCursorCapture($handle)
         }
         $boundsDeadline = (Get-Date).AddSeconds(5)
@@ -356,9 +374,17 @@ try {
             Start-Sleep -Milliseconds 300
         }
 
-        # Main menu: Singleplayer. Coordinates are normalized to the GLFW
-        # client, so window borders and DPI are not hardcoded.
-        Click-Normalized 0.50 0.515
+        # Main menu: Singleplayer. Minecraft 1.21.1 moved the button group
+        # upward relative to the Forge 1.20.1 layout. Select the coordinate
+        # only from the already verified Minecraft process title.
+        $minecraftProcess = Get-Process -Id $resolvedMinecraftProcessId -ErrorAction Stop
+        $isNeoForgeLayout = $minecraftProcess.MainWindowTitle -match 'NeoForge|1\.21\.1'
+        $singleplayerY = if ($isNeoForgeLayout) {
+            0.425
+        } else {
+            0.515
+        }
+        Click-Normalized 0.50 $singleplayerY
         Start-Sleep -Seconds 3
 
         # The search box is drawn near 13% of the GLFW client height. Post
@@ -384,7 +410,8 @@ try {
         # The real cursor, focus and clipboard are untouched.
         Click-Normalized 0.46 0.32
         Start-Sleep -Seconds 1
-        Click-Normalized 0.31 0.825
+        $playSelectedWorldX = if ($isNeoForgeLayout) { 0.42 } else { 0.31 }
+        Click-Normalized $playSelectedWorldX 0.825
         $worldSelectionPosted = $true
 
         $connectDeadline = (Get-Date).AddSeconds($WaitSeconds)

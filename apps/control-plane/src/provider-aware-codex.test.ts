@@ -13,6 +13,10 @@ describe("Codex planning retry policy", () => {
   it("retries temporary gateway failures only", () => {
     expect(isRetryableCodexPlanningError(new Error("502 Bad Gateway: upstream request failed"))).toBe(true);
     expect(isRetryableCodexPlanningError(new Error("503 Service Unavailable"))).toBe(true);
+    expect(isRetryableCodexPlanningError(new Error(
+      "Invalid schema for response_format 'codex_output_schema': In context=(), 'oneOf' is not permitted.",
+    ))).toBe(true);
+    expect(isRetryableCodexPlanningError(new Error('{"code":"invalid_json_schema"}'))).toBe(true);
     expect(isRetryableCodexPlanningError(new Error("invalid structured output"))).toBe(false);
   });
 });
@@ -106,6 +110,39 @@ class ToolReportingCodex {
   }
 
   resumeThread(_id: string, options?: ThreadOptions): ToolReportingThread {
+    return this.startThread(options);
+  }
+}
+
+class TransportFallbackThread extends FakeThread {
+  override async run(input: Input, _options?: TurnOptions) {
+    this.inputs.push(input);
+    return {
+      finalResponse: JSON.stringify({
+        decisionJson: JSON.stringify({
+          type: "chat",
+          reply: "OK after HTTPS fallback",
+          summary: "transport recovered",
+        }),
+      }),
+      items: [
+        { type: "error", message: "Falling back from WebSockets to HTTPS transport. request timed out" },
+        { type: "agent_message", text: "valid response followed" },
+      ],
+    };
+  }
+}
+
+class TransportFallbackCodex {
+  readonly threads: TransportFallbackThread[] = [];
+
+  startThread(options?: ThreadOptions): TransportFallbackThread {
+    const thread = new TransportFallbackThread(options);
+    this.threads.push(thread);
+    return thread;
+  }
+
+  resumeThread(_id: string, options?: ThreadOptions): TransportFallbackThread {
     return this.startThread(options);
   }
 }
@@ -543,6 +580,29 @@ describe("ProviderAwareCodexClient", () => {
     })).rejects.toThrow("稳定模式回合违反无工具策略");
     expect(assignTask).not.toHaveBeenCalled();
     expect(controlCompanion).not.toHaveBeenCalled();
+  });
+
+  it("accepts a non-executing SDK transport error when a valid planner response follows", async () => {
+    const { store, service } = await setup();
+    const fake = new TransportFallbackCodex();
+    const client = new ProviderAwareCodexClient({
+      store,
+      control: service,
+      mcpUrl: "http://127.0.0.1:8765/mcp",
+      codexFactory: () => fake,
+    });
+
+    const result = await client.startThread().runPlanning!("plan one action", {
+      outputSchema: {
+        type: "object",
+        properties: { decisionJson: { type: "string" } },
+        required: ["decisionJson"],
+        additionalProperties: false,
+      },
+    }, 512);
+
+    expect(JSON.parse(result.finalResponse)).toMatchObject({ decisionJson: expect.any(String) });
+    expect(fake.threads).toHaveLength(1);
   });
 
   it("replaces an advisor session synchronously when an aborted provider ignores cancellation", async () => {

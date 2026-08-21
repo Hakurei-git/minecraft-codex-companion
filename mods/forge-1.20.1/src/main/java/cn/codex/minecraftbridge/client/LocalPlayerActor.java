@@ -2,6 +2,9 @@ package cn.codex.minecraftbridge.client;
 
 import com.google.gson.JsonObject;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.ChatScreen;
+import net.minecraft.client.gui.screens.DeathScreen;
+import net.minecraft.client.gui.screens.PauseScreen;
 
 public final class LocalPlayerActor implements CompanionActor {
     private final BridgeConfig config;
@@ -41,7 +44,17 @@ public final class LocalPlayerActor implements CompanionActor {
 
     @Override
     public JsonObject snapshot(Minecraft minecraft) {
-        return snapshots.capture(minecraft, config, tasks.status());
+        JsonObject snapshot = snapshots.capture(minecraft, config, tasks.status());
+        snapshot.addProperty("clientUiState", clientUiState(minecraft));
+        return snapshot;
+    }
+
+    private String clientUiState(Minecraft minecraft) {
+        if (minecraft.screen == null) return "gameplay";
+        if (minecraft.screen instanceof ChatScreen) return "chat";
+        if (minecraft.screen instanceof PauseScreen) return "pause";
+        if (minecraft.screen instanceof DeathScreen) return "death";
+        return "other";
     }
 
     @Override
@@ -66,8 +79,13 @@ public final class LocalPlayerActor implements CompanionActor {
 
     @Override
     public void speak(Minecraft minecraft, String message, String deliveryId) {
-        if (minecraft.player != null && minecraft.player.connection != null) {
-            minecraft.player.connection.sendChat(message);
-        }
+        minecraft.gui.getChat().addMessage(net.minecraft.network.chat.Component.literal(
+            "<" + config.name + "> " + message
+        ));
+    }
+
+    @Override
+    public boolean synchronousChatDelivery() {
+        return true;
     }
 }

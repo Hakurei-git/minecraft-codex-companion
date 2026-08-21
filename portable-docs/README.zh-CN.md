@@ -4,23 +4,23 @@
 
 ## 选择哪个版本
 
-- `MinecraftCodexCompanion-Setup.exe` 是普通用户入口。它是单文件安装器，包含 Companion 本地控制服务、Dashboard、Forge 1.20.1 模组和配置程序；不要求用户安装 Node.js 或手工构建 JAR。
-- `MinecraftCodexCompanion-AgentKit-v0.1.10.zip` 是可选的 AI 接入包。只有在需要把 Minecraft 操作 Skill/MCP 配置导入 Codex、Claude、反重力或其他 AI 客户端时才下载；它不能替代 EXE 和游戏侧模组。
+- `MinecraftCodexCompanion-Setup.exe` 是普通用户入口。它是单文件安装器，包含 Companion 本地控制服务、Dashboard、Forge 1.20.1 游戏内 NPC 桥、NeoForge 1.21.1 客户端桥和配置程序；不要求用户安装 Node.js 或手工构建 JAR。
+- `MinecraftCodexCompanion-AgentKit-v0.1.11.zip` 是可选的 AI 接入包。只有在需要把 Minecraft 操作 Skill/MCP 配置导入 Codex、Claude、反重力或其他 AI 客户端时才下载；它不能替代 EXE 和游戏侧模组。
 
-EXE 不包含 Minecraft 账号、Minecraft 游戏本体或 HMCL 登录状态。首次配置前，请准备能够正常进入 Forge 1.20.1 世界的 HMCL 环境。当前完整实机验收基于 HMCL 单人世界。
+EXE 不包含 Minecraft 账号、Minecraft 游戏本体或 HMCL 登录状态。首次配置前，请准备能进入 Forge 1.20.1 或 NeoForge 1.21.1 世界的 HMCL 环境。Forge 提供独立游戏内 NPC；NeoForge 客户端桥控制当前客户端玩家，但复用同一个本地服务、固定反重力会话和 `T` 聊天链路。
 
 ## 可选的已适配龙模组
 
 - Book of Dragons（`bookofdragons`），实机测试版本为 `bookofdragons-1.31-1.20.1`。
 - Saints Dragons（`saintsdragons`），实机测试版本为 `saintsdragons-0.8.2+forge-1.20.1-alpha`。
 
-两个适配器均支持状态/归属识别、喂食、治疗、驯服、照顾龙蛋、跟随/等待、上龙/下龙、共享骑乘、飞行、降落、召回、地形脱困和协助战斗。第三方模组 JAR 不随安装器分发；请先把兼容版本放进 HMCL 源实例，创建隔离实例时会保留已有模组。除上述实测版本外，其他版本目前不保证兼容。
+两个适配器均支持状态/归属识别、喂食、治疗、驯服、照顾龙蛋、跟随/等待、上龙/下龙、共享骑乘、飞行、降落、召回、地形脱困和协助战斗。第三方模组 JAR 不随安装器分发；请先把兼容版本放进要直接启动的 HMCL 源实例。除上述实测版本外，其他版本目前不保证兼容。
 
 ## 安全与隐私
 
 - 发布安装器只负责校验并原子展开透明的多文件便携包；安装后的主 EXE 不会注入或修改其他 EXE。
 - 运行时不包含、生成或调用 PowerShell/命令行脚本，不下载可执行代码，也不申请管理员权限。
-- 安装实例只复制玩家选择的 Forge 1.20.1 实例配置、模组和版本文件；不会复制世界、日志或截图。
+- 程序只向玩家选定的 Forge 1.20.1 或 NeoForge 1.21.1 源实例安装对应桥接文件和本机配置；不会创建或启动名称带 `-Codex` 的副本，也不会复制世界、日志或截图。
 - API Key 由当前 Windows 用户的 DPAPI 加密。DPAPI 操作由职责单一的本地辅助程序完成，不拼接或执行脚本。
 - `portable-manifest.json` 记录所有文件和构建输入的 SHA-256。程序启动时会校验关键文件，校验失败即停止。
 - 发布包不包含 API Key、桥接令牌、本地运行状态、世界、聊天记录或构建电脑的绝对路径。
@@ -33,16 +33,16 @@ EXE 不包含 Minecraft 账号、Minecraft 游戏本体或 HMCL 登录状态。�
 
 1. 运行 GitHub Release 中的 `MinecraftCodexCompanion-Setup.exe`；它会校验并安装完整便携运行时，然后自动打开配置程序。
 2. 后续可从开始菜单或安装目录直接运行 `MinecraftCodexCompanion.exe`。程序会同时启动本机控制服务，正常时 Dashboard 地址为 `http://127.0.0.1:8765`。
-3. 选择本机 HMCL 启动器、Minecraft 根目录以及 Forge 1.20.1 源实例。程序只在有限的用户目录中自动发现；结果不正确时点击“浏览”手工选择。
-4. 填写新隔离实例名、游戏玩家名和 NPC 名称。玩家名必须与进入世界时的名称一致，否则自由聊天过滤和物品交付可能无法找到玩家。
+3. 选择本机 HMCL 启动器、Minecraft 根目录以及 Forge 1.20.1 或 NeoForge 1.21.1 源实例。程序会从版本元数据识别加载器；有限目录自动发现不正确时点击“浏览”手工选择。
+4. 填写游戏玩家名和 NPC 名称。玩家名必须与进入世界时的名称一致，否则自由聊天过滤和物品交付可能无法找到玩家。
 5. 选择继承现有人格或设置 Minecraft 专用人格；需要时导入 `128x64` PNG 皮肤。NPC 名称和皮肤以后仍可更换。
-6. 点击“一键准备并启动”。程序会创建隔离实例并写入所需模组，不复制原实例的世界、日志和截图。
-7. 在 HMCL 中选择新建实例并进入一个测试世界。第一次测试不要使用重要存档。
-8. 回到 Dashboard，确认同伴列表已出现 NPC。可先使用“召回”和“跟随”验证连接，再开始采集或建筑任务。
+6. 点击“一键准备并启动”。程序会更新所选源实例的桥接文件，精确切换 HMCL 当前实例并直接启动它；不会生成 `-Codex` 副本。
+7. 进入一个测试世界。第一次测试不要使用重要存档，并建议先备份该源实例的重要世界。
+8. Forge 实例应在 Dashboard 出现游戏内 NPC，可先测试“召回”和“跟随”；NeoForge 实例应显示 `neoforge-1.21.1` 客户端同伴，可先用一条无副作用的 `T` 自然语言确认回复链路。
 
 ## 日常使用
 
-1. 需要游玩时启动 `MinecraftCodexCompanion.exe`，再通过 HMCL 进入 Companion 隔离实例；不测试时可以关闭 Minecraft 以释放内存。
+1. 需要游玩时启动 `MinecraftCodexCompanion.exe`，选择要使用的 HMCL 源实例并一键启动；不测试时可以关闭 Minecraft 以释放内存。
 2. 在 Dashboard 的“AI 生成服务”中选择 Codex、Claude 或反重力响应端，配置自由聊天的玩家名，并按需要启用自由聊天。
 3. 在游戏按 `T` 直接输入消息。自由聊天启用后无需 `@`；关闭时仍可使用 `@codex`、`@claude`、`@多代理` 或 `@反重力` 定向发送。
 4. 任务开始、关键进度、失败原因和最终完成结果会通过 NPC 的游戏聊天发送。需要立即停止时输入“停”“急停”或 `stop`，该命令由本机直接处理。
@@ -86,7 +86,7 @@ AI 自由聊天可以跟随中英文；固定界面和本地确定性动作短�
 
 **Dashboard 打不开：**先启动已安装的 `MinecraftCodexCompanion.exe`，再访问 `http://127.0.0.1:8765/api/health`。如果端口被其他程序占用，关闭冲突程序后重启 Companion。
 
-**Dashboard 在线但看不到 NPC：**确认已经进入安装器创建的 Forge 1.20.1 实例和世界；检查模组版本与桥接状态，然后使用“召回”。
+**Dashboard 在线但看不到同伴：**确认已经进入界面所选的 Forge 1.20.1 或 NeoForge 1.21.1 源实例和世界，并检查对应桥接 JAR。只有 Forge 游戏内 NPC 支持“召回”；NeoForge 显示的是当前客户端玩家。
 
 **游戏聊天没有回复：**检查自由聊天是否开启、玩家名是否完全正确、响应端是否可用。反重力还必须运行并绑定正确的完整会话标题。
 

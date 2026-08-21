@@ -6,6 +6,52 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 
+// The portable launcher supports the two client loaders that are shipped by
+// this repository.  Keep the definition in one place so clone installation,
+// updates, and the launcher payload cannot silently disagree about a bridge
+// filename or marker.
+const LOADER_DEFINITIONS = Object.freeze({
+  forge: Object.freeze({
+    id: "forge",
+    backend: "forge-1.20.1",
+    bridgePattern: /^minecraft_codex_bridge-forge-1\.20\.1-[^/\\]+\.jar$/iu,
+    bridgeLabel: "Forge 1.20.1",
+    companionId: "codex-forge",
+    baritonePattern: /^baritone-api-forge-1\.20\.1-[^/\\]+\.jar$/iu,
+  }),
+  neoforge: Object.freeze({
+    id: "neoforge",
+    backend: "neoforge-1.21.1",
+    bridgePattern: /^minecraft_codex_bridge-neoforge-1\.21\.1-[^/\\]+\.jar$/iu,
+    bridgeLabel: "NeoForge 1.21.1",
+    companionId: "codex-neoforge",
+    baritonePattern: null,
+  }),
+});
+
+function loaderDefinition(loader) {
+  const definition = LOADER_DEFINITIONS[String(loader || "").toLowerCase()];
+  if (!definition) throw new Error(`Unsupported Minecraft loader: ${loader}`);
+  return definition;
+}
+
+function detectLoader(versionDocument, sourceVersion = "") {
+  const fingerprint = JSON.stringify(versionDocument || {}).toLowerCase();
+  if (fingerprint.includes("net.minecraftforge") && fingerprint.includes("1.20.1")) {
+    return "forge";
+  }
+  if (fingerprint.includes("net.neoforged") && fingerprint.includes("1.21.1")) {
+    return "neoforge";
+  }
+  // Some HMCL-generated NeoForge manifests omit the dependency from the
+  // libraries array but retain it in the instance name.  The name fallback is
+  // deliberately narrow and still requires the 1.21.1 marker.
+  if (/neoforge/iu.test(String(sourceVersion)) && /1\.21\.1/u.test(String(sourceVersion))) {
+    return "neoforge";
+  }
+  throw new Error("当前便携包只支持 Forge 1.20.1 或 NeoForge 1.21.1 源实例");
+}
+
 function isPathInside(parent, candidate) {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
@@ -120,9 +166,10 @@ async function installClone(options) {
   const sourceJar = path.join(sourcePath, `${options.sourceVersion}.jar`);
   if (!fs.existsSync(sourceJson) || !fs.existsSync(sourceJar)) throw new Error("Source instance is missing its version JSON or JAR");
   const version = await readJson(sourceJson);
-  const fingerprint = JSON.stringify(version).toLowerCase();
-  if (!fingerprint.includes("net.minecraftforge") || !fingerprint.includes("1.20.1")) {
-    throw new Error("This portable package supports Forge 1.20.1 source instances only");
+  const loader = options.loader || detectLoader(version, options.sourceVersion);
+  const definition = loaderDefinition(loader);
+  if (!definition.bridgePattern.test(path.basename(options.bridgeJar || ""))) {
+    throw new Error(`${definition.bridgeLabel} bridge JAR filename is invalid`);
   }
 
   await fsp.mkdir(targetPath);
@@ -153,7 +200,7 @@ async function installClone(options) {
     await writeJsonAtomic(path.join(targetPath, "CODEX-CLONE.json"), {
       sourceVersion: options.sourceVersion,
       targetVersion: options.targetVersion,
-      loader: "forge",
+      loader,
       createdAt: new Date().toISOString(),
       bridgeJar: path.basename(options.bridgeJar),
       baritoneJar: options.baritoneJar ? path.basename(options.baritoneJar) : null,
@@ -175,12 +222,14 @@ async function updateClone(options) {
   const markerPath = path.join(instancePath, "CODEX-CLONE.json");
   if (!fs.existsSync(markerPath)) throw new Error("Refusing to update an instance without CODEX-CLONE.json");
   const marker = await readJson(markerPath);
-  if (marker.targetVersion !== options.targetVersion || marker.loader !== "forge") {
-    throw new Error("Clone marker does not identify the requested Forge instance");
+  const loader = options.loader || marker.loader;
+  const definition = loaderDefinition(loader);
+  if (marker.targetVersion !== options.targetVersion || marker.loader !== loader) {
+    throw new Error(`Clone marker does not identify the requested ${definition.bridgeLabel} instance`);
   }
   const sourceName = path.basename(options.bridgeJar);
-  if (!/^minecraft_codex_bridge-forge-1\.20\.1-[^/\\]+\.jar$/iu.test(sourceName)) {
-    throw new Error(`Unexpected Forge bridge filename: ${sourceName}`);
+  if (!definition.bridgePattern.test(sourceName)) {
+    throw new Error(`Unexpected ${definition.bridgeLabel} bridge filename: ${sourceName}`);
   }
 
   const runningJava = await (options.inspectJavaProcesses || inspectJavaProcesses)(options.environment || process.env);
@@ -210,8 +259,11 @@ async function updateClone(options) {
 }
 
 module.exports = {
+  LOADER_DEFINITIONS,
   copyDirectory,
   copyFileVerified,
+  detectLoader,
+  loaderDefinition,
   hashFile,
   inspectJavaProcesses,
   installClone,

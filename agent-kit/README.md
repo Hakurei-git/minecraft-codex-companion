@@ -11,7 +11,7 @@ Two editions are published:
 | Edition | Intended user | Standalone |
 | --- | --- | --- |
 | `MinecraftCodexCompanion-Setup.exe` | Windows users who want an install-and-run application | Yes. It contains the local service, setup UI, and Forge installation resources. |
-| `MinecraftCodexCompanion-AgentKit-v0.1.10.zip` | Users who want Codex, Claude, Antigravity, or another MCP-capable AI to control the NPC | No. It connects to the local service installed by the EXE on the same PC. |
+| `MinecraftCodexCompanion-AgentKit-v0.1.11.zip` | Users who want Codex, Claude, Antigravity, or another MCP-capable AI to control the NPC | No. It connects to the local service installed by the EXE on the same PC. |
 
 The Skill teaches the AI how to observe, plan, enforce safety, submit work, and recover failures. MCP is the tool channel that actually reads Minecraft state and performs actions. A Skill without MCP is documentation only. MCP without the Skill can work, but complex planning, delivery, and recovery are more reliable when both are installed.
 
@@ -53,7 +53,7 @@ The local Forge bridge has dedicated adapters for Book of Dragons (`bookofdragon
 1. Run `MinecraftCodexCompanion-Setup.exe`. It verifies and expands the local runtime, then opens the setup application.
 2. Select HMCL, the Minecraft root, and a Forge 1.20.1 source instance. Use Browse if bounded automatic discovery selects the wrong location.
 3. Configure the player name, NPC name, persona mode, and optional `128x64` PNG skin.
-4. Choose the prepare-and-launch action, then enter the new isolated instance and a test world through HMCL.
+4. Choose prepare-and-launch. The EXE switches HMCL to the exact selected source instance and launches it directly; then enter a test world.
 5. Open `http://127.0.0.1:8765/api/health`. A healthy response confirms that the control service is running. If the page is unreachable, reopen the installed Companion application.
 6. Confirm that at least one companion is connected in the Dashboard. MCP cannot execute a game task while no actor is connected.
 

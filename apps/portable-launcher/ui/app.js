@@ -6,7 +6,6 @@ const fields = [
   "launcherArguments",
   "minecraftRoot",
   "sourceVersion",
-  "targetVersion",
   "playerName",
   "companionName",
   "port",
@@ -16,7 +15,6 @@ const fields = [
   "antigravityConversationTitle",
 ];
 let latest = null;
-let targetTouched = false;
 let npcSkinMode = "default";
 let toastTimer = 0;
 
@@ -52,6 +50,8 @@ function configFromForm() {
   }
   config.port = Number(config.port);
   config.tokenBudget = Number(config.tokenBudget);
+  config.instanceMode = "direct-source";
+  config.targetVersion = config.sourceVersion;
   config.actionMode = element("smartAiEnabled").checked ? "smart" : "stable";
   config.chatTarget = document.querySelector('input[name="chatTarget"]:checked')?.value || "active-provider";
   config.persona = {
@@ -161,7 +161,6 @@ function render(data, initial = false) {
   if (initial) {
     fillConfig(data.config);
     fillInstances(data.instances, data.config.sourceVersion);
-    targetTouched = Boolean(data.config.targetVersion);
     element("state-directory").textContent = data.stateDirectory;
     element("companion-prompt").textContent = data.prompt;
   }
@@ -217,9 +216,7 @@ element("config-form").addEventListener("submit", async (event) => {
   }
 });
 
-element("targetVersion").addEventListener("input", () => { targetTouched = true; element("save-state").textContent = "有未保存修改"; });
-element("sourceVersion").addEventListener("change", (event) => {
-  if (!targetTouched || !element("targetVersion").value) element("targetVersion").value = event.target.value ? `${event.target.value}-Codex` : "";
+element("sourceVersion").addEventListener("change", () => {
   element("save-state").textContent = "有未保存修改";
 });
 element("minecraftRoot").addEventListener("change", async () => {

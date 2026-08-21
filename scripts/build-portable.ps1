@@ -4,6 +4,7 @@ param(
     [switch]$SkipSourceBuild,
     [switch]$SkipArchive,
     [string]$PinnedForgeJarSha256 = "",
+    [string]$PinnedNeoForgeJarSha256 = "",
     [string]$OfflineNodeModulesRoot = "",
     [string]$SigningCertificateThumbprint = $env:MC_COMPANION_SIGNING_CERT_SHA1,
     [string]$TimestampUrl = "http://timestamp.digicert.com",
@@ -263,6 +264,21 @@ if ($forgeBuildForced) {
     throw "PinnedForgeJarSha256 must be one complete SHA-256 digest."
 }
 
+$neoforgeBuildStartedAt = [DateTime]::UtcNow
+$neoforgeBuildForced = [string]::IsNullOrWhiteSpace($PinnedNeoForgeJarSha256)
+if ($neoforgeBuildForced) {
+    Invoke-Checked "powershell.exe" @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", (Join-Path $PSScriptRoot "run-neoforge-gradle.ps1"),
+        "clean",
+        "build",
+        "--rerun-tasks"
+    ) $projectRoot
+} elseif ($PinnedNeoForgeJarSha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+    throw "PinnedNeoForgeJarSha256 must be one complete SHA-256 digest."
+}
+
 $nodeCommand = (Get-Command node.exe -ErrorAction Stop).Source
 
 $bridgeJar = Get-SingleFile (Join-Path $projectRoot "mods\forge-1.20.1\build\libs") "minecraft_codex_bridge-forge-1.20.1-*.jar" "Forge bridge JAR"
@@ -287,6 +303,23 @@ if (-not $forgeBuildForced) {
 }
 $baritoneJar = Get-SingleFile (Join-Path $projectRoot "vendor\baritone") "baritone-api-forge-1.20.1-*.jar" "Baritone JAR"
 
+$neoforgeBridgeJar = Get-SingleFile `
+    (Join-Path $projectRoot "mods\neoforge-1.21.1\build\libs") `
+    "minecraft_codex_bridge-neoforge-1.21.1-*.jar" `
+    "NeoForge bridge JAR"
+$neoforgeBridgeJarInfo = Get-Item -LiteralPath $neoforgeBridgeJar
+if ($neoforgeBuildForced -and $neoforgeBridgeJarInfo.LastWriteTimeUtc -lt $neoforgeBuildStartedAt) {
+    throw "NeoForge bridge JAR is stale: it was not rebuilt by the current portable build."
+}
+$neoforgeBridgeJarHash = Get-Sha256Hex -LiteralPath $neoforgeBridgeJar
+if ($neoforgeBridgeJarHash -notmatch '^[a-f0-9]{64}$') {
+    throw "NeoForge bridge JAR did not produce a valid SHA-256 digest."
+}
+if (-not $neoforgeBuildForced -and
+    -not $neoforgeBridgeJarHash.Equals($PinnedNeoForgeJarSha256, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Pinned NeoForge bridge JAR SHA-256 does not match the requested digest."
+}
+
 Copy-Tree (Join-Path $projectRoot "apps\portable-launcher\ui") (Join-Path $stage "apps\portable-launcher\ui")
 Copy-File (Join-Path $projectRoot "apps\portable-launcher\src\launcher.cjs") (Join-Path $stage "apps\portable-launcher\src\launcher.cjs")
 Copy-File (Join-Path $projectRoot "apps\portable-launcher\src\instance-manager.cjs") (Join-Path $stage "apps\portable-launcher\src\instance-manager.cjs")
@@ -305,6 +338,14 @@ $packagedBridgeJarHash = Get-Sha256Hex -LiteralPath $packagedBridgeJar
 if ($packagedBridgeJarHash -ne $bridgeJarHash) {
     throw "Packaged Forge bridge JAR hash does not match the freshly rebuilt artifact."
 }
+$packagedNeoForgeBridgeJar = Join-Path `
+    $stage `
+    "mods\neoforge-1.21.1\build\libs\$(Split-Path -Leaf $neoforgeBridgeJar)"
+Copy-File $neoforgeBridgeJar $packagedNeoForgeBridgeJar
+$packagedNeoForgeBridgeJarHash = Get-Sha256Hex -LiteralPath $packagedNeoForgeBridgeJar
+if ($packagedNeoForgeBridgeJarHash -ne $neoforgeBridgeJarHash) {
+    throw "Packaged NeoForge bridge JAR hash does not match the freshly verified artifact."
+}
 Copy-File $baritoneJar (Join-Path $stage "vendor\baritone\$(Split-Path -Leaf $baritoneJar)")
 Copy-File (Join-Path $projectRoot "assets\third_party\queen-cats-dogs\humanoid_cat_white.png") (Join-Path $stage "assets\third_party\queen-cats-dogs\humanoid_cat_white.png")
 Copy-File (Join-Path $projectRoot "assets\third_party\queen-cats-dogs\README.md") (Join-Path $stage "assets\third_party\queen-cats-dogs\README.md")
@@ -319,6 +360,23 @@ $cscCandidates = @(
 $csc = $cscCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 if (-not $csc) {
     throw "The .NET Framework C# compiler is required to build the native desktop client."
+}
+$uiAutomationClient = Get-ChildItem `
+    -LiteralPath (Join-Path $env:WINDIR "Microsoft.NET\assembly\GAC_MSIL\UIAutomationClient") `
+    -Recurse `
+    -Filter "UIAutomationClient.dll" `
+    -File `
+    -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+$uiAutomationTypes = Get-ChildItem `
+    -LiteralPath (Join-Path $env:WINDIR "Microsoft.NET\assembly\GAC_MSIL\UIAutomationTypes") `
+    -Recurse `
+    -Filter "UIAutomationTypes.dll" `
+    -File `
+    -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+if (-not $uiAutomationClient -or -not $uiAutomationTypes) {
+    throw "Windows UI Automation assemblies are required to build the exact HMCL launcher."
 }
 $appIcon = Join-Path $projectRoot "assets\branding\app-icon.ico"
 if (-not (Test-Path -LiteralPath $appIcon -PathType Leaf)) {
@@ -399,6 +457,36 @@ if (-not (Test-Path -LiteralPath $pickerSelfTest -PathType Leaf) -or
 }
 Remove-Item -LiteralPath $pickerSelfTest -Force
 
+$hmclLauncherExe = Join-Path $stage "runtime\MinecraftCodexHmclLauncher.exe"
+Invoke-Checked $csc @(
+    "/nologo",
+    "/target:winexe",
+    "/optimize+",
+    "/win32icon:$appIcon",
+    "/reference:System.dll",
+    "/reference:System.Core.dll",
+    "/reference:System.Web.Extensions.dll",
+    "/reference:$uiAutomationClient",
+    "/reference:$uiAutomationTypes",
+    "/out:$hmclLauncherExe",
+    (Join-Path $projectRoot "apps\portable-launcher\native\HmclLauncher.cs")
+) $projectRoot
+$hmclLauncherSelfTest = Join-Path $OutputRoot "hmcl-launcher-self-test.txt"
+$hmclLauncherSelfTestProcess = Start-Process `
+    -FilePath $hmclLauncherExe `
+    -ArgumentList ('self-test "' + $hmclLauncherSelfTest + '"') `
+    -WindowStyle Hidden `
+    -Wait `
+    -PassThru
+if ($hmclLauncherSelfTestProcess.ExitCode -ne 0) {
+    throw "Exact HMCL launcher self-test exited with code $($hmclLauncherSelfTestProcess.ExitCode)"
+}
+if (-not (Test-Path -LiteralPath $hmclLauncherSelfTest -PathType Leaf) -or
+    (Get-Content -Raw -LiteralPath $hmclLauncherSelfTest).Trim() -ne "ok") {
+    throw "Exact HMCL launcher self-test failed"
+}
+Remove-Item -LiteralPath $hmclLauncherSelfTest -Force
+
 $secretExe = Join-Path $stage "runtime\MinecraftCodexSecret.exe"
 Invoke-Checked $csc @(
     "/nologo", "/target:exe", "/optimize+",
@@ -422,7 +510,7 @@ Invoke-Checked $csc @(
 
 $productionPackage = [ordered]@{
     name = 'minecraft-codex-companion-portable-runtime'
-    version = '0.1.10'
+    version = '0.1.11'
     private = $true
     type = 'module'
     dependencies = [ordered]@{
@@ -468,14 +556,14 @@ Copy-Tree (Join-Path $stage "packages\protocol") $installedProtocol
 Get-ChildItem -LiteralPath $stage -Recurse -File -Filter "*.ps1" -ErrorAction SilentlyContinue |
     Remove-Item -Force
 
-Invoke-CodeSign @($launcherExe, $clientExe, $pickerExe, $secretExe)
+Invoke-CodeSign @($launcherExe, $clientExe, $pickerExe, $hmclLauncherExe, $secretExe)
 Assert-CleanPayload $stage
 Assert-TransparentRuntime $stage
 
 $manifest = [ordered]@{
     format = 2
     name = 'Minecraft Codex Companion Portable'
-    version = '0.1.10'
+    version = '0.1.11'
     platform = 'win32-x64'
     packaging = [ordered]@{
         model = 'transparent-multi-file'
@@ -495,7 +583,16 @@ $manifest = [ordered]@{
         forcedRerun = $forgeBuildForced
         verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-449-tests' }
     }
-    signatures = @(@($launcherExe, $clientExe, $pickerExe, $secretExe) | ForEach-Object {
+    neoforgeArtifact = [ordered]@{
+        path = "mods/neoforge-1.21.1/build/libs/$(Split-Path -Leaf $neoforgeBridgeJar)"
+        buildStartedAt = $neoforgeBuildStartedAt.ToString('o')
+        builtAt = $neoforgeBridgeJarInfo.LastWriteTimeUtc.ToString('o')
+        sha256 = $neoforgeBridgeJarHash
+        packagedSha256 = $packagedNeoForgeBridgeJarHash
+        forcedRerun = $neoforgeBuildForced
+        verificationMode = if ($neoforgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256' }
+    }
+    signatures = @(@($launcherExe, $clientExe, $pickerExe, $hmclLauncherExe, $secretExe) | ForEach-Object {
         Get-SignatureEvidence $_ $stage
     })
     buildInputs = @(@(
@@ -503,12 +600,14 @@ $manifest = [ordered]@{
         'apps/portable-launcher/src/instance-manager.cjs',
         'apps/portable-launcher/native/Bootstrap.cs',
         'apps/portable-launcher/native/Client.cs',
+        'apps/portable-launcher/native/HmclLauncher.cs',
         'apps/portable-launcher/native/Picker.cs',
         'apps/portable-launcher/native/SecretHelper.cs',
         'apps/portable-launcher/native/AssemblyInfo.cs',
         'assets/branding/app-icon.ico',
         'scripts/build-portable.ps1',
         'scripts/run-forge-gradle.ps1',
+        'scripts/run-neoforge-gradle.ps1',
         'scripts/run-forge-tests-in-process.ps1',
         'scripts/forge-in-process-test/InProcessJUnitRunner.java'
     ) | ForEach-Object {
@@ -569,6 +668,7 @@ $result = [PSCustomObject]@{
     Archive = if ($SkipArchive) { $null } else { $archive }
     ArchiveSha256 = if ($SkipArchive) { $null } else { $archiveHash }
     ForgeJarSha256 = $bridgeJarHash
+    NeoForgeJarSha256 = $neoforgeBridgeJarHash
     PayloadBytes = (Get-ChildItem -LiteralPath $stage -File -Recurse | Measure-Object -Property Length -Sum).Sum
 }
 $result | Format-List

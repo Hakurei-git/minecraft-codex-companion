@@ -330,7 +330,6 @@ namespace MinecraftCodexCompanion
         private TextBox launcherArguments;
         private TextBox minecraftRoot;
         private ComboBox sourceVersion;
-        private TextBox targetVersion;
         private TextBox playerName;
         private TextBox companionName;
         private NumericUpDown port;
@@ -352,7 +351,6 @@ namespace MinecraftCodexCompanion
         private bool busy;
         private bool loading;
         private bool refreshing;
-        private bool targetTouched;
         private string npcSkinMode = "default";
         private bool customSkinAvailable;
 
@@ -541,15 +539,13 @@ namespace MinecraftCodexCompanion
             {
                 if (loading) return;
                 MarkDirty();
-                if (!targetTouched || String.IsNullOrWhiteSpace(targetVersion.Text))
-                {
-                    targetVersion.Text = sourceVersion.SelectedItem == null ? String.Empty : sourceVersion.SelectedItem + "-Codex";
-                    targetTouched = false;
-                }
             };
-            targetVersion = MakeTextBox();
-            targetVersion.TextChanged += delegate { if (!loading) targetTouched = true; };
-            AddPairRow(grid, 2, "源实例", sourceVersion, "Codex 实例名", targetVersion);
+            Label directSourceMode = MakeLabel("直接使用所选实例（不创建副本）", true);
+            directSourceMode.Dock = DockStyle.Fill;
+            directSourceMode.TextAlign = ContentAlignment.MiddleLeft;
+            directSourceMode.Margin = new Padding(4, 3, 8, 3);
+            directSourceMode.ForeColor = Forest;
+            AddPairRow(grid, 2, "HMCL 源实例", sourceVersion, "启动方式", directSourceMode);
 
             playerName = MakeTextBox();
             companionName = MakeTextBox();
@@ -741,7 +737,7 @@ namespace MinecraftCodexCompanion
             operationStatus = MakeLabel("就绪", true);
             operationStatus.Font = new Font(Font.FontFamily, 13F, FontStyle.Bold);
             operationStatus.Location = new Point(8, 8);
-            Label stateHint = MakeLabel("安装实例、启动控制服务和打开 HMCL 均在此客户端完成。", false);
+            Label stateHint = MakeLabel("更新所选源实例的桥接、启动控制服务并由 HMCL 精确启动该实例。", false);
             stateHint.Location = new Point(9, 39);
             state.Controls.Add(operationStatus);
             state.Controls.Add(stateHint);
@@ -754,7 +750,7 @@ namespace MinecraftCodexCompanion
             commands.Height = 48;
             commands.Padding = new Padding(12, 6, 12, 4);
             commands.Controls.Add(ActionButton("一键准备并启动", "/api/prepare", true, true));
-            commands.Controls.Add(ActionButton("安装 / 更新实例", "/api/install", true, false));
+            commands.Controls.Add(ActionButton("安装 / 更新桥接", "/api/install", true, false));
             commands.Controls.Add(ActionButton("启动服务", "/api/service/start", true, false));
             commands.Controls.Add(ActionButton("打开启动器", "/api/launcher/start", true, false));
             Button stop = ActionButton("停止服务", "/api/service/stop", false, false);
@@ -992,7 +988,6 @@ namespace MinecraftCodexCompanion
                 launcherPath.Text = JsonValue.String(config, "launcherPath");
                 launcherArguments.Text = JsonValue.String(config, "launcherArguments");
                 minecraftRoot.Text = JsonValue.String(config, "minecraftRoot");
-                targetVersion.Text = JsonValue.String(config, "targetVersion");
                 playerName.Text = JsonValue.String(config, "playerName");
                 companionName.Text = JsonValue.String(config, "companionName");
                 int configuredPort = JsonValue.Integer(config, "port", 8765);
@@ -1018,7 +1013,6 @@ namespace MinecraftCodexCompanion
                 personaSpeakingStyle.Text = JsonValue.String(persona, "speakingStyle");
                 personaMemoryNotes.Text = JsonValue.String(persona, "memoryNotes");
                 npcSkinMode = JsonValue.String(config, "npcSkinMode") == "custom" ? "custom" : "default";
-                targetTouched = !String.IsNullOrWhiteSpace(targetVersion.Text);
                 UpdatePersonaLayout();
                 UpdateSkinStatus();
             }
@@ -1071,8 +1065,10 @@ namespace MinecraftCodexCompanion
             config["launcherPath"] = launcherPath.Text;
             config["launcherArguments"] = launcherArguments.Text;
             config["minecraftRoot"] = minecraftRoot.Text;
-            config["sourceVersion"] = sourceVersion.SelectedItem == null ? String.Empty : sourceVersion.SelectedItem.ToString();
-            config["targetVersion"] = targetVersion.Text;
+            string selectedInstance = sourceVersion.SelectedItem == null ? String.Empty : sourceVersion.SelectedItem.ToString();
+            config["instanceMode"] = "direct-source";
+            config["sourceVersion"] = selectedInstance;
+            config["targetVersion"] = selectedInstance;
             config["playerName"] = playerName.Text;
             config["companionName"] = companionName.Text;
             config["port"] = Decimal.ToInt32(port.Value);
@@ -1092,7 +1088,6 @@ namespace MinecraftCodexCompanion
             if (String.IsNullOrWhiteSpace(launcherPath.Text)) throw new InvalidOperationException("请选择 HMCL 启动器。");
             if (String.IsNullOrWhiteSpace(minecraftRoot.Text)) throw new InvalidOperationException("请选择 Minecraft 根目录。");
             if (sourceVersion.SelectedItem == null) throw new InvalidOperationException("请选择源实例。");
-            if (String.IsNullOrWhiteSpace(targetVersion.Text)) throw new InvalidOperationException("请填写 Codex 实例名。");
             if (String.IsNullOrWhiteSpace(playerName.Text)) throw new InvalidOperationException("请填写游戏玩家名。");
             if (String.IsNullOrWhiteSpace(companionName.Text)) throw new InvalidOperationException("请填写 NPC 名称。");
             if (String.IsNullOrWhiteSpace(antigravityConfigPath.Text)) throw new InvalidOperationException("请填写反重力 MCP 配置路径。");

@@ -242,6 +242,9 @@ public final class BridgeClient {
 
     private void sendGameChat(String message, String deliveryId) {
         actor.speak(Minecraft.getInstance(), message, deliveryId);
+        if (deliveryId != null && !deliveryId.isBlank() && actor.synchronousChatDelivery()) {
+            acknowledgeChatDelivery(deliveryId);
+        }
     }
 
     public void acknowledgeChatDelivery(String deliveryId) {

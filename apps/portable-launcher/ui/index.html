@@ -44,8 +44,8 @@
             <select id="sourceVersion" required><option value="">请选择</option></select>
           </label>
           <label class="field">
-            <span>Codex 实例名</span>
-            <input id="targetVersion" maxlength="120" autocomplete="off" required>
+            <span>启动方式</span>
+            <input value="直接使用所选实例（不创建副本）" readonly aria-label="直接使用所选 HMCL 源实例">
           </label>
           <label class="field">
             <span>游戏玩家名</span>
@@ -60,7 +60,7 @@
             <input id="port" type="number" min="1024" max="65535" required>
           </label>
           <label class="field span-2">
-            <span>启动参数 <small>可选，<code>{instance}</code> 代表 Codex 实例名</small></span>
+            <span>启动参数 <small>可选，<code>{instance}</code> 代表所选源实例名</small></span>
             <input id="launcherArguments" autocomplete="off" placeholder="留空则只打开启动器">
           </label>
           <label class="field span-2">
@@ -130,7 +130,7 @@
       <div class="section-heading"><div><span class="index">02</span><h2>运行</h2></div><span id="operation-state">就绪</span></div>
       <div class="command-row">
         <button type="button" class="button primary strong" data-action="prepare">一键准备并启动</button>
-        <button type="button" class="button secondary" data-action="install">安装 / 更新实例</button>
+        <button type="button" class="button secondary" data-action="install">安装 / 更新桥接</button>
         <button type="button" class="button secondary" data-action="start-service">启动服务</button>
         <button type="button" class="button secondary" data-action="launch">打开启动器</button>
         <button type="button" class="button danger" data-action="stop-service">停止服务</button>

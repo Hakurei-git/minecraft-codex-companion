@@ -4,23 +4,23 @@
 
 ### Choose an edition
 
-- `MinecraftCodexCompanion-Setup.exe` is the normal user entry point. The single-file installer contains the local Companion service, Dashboard, Forge 1.20.1 mod, and setup application. It does not require a separate Node.js installation or manual JAR build.
-- `MinecraftCodexCompanion-AgentKit-v0.1.10.zip` is an optional AI integration package. Download it when importing the Minecraft Skill/MCP configuration into Codex, Claude, Antigravity, or another AI client. It does not replace the EXE or the in-game mod.
+- `MinecraftCodexCompanion-Setup.exe` is the normal user entry point. The single-file installer contains the local Companion service, Dashboard, Forge 1.20.1 in-world NPC bridge, NeoForge 1.21.1 client bridge, and setup application. It does not require a separate Node.js installation or manual JAR build.
+- `MinecraftCodexCompanion-AgentKit-v0.1.11.zip` is an optional AI integration package. Download it when importing the Minecraft Skill/MCP configuration into Codex, Claude, Antigravity, or another AI client. It does not replace the EXE or the in-game mod.
 
-The EXE does not include a Minecraft account, the Minecraft game, or HMCL login state. Prepare an HMCL environment that can enter a Forge 1.20.1 world. Full live acceptance currently covers HMCL single-player worlds.
+The EXE does not include a Minecraft account, the Minecraft game, or HMCL login state. Prepare an HMCL environment that can enter either a Forge 1.20.1 or NeoForge 1.21.1 world. The Forge bridge provides an independent in-world NPC; the NeoForge bridge controls the current client player while preserving the same local service, fixed Antigravity conversation, and `T`-chat path.
 
 ### Optional supported dragon mods
 
 - Book of Dragons (`bookofdragons`), live-tested with `bookofdragons-1.31-1.20.1`.
 - Saints Dragons (`saintsdragons`), live-tested with `saintsdragons-0.8.2+forge-1.20.1-alpha`.
 
-Both adapters support state/ownership observation, feeding, healing, taming, egg care, follow/stay, mount/dismount, shared riding, flight, landing, recall, terrain recovery, and combat assistance. These third-party JARs are not bundled. Place a compatible version in the HMCL source instance before cloning; the installer preserves its existing mods. Versions other than the two tested builds are not guaranteed.
+Both adapters support state/ownership observation, feeding, healing, taming, egg care, follow/stay, mount/dismount, shared riding, flight, landing, recall, terrain recovery, and combat assistance. These third-party JARs are not bundled. Place a compatible version in the HMCL source instance that the EXE will launch directly. Versions other than the two tested builds are not guaranteed.
 
 ### Security and privacy
 
 - The release is a single verified installer containing a transparent portable runtime. It does not inject into or modify unrelated executables.
 - Runtime code does not invoke PowerShell or a command shell, download executable code, or request administrator privileges.
-- Instance installation copies only the selected Forge 1.20.1 instance configuration, mods, and version files. It does not copy worlds, logs, or screenshots.
+- The app installs only the loader-specific bridge and local configuration into the selected Forge 1.20.1 or NeoForge 1.21.1 source instance. It never creates or launches a `-Codex` copy and does not copy worlds, logs, or screenshots.
 - API keys are encrypted with Windows DPAPI for the current user. They are never stored in the release package or normal launcher configuration.
 - `portable-manifest.json` records SHA-256 hashes for packaged files and build inputs. Startup stops if a critical file fails verification.
 - The package contains no API keys, bridge tokens, local runtime state, conversations, worlds, or absolute build-machine paths.
@@ -32,16 +32,16 @@ This development release is not Authenticode-signed, so Windows SmartScreen or a
 
 1. Run `MinecraftCodexCompanion-Setup.exe` from the GitHub Release. It verifies and installs the portable runtime, then opens the setup application.
 2. Later, launch `MinecraftCodexCompanion.exe` from the Start menu or installation directory. It starts the loopback control service and serves the Dashboard at `http://127.0.0.1:8765`.
-3. Select HMCL, the Minecraft root, and a Forge 1.20.1 source instance. The app first attempts bounded automatic discovery; use Browse when a result is missing or incorrect.
-4. Enter a new isolated instance name, the exact Minecraft player name, and the NPC name. An incorrect player name prevents reliable free-chat routing and delivery.
+3. Select HMCL, the Minecraft root, and a Forge 1.20.1 or NeoForge 1.21.1 source instance. The app identifies the loader from that instance's version metadata; use Browse when bounded automatic discovery is missing or incorrect.
+4. Enter the exact Minecraft player name and the NPC name. An incorrect player name prevents reliable free-chat routing and delivery.
 5. Inherit the current AI persona or add a Minecraft-specific overlay. A `128x64` PNG NPC skin may also be imported and changed later.
-6. Choose the prepare-and-launch action. The setup creates an isolated instance and installs the required mod without copying worlds, logs, or screenshots.
-7. Select the new instance in HMCL and enter a disposable test world before using an important save.
-8. Confirm that the NPC appears in the Dashboard. Test Recall and Follow before assigning gathering or construction work.
+6. Choose the prepare-and-launch action. The app updates the selected source instance's bridge, switches HMCL to that exact instance, and launches it directly without generating a `-Codex` copy.
+7. Enter a disposable test world before using an important save, and back up important worlds in that source instance first.
+8. For Forge, confirm that the in-world NPC appears in the Dashboard and test Recall and Follow. For NeoForge, confirm that the connected companion reports `neoforge-1.21.1`, then send a harmless `T`-chat request before assigning work.
 
 ### Daily use
 
-1. Start `MinecraftCodexCompanion.exe` only when needed, then enter the Companion instance through HMCL. Close Minecraft between tests to release memory.
+1. Start `MinecraftCodexCompanion.exe` only when needed, select the intended HMCL source instance, and use prepare-and-launch. Close Minecraft between tests to release memory.
 2. Select Codex, Claude, or Antigravity in the AI service panel, enter the exact free-chat player name, and enable free chat when desired.
 3. Press `T` in Minecraft and speak normally. No prefix is required while free chat is enabled. Directed prefixes remain available when it is disabled.
 4. Start, important progress, failures, and completion are sent through in-game NPC chat. `stop`, `halt`, and the Chinese emergency phrases are handled locally without waiting for an AI model.
@@ -88,7 +88,7 @@ Automatic builds use the complete blueprint boundary relative to the remembered 
 
 **The Dashboard is unreachable:** start the installed `MinecraftCodexCompanion.exe`, then check `http://127.0.0.1:8765/api/health`. Resolve a local port conflict before restarting Companion.
 
-**The service is healthy but no NPC is listed:** enter the installed Forge 1.20.1 instance and a world, verify the mod and bridge state, then use Recall.
+**The service is healthy but no companion is listed:** enter the selected Forge 1.20.1 or NeoForge 1.21.1 source instance and a world, then verify the loader-specific bridge JAR. Recall applies to the Forge in-world NPC; NeoForge exposes the current client player instead.
 
 **Minecraft chat receives no reply:** verify free chat, the exact player name, and the selected provider. Antigravity must also be running and bound to the exact intended conversation title.
 

@@ -17,6 +17,7 @@ foreach ($required in @(
     'EntryPoint = "PostMessageW"',
     '[MinecraftBackgroundInput]::Text($handle, $targetWorldId)',
     'ShowWindowAsync($handle, 6)',
+    'ShowWindowAsync($handle, 9)',
     'ClipCursor(IntPtr.Zero)',
     'ReleaseCursorCapture($handle)',
     'IsWindow($handle)',
@@ -27,6 +28,15 @@ foreach ($required in @(
     '$baseUri = [Uri]$configuredBaseUri',
     '$baseUri.Scheme -ne "http"',
     'Minecraft replaced its loading window without exposing a verified main-menu HWND',
+    '$latestLogCandidates = @(',
+    '(Join-Path $instancePath "logs\latest.log")',
+    '(Join-Path ([string]$config.minecraftRoot) "logs\latest.log")',
+    '$logInfo.LastWriteTime -ge $minecraftProcess.StartTime',
+    '"neoforge-1.21.1"',
+    '"remote-player"',
+    "$minecraftProcess.MainWindowTitle -match 'NeoForge|1\.21\.1'",
+    '0.425',
+    '$playSelectedWorldX = if ($isNeoForgeLayout) { 0.42 } else { 0.31 }',
     'MinimizedAfterWorldSelection = $true',
     'CursorCaptureReleased = $true',
     'SentToBottomAfterWorldSelection = $false'
@@ -40,6 +50,9 @@ if ($source.Contains("$targetWorldId -cmatch '^[\x20-\x7e]+$'")) {
 }
 if ($source.Contains('$keptRunningAtBottom = [MinecraftBackgroundInput]::SetWindowPos')) {
     throw "Background world entry still leaves a restored GLFW window able to retain cursor capture"
+}
+if ($source.Contains('0x0008')) {
+    throw "Background world entry still sends synthetic focus loss to fullscreen GLFW"
 }
 
 Write-Output "Minecraft background cursor-release tests passed"

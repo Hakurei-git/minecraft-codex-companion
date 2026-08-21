@@ -41,7 +41,7 @@ public static class MinecraftOnlyPrintWindow
     public static extern bool PrintWindow(IntPtr hWnd, IntPtr deviceContext, uint flags);
     public static void ReleaseCursorCapture(IntPtr hWnd)
     {
-        PostMessage(hWnd, 0x0008, IntPtr.Zero, IntPtr.Zero); // WM_KILLFOCUS
+        // Synthetic focus loss minimizes fullscreen GLFW before PrintWindow.
         ReleaseCapture();
         ClipCursor(IntPtr.Zero);
     }
@@ -84,7 +84,7 @@ if ($providedWindow) {
 }
 $wasMinimized = [MinecraftOnlyPrintWindow]::IsIconic($handle)
 if ($wasMinimized) {
-    [void][MinecraftOnlyPrintWindow]::ShowWindowAsync($handle, 4) # SW_SHOWNOACTIVATE
+    [void][MinecraftOnlyPrintWindow]::ShowWindowAsync($handle, 9) # SW_RESTORE
     [MinecraftOnlyPrintWindow]::ReleaseCursorCapture($handle)
     Start-Sleep -Milliseconds 500
     [MinecraftOnlyPrintWindow]::ReleaseCursorCapture($handle)

@@ -9,7 +9,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { isDeepStrictEqual, TextDecoder } = require("node:util");
 const { spawn } = require("node:child_process");
-const { installClone, updateClone } = require("./instance-manager.cjs");
+const {
+  LOADER_DEFINITIONS,
+  detectLoader,
+  installClone,
+  loaderDefinition,
+  updateClone,
+} = require("./instance-manager.cjs");
 
 const APP_NAME = "Minecraft Codex Companion";
 const DEFAULT_PORT = 8765;
@@ -17,12 +23,18 @@ const DEFAULT_COMPANION_NAME = "Codex";
 const SERVICE_PROTOCOL_VERSION = 2;
 const SERVICE_PORT_SEARCH_LIMIT = 32;
 const REQUIRED_FORGE_BRIDGE_VERSION = "0.2.3";
+const REQUIRED_NEOFORGE_BRIDGE_VERSION = "0.1.0";
+const REQUIRED_BRIDGE_VERSIONS = Object.freeze({
+  forge: REQUIRED_FORGE_BRIDGE_VERSION,
+  neoforge: REQUIRED_NEOFORGE_BRIDGE_VERSION,
+});
 const MAX_BODY_BYTES = 1024 * 1024;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const CONFIG_KEYS = new Set([
   "launcherPath",
   "launcherArguments",
   "minecraftRoot",
+  "instanceMode",
   "sourceVersion",
   "targetVersion",
   "playerName",
@@ -175,6 +187,7 @@ function defaultConfig(environment = process.env) {
     launcherPath,
     launcherArguments: "",
     minecraftRoot: discoverMinecraftRoot(environment, launcherPath),
+    instanceMode: "direct-source",
     sourceVersion: "",
     targetVersion: "",
     playerName: "",
@@ -250,6 +263,12 @@ function normalizeConfig(input, environment = process.env) {
     result.companionName = DEFAULT_COMPANION_NAME;
   }
   result.port = Number(result.port);
+  // The desktop EXE always operates on the HMCL instance selected by the
+  // player.  Older 0.1.11 configurations did not persist instanceMode and
+  // still contain a generated "-Codex" targetVersion; normalize both old and
+  // explicitly stale values onto the direct-source contract.
+  result.instanceMode = "direct-source";
+  result.targetVersion = result.sourceVersion;
   result.freeChatEnabled = result.freeChatEnabled !== false;
   result.chatTarget = result.chatTarget === "antigravity-mcp" ? "antigravity-mcp" : "active-provider";
   result.actionMode = result.actionMode === "smart" || result.actionMode === "hybrid"
@@ -320,8 +339,12 @@ function validateRuntimeConfig(input, environment = process.env) {
   config.minecraftRoot = path.resolve(config.minecraftRoot);
   if (!fs.existsSync(config.minecraftRoot) || !fs.statSync(config.minecraftRoot).isDirectory()) throw new Error("Minecraft 根目录不存在");
   config.sourceVersion = validateVersionName(config.sourceVersion, "源实例");
-  config.targetVersion = validateVersionName(config.targetVersion, "目标实例");
-  if (config.sourceVersion.toLowerCase() === config.targetVersion.toLowerCase()) throw new Error("目标实例不能与源实例同名");
+  if (config.instanceMode === "direct-source") {
+    config.targetVersion = config.sourceVersion;
+  } else {
+    config.targetVersion = validateVersionName(config.targetVersion, "目标实例");
+    if (config.sourceVersion.toLowerCase() === config.targetVersion.toLowerCase()) throw new Error("目标实例不能与源实例同名");
+  }
   const versionsRoot = path.join(config.minecraftRoot, "versions");
   for (const name of [config.sourceVersion, config.targetVersion]) {
     if (!isPathInside(versionsRoot, path.join(versionsRoot, name))) throw new Error("实例路径越出了 versions 目录");
@@ -445,16 +468,17 @@ async function importNpcSkin(sourcePath, stateDirectory) {
 }
 
 async function syncNpcSkin(config, stateDirectory) {
+  const gameDirectory = await runtimeGameDirectory(config, stateDirectory);
   const destination = path.join(
-    config.minecraftRoot,
-    "versions",
-    config.targetVersion,
+    gameDirectory,
     "config",
     "minecraft-codex-companion-skin.png",
   );
   if (config.npcSkinMode !== "custom") {
-    await fsp.rm(destination, { force: true });
-    return { custom: false, destination };
+    // A direct source instance belongs to the player. Never delete a skin
+    // from it merely because the Companion UI currently uses the default.
+    if (config.instanceMode !== "direct-source") await fsp.rm(destination, { force: true });
+    return { custom: false, destination, preserved: config.instanceMode === "direct-source" };
   }
   const source = importedSkinPath(stateDirectory);
   validateNpcSkin(source);
@@ -602,23 +626,35 @@ function findSingleFile(directory, matcher, label) {
 }
 
 function payloadPaths(payloadRoot) {
+  const forgeBridgeJar = findSingleFile(
+    path.join(payloadRoot, "mods", "forge-1.20.1", "build", "libs"),
+    LOADER_DEFINITIONS.forge.bridgePattern,
+    "Forge 桥接模组",
+  );
+  const neoforgeBridgeJar = findSingleFile(
+    path.join(payloadRoot, "mods", "neoforge-1.21.1", "build", "libs"),
+    LOADER_DEFINITIONS.neoforge.bridgePattern,
+    "NeoForge 桥接模组",
+  );
   return {
     manifest: path.join(payloadRoot, "portable-manifest.json"),
     node: path.join(payloadRoot, "runtime", "node.exe"),
     client: path.join(payloadRoot, "runtime", "MinecraftCodexClient.exe"),
     picker: path.join(payloadRoot, "runtime", "MinecraftCodexPicker.exe"),
     secretHelper: path.join(payloadRoot, "runtime", "MinecraftCodexSecret.exe"),
+    hmclLauncher: path.join(payloadRoot, "runtime", "MinecraftCodexHmclLauncher.exe"),
     launcherSource: path.join(payloadRoot, "apps", "portable-launcher", "src", "launcher.cjs"),
     instanceManager: path.join(payloadRoot, "apps", "portable-launcher", "src", "instance-manager.cjs"),
     controlServer: path.join(payloadRoot, "apps", "control-plane", "dist", "server.js"),
     mcpStdio: path.join(payloadRoot, "apps", "control-plane", "dist", "mcp-stdio.js"),
     dashboard: path.join(payloadRoot, "apps", "dashboard", "dist", "index.html"),
     mcpSmoke: path.join(payloadRoot, "scripts", "mcp-portable-smoke.mjs"),
-    bridgeJar: findSingleFile(
-      path.join(payloadRoot, "mods", "forge-1.20.1", "build", "libs"),
-      /^minecraft_codex_bridge-forge-1\.20\.1-[^/\\]+\.jar$/iu,
-      "Forge 桥接模组",
-    ),
+    // Keep bridgeJar as a Forge alias for callers that only need a generic
+    // payload assertion. Installation selects the correct loader-specific
+    // entry below after inspecting the chosen source instance.
+    bridgeJar: forgeBridgeJar,
+    forgeBridgeJar,
+    neoforgeBridgeJar,
     baritoneJar: findSingleFile(
       path.join(payloadRoot, "vendor", "baritone"),
       /^baritone-api-forge-1\.20\.1-[^/\\]+\.jar$/iu,
@@ -641,8 +677,9 @@ function assertPayload(payloadRoot) {
   const entries = new Map((Array.isArray(manifest.files) ? manifest.files : [])
     .map((entry) => [String(entry.path || "").replaceAll("/", path.sep), entry]));
   for (const name of [
-    "node", "client", "picker", "secretHelper", "launcherSource", "instanceManager",
-    "controlServer", "mcpStdio", "dashboard", "mcpSmoke", "bridgeJar", "baritoneJar",
+    "node", "client", "picker", "secretHelper", "hmclLauncher", "launcherSource", "instanceManager",
+    "controlServer", "mcpStdio", "dashboard", "mcpSmoke", "forgeBridgeJar",
+    "neoforgeBridgeJar", "baritoneJar",
   ]) {
     const filePath = paths[name];
     const relative = path.relative(payloadRoot, filePath);
@@ -690,16 +727,157 @@ function hashFile(filePath) {
   });
 }
 
+function activeInstanceVersion(config) {
+  return config.instanceMode === "direct-source" ? config.sourceVersion : config.targetVersion;
+}
+
+function directSourceScopeKey(config) {
+  return crypto.createHash("sha256")
+    .update(`${path.resolve(config.minecraftRoot).toLowerCase()}\0${config.sourceVersion.toLowerCase()}`)
+    .digest("hex");
+}
+
+async function directSourceGameDirectory(config, stateDirectory) {
+  const sourcePath = path.join(config.minecraftRoot, "versions", config.sourceVersion);
+  if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isDirectory()) {
+    throw new Error("直接源实例不存在");
+  }
+  const registryPath = path.join(stateDirectory, "direct-source-layouts.json");
+  let registry;
+  try {
+    registry = await readJsonIfPresent(registryPath, { version: 1, entries: {} });
+  } catch (error) {
+    if (!(error instanceof InvalidJsonFileError)) throw error;
+    await quarantineInvalidJson(registryPath);
+    registry = { version: 1, entries: {} };
+  }
+  if (!registry || typeof registry !== "object" || Array.isArray(registry)) registry = { version: 1, entries: {} };
+  if (!registry.entries || typeof registry.entries !== "object" || Array.isArray(registry.entries)) registry.entries = {};
+  const key = directSourceScopeKey(config);
+  let scope = registry.entries[key]?.scope;
+  if (scope !== "version" && scope !== "root") {
+    const versionScopedHints = ["mods", "config", "saves", "resourcepacks", "options.txt"];
+    scope = versionScopedHints.some((name) => fs.existsSync(path.join(sourcePath, name))) ? "version" : "root";
+    registry.entries[key] = {
+      scope,
+      sourceVersion: config.sourceVersion,
+      updatedAt: new Date().toISOString(),
+    };
+    registry.version = 1;
+    await writeJsonAtomic(registryPath, registry);
+  }
+  return scope === "version" ? sourcePath : path.resolve(config.minecraftRoot);
+}
+
+async function runtimeGameDirectory(config, stateDirectory) {
+  return config.instanceMode === "direct-source"
+    ? directSourceGameDirectory(config, stateDirectory)
+    : path.join(config.minecraftRoot, "versions", config.targetVersion);
+}
+
+async function moveManagedFileToBackup(filePath, backupDirectory) {
+  await fsp.mkdir(backupDirectory, { recursive: true });
+  let destination = path.join(backupDirectory, path.basename(filePath));
+  if (fs.existsSync(destination)) destination = path.join(backupDirectory, `${crypto.randomUUID()}-${path.basename(filePath)}`);
+  await fsp.rename(filePath, destination);
+  return destination;
+}
+
+async function copyManagedFileAtomic(sourcePath, destinationPath) {
+  await fsp.mkdir(path.dirname(destinationPath), { recursive: true });
+  const temporary = `${destinationPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    await fsp.copyFile(sourcePath, temporary);
+    if ((await hashFile(temporary)) !== (await hashFile(sourcePath))) throw new Error("桥接文件复制后的 SHA-256 不一致");
+    await fsp.rename(temporary, destinationPath);
+  } finally {
+    await fsp.rm(temporary, { force: true });
+  }
+}
+
+async function installDirectSource(config, payloadPathsResult, source, stateDirectory) {
+  const gameDirectory = await directSourceGameDirectory(config, stateDirectory);
+  const modsDirectory = path.join(gameDirectory, "mods");
+  await fsp.mkdir(modsDirectory, { recursive: true });
+  const bridgeJar = source.loader === "neoforge"
+    ? payloadPathsResult.neoforgeBridgeJar
+    : payloadPathsResult.forgeBridgeJar;
+  const definition = source.definition;
+  const allBridgeNames = fs.readdirSync(modsDirectory).filter((name) => (
+    /^minecraft_codex_bridge-(?:forge|neoforge)-.+\.jar$/iu.test(name)
+  ));
+  const foreignBridgeNames = allBridgeNames.filter((name) => !definition.bridgePattern.test(name));
+  if (foreignBridgeNames.length > 0) {
+    throw new Error(`源实例中存在其他加载器的 Companion 桥接：${foreignBridgeNames.join(", ")}`);
+  }
+  const existingBridgePaths = allBridgeNames.map((name) => path.join(modsDirectory, name));
+  const destination = path.join(modsDirectory, path.basename(bridgeJar));
+  const bridgeHash = await hashFile(bridgeJar);
+  const bridgeCurrent = existingBridgePaths.length === 1
+    && path.resolve(existingBridgePaths[0]).toLowerCase() === path.resolve(destination).toLowerCase()
+    && (await hashFile(existingBridgePaths[0])) === bridgeHash;
+  const hadBridge = existingBridgePaths.length > 0;
+  let changed = false;
+  const backupDirectory = path.join(
+    stateDirectory,
+    "direct-source-backups",
+    `${Date.now()}-${crypto.randomUUID()}`,
+  );
+  if (!bridgeCurrent) {
+    for (const existing of existingBridgePaths) await moveManagedFileToBackup(existing, backupDirectory);
+    await copyManagedFileAtomic(bridgeJar, destination);
+    changed = true;
+  }
+
+  if (source.loader === "forge") {
+    const baritoneJar = payloadPathsResult.baritoneJar;
+    const baritoneDestination = path.join(modsDirectory, path.basename(baritoneJar));
+    const baritoneCandidates = fs.readdirSync(modsDirectory).filter((name) => /^baritone.*\.jar$/iu.test(name));
+    const foreignBaritone = baritoneCandidates.filter((name) => name.toLowerCase() !== path.basename(baritoneJar).toLowerCase());
+    if (foreignBaritone.length > 0) {
+      throw new Error(`源实例中已有其他 Baritone 版本，已停止以避免重复加载：${foreignBaritone.join(", ")}`);
+    }
+    const baritoneCurrent = fs.existsSync(baritoneDestination)
+      && (await hashFile(baritoneDestination)) === (await hashFile(baritoneJar));
+    if (!baritoneCurrent) {
+      if (fs.existsSync(baritoneDestination)) await moveManagedFileToBackup(baritoneDestination, backupDirectory);
+      await copyManagedFileAtomic(baritoneJar, baritoneDestination);
+      changed = true;
+    }
+  }
+  return {
+    action: changed ? (hadBridge ? "updated" : "installed") : "current",
+    targetPath: path.join(config.minecraftRoot, "versions", config.sourceVersion),
+    gameDirectory,
+    instanceMode: "direct-source",
+  };
+}
+
 async function configureBridge(config, stateDirectory) {
   const token = await getOrCreateBridgeToken(stateDirectory);
-  const instancePath = path.join(config.minecraftRoot, "versions", config.targetVersion);
+  const instancePath = await runtimeGameDirectory(config, stateDirectory);
   const configPath = path.join(instancePath, "config", "minecraft-codex-companion.json");
   const existing = await readJsonIfPresent(configPath, {});
+  const sourceJsonPath = path.join(
+    config.minecraftRoot,
+    "versions",
+    config.sourceVersion,
+    `${config.sourceVersion}.json`,
+  );
+  const sourceDocument = await readJsonIfPresent(sourceJsonPath, null);
+  const marker = await readJsonIfPresent(path.join(instancePath, "CODEX-CLONE.json"), null);
+  const loader = sourceDocument
+    ? detectLoader(sourceDocument, config.sourceVersion)
+    : marker?.loader === "neoforge"
+      || String(existing?.companionId || "").toLowerCase() === LOADER_DEFINITIONS.neoforge.companionId
+      ? "neoforge"
+      : "forge";
+  const definition = loaderDefinition(loader);
   const bridgeConfig = {
     ...(existing && typeof existing === "object" && !Array.isArray(existing) ? existing : {}),
     serverUrl: `ws://127.0.0.1:${config.port}/bridge`,
     token,
-    companionId: "codex-forge",
+    companionId: definition.companionId,
     name: config.companionName,
     ownerName: config.playerName,
     autoReconnect: true,
@@ -750,19 +928,25 @@ async function configureChat(config, stateDirectory, expectedIdentity = null) {
   });
 }
 
-async function detectForge1201(config) {
+async function detectSourceLoader(config) {
   const sourceJsonPath = path.join(config.minecraftRoot, "versions", config.sourceVersion, `${config.sourceVersion}.json`);
   const document = await readJsonIfPresent(sourceJsonPath, null);
   if (!document) throw new Error("源实例缺少版本 JSON");
-  const fingerprint = JSON.stringify(document).toLowerCase();
-  if (!fingerprint.includes("net.minecraftforge") || !fingerprint.includes("1.20.1")) {
-    throw new Error("当前便携包只支持 Forge 1.20.1 源实例");
-  }
+  const loader = detectLoader(document, config.sourceVersion);
+  return { loader, definition: loaderDefinition(loader), document };
 }
 
 async function installOrUpdate(config, payloadRoot, stateDirectory) {
   const paths = assertPayload(payloadRoot);
-  await detectForge1201(config);
+  const source = await detectSourceLoader(config);
+  if (config.instanceMode === "direct-source") {
+    const result = await installDirectSource(config, paths, source, stateDirectory);
+    await configureBridge(config, stateDirectory);
+    await configureChat(config, stateDirectory);
+    return result;
+  }
+  const bridgeJar = source.loader === "neoforge" ? paths.neoforgeBridgeJar : paths.forgeBridgeJar;
+  const baritoneJar = source.loader === "forge" ? paths.baritoneJar : null;
   const targetPath = path.join(config.minecraftRoot, "versions", config.targetVersion);
   const markerPath = path.join(targetPath, "CODEX-CLONE.json");
   let action = "installed";
@@ -772,24 +956,30 @@ async function installOrUpdate(config, payloadRoot, stateDirectory) {
       sourceVersion: config.sourceVersion,
       targetVersion: config.targetVersion,
       launcherPath: config.launcherPath,
-      bridgeJar: paths.bridgeJar,
-      baritoneJar: paths.baritoneJar,
+      loader: source.loader,
+      bridgeJar,
+      baritoneJar,
     });
   } else {
     if (!fs.existsSync(markerPath)) throw new Error("Target instance exists and is not an isolated Codex clone");
+    const marker = await readJsonIfPresent(markerPath, null);
+    if (marker?.loader !== source.loader) {
+      throw new Error(`目标实例的加载器与源实例不匹配（需要 ${source.definition.bridgeLabel}）`);
+    }
     const installedJars = fs.existsSync(path.join(targetPath, "mods"))
       ? fs.readdirSync(path.join(targetPath, "mods"))
-          .filter((name) => /^minecraft_codex_bridge-forge-1\.20\.1-[^/\\]+\.jar$/iu.test(name))
+          .filter((name) => source.definition.bridgePattern.test(name))
           .map((name) => path.join(targetPath, "mods", name))
       : [];
-    const current = installedJars.length === 1 && (await hashFile(installedJars[0])) === (await hashFile(paths.bridgeJar));
+    const current = installedJars.length === 1 && (await hashFile(installedJars[0])) === (await hashFile(bridgeJar));
     if (current) {
       action = "current";
     } else {
       await updateClone({
         minecraftRoot: config.minecraftRoot,
         targetVersion: config.targetVersion,
-        bridgeJar: paths.bridgeJar,
+        loader: source.loader,
+        bridgeJar,
       });
       action = "updated";
     }
@@ -873,16 +1063,21 @@ function classifyServiceHealth(health, expectedIdentity = null) {
   };
 }
 
-function classifyMinecraftBridge(service, requiredVersion = REQUIRED_FORGE_BRIDGE_VERSION) {
+function classifyMinecraftBridge(service, requiredVersion = null) {
   const bridge = service?.minecraftBridge && typeof service.minecraftBridge === "object"
     ? service.minecraftBridge
     : {};
   const connections = Array.isArray(bridge.connections) ? bridge.connections : [];
+  const supportedBackends = new Map(Object.values(LOADER_DEFINITIONS).map((definition) => [
+    definition.backend,
+    REQUIRED_BRIDGE_VERSIONS[definition.id],
+  ]));
   const currentConnections = connections.filter((connection) => (
     connection
       && connection.connected === true
-      && connection.backend === "forge-1.20.1"
-      && connection.bridgeVersion === requiredVersion
+      && supportedBackends.has(connection.backend)
+      && (requiredVersion == null || connection.bridgeVersion === requiredVersion)
+      && connection.bridgeVersion === supportedBackends.get(connection.backend)
   ));
   const latest = (key) => {
     const values = currentConnections
@@ -892,7 +1087,10 @@ function classifyMinecraftBridge(service, requiredVersion = REQUIRED_FORGE_BRIDG
     return values.length > 0 ? values[values.length - 1] : null;
   };
   return {
-    requiredVersion,
+    requiredVersion: requiredVersion || [...new Set(currentConnections.map((connection) => connection.bridgeVersion))].join(",")
+      || Object.values(REQUIRED_BRIDGE_VERSIONS).join(","),
+    supportedBackends: [...supportedBackends.keys()],
+    connectedBackends: [...new Set(currentConnections.map((connection) => connection.backend))],
     reportedVersions: Array.isArray(bridge.bridgeVersions)
       ? bridge.bridgeVersions.filter((version) => typeof version === "string")
       : [],
@@ -1084,21 +1282,65 @@ function splitArguments(commandLine) {
   return args;
 }
 
-function launchGame(config) {
+function launchGame(config, context) {
+  const paths = payloadPaths(context.payloadRoot);
+  if (!fs.existsSync(paths.hmclLauncher)) throw new Error("便携包缺少 HMCL 精确启动助手");
+  const instanceVersion = activeInstanceVersion(config);
   const configuredArgs = splitArguments(config.launcherArguments)
-    .map((argument) => argument.replaceAll("{instance}", config.targetVersion));
-  const extension = path.extname(config.launcherPath).toLowerCase();
-  const executable = extension === ".jar" ? "javaw.exe" : config.launcherPath;
-  const args = extension === ".jar" ? ["-jar", config.launcherPath, ...configuredArgs] : configuredArgs;
-  const child = spawn(executable, args, {
+    .map((argument) => argument.replaceAll("{instance}", instanceVersion));
+  const args = [
+    config.launcherPath,
+    config.minecraftRoot,
+    instanceVersion,
+    context.stateDirectory,
+    ...configuredArgs,
+  ];
+  const child = spawn(paths.hmclLauncher, args, {
     cwd: path.dirname(config.launcherPath),
-    detached: true,
-    windowsHide: false,
-    stdio: "ignore",
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
     shell: false,
   });
-  child.unref();
-  return { launched: true, pid: child.pid, targetVersion: config.targetVersion };
+  let stdout = "";
+  let stderr = "";
+  let finalized = false;
+  const finish = (status) => {
+    if (finalized) return;
+    finalized = true;
+    void writeJsonAtomic(path.join(context.stateDirectory, "hmcl-launch-status.json"), {
+      ...status,
+      instanceVersion,
+      instanceMode: "direct-source",
+      updatedAt: new Date().toISOString(),
+    }).catch(() => undefined);
+  };
+  child.stdout?.on("data", (chunk) => { stdout = (stdout + chunk.toString("utf8")).slice(-256 * 1024); });
+  child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk.toString("utf8")).slice(-256 * 1024); });
+  child.once("error", (error) => {
+    finish({ launched: false, error: error.message });
+    addEvent(context, "error", `HMCL 精确启动失败：${error.message}`);
+  });
+  child.once("exit", (code) => {
+    if (code === 0) {
+      let evidence = null;
+      const finalLine = stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1);
+      try { evidence = finalLine ? JSON.parse(finalLine) : null; } catch { evidence = null; }
+      finish({ launched: true, evidence });
+      addEvent(context, "success", `HMCL 已精确启动源实例“${instanceVersion}”`);
+    } else {
+      const message = (stderr || stdout || `退出码 ${code}`).trim();
+      finish({ launched: false, exitCode: code, error: message });
+      addEvent(context, "error", `HMCL 精确启动失败：${message}`);
+    }
+  });
+  addEvent(context, "info", `正在通过 HMCL 精确启动源实例“${instanceVersion}”`);
+  return {
+    launched: true,
+    pid: child.pid,
+    instanceVersion,
+    instanceMode: "direct-source",
+    exactSelectionRequired: true,
+  };
 }
 
 function mergeAntigravityConfig(existing, entry) {
@@ -1647,7 +1889,9 @@ async function handleApi(request, response, context, pathname) {
     const config = await saveConfig(context.stateDirectory, body.config);
     await configureChat(config, context.stateDirectory);
     const markerPath = path.join(config.minecraftRoot, "versions", config.targetVersion, "CODEX-CLONE.json");
-    if (fs.existsSync(markerPath)) await configureBridge(config, context.stateDirectory);
+    if (config.instanceMode === "direct-source" || fs.existsSync(markerPath)) {
+      await configureBridge(config, context.stateDirectory);
+    }
     addEvent(context, "success", "配置已保存到本机状态目录");
     void resumeAutomaticBridge(context);
     return sendJson(response, 200, { config, instances: await listInstances(config.minecraftRoot) });
@@ -1679,7 +1923,7 @@ async function handleApi(request, response, context, pathname) {
     );
     return sendJson(response, 200, result);
   }
-  if (pathname === "/api/launcher/start") return sendJson(response, 200, launchGame(config));
+  if (pathname === "/api/launcher/start") return sendJson(response, 200, launchGame(config, context));
   if (pathname === "/api/antigravity/install") {
     const result = await withOperation(context, "写入反重力 MCP 配置", () => installAntigravity(config, context.payloadRoot));
     return sendJson(response, 200, result);
@@ -1720,7 +1964,7 @@ async function handleApi(request, response, context, pathname) {
       if (antigravity.connected) {
         addEvent(context, "success", `已恢复反重力会话“${antigravity.conversationTitle}”`);
       }
-      const launcher = launchGame(config);
+      const launcher = launchGame(config, context);
       return { installation, ...runtime, launcher };
     });
     return sendJson(response, 200, result);
@@ -1845,6 +2089,7 @@ module.exports = {
   configureBridge,
   createApiContext,
   createServer,
+  detectSourceLoader,
   defaultConfig,
   discoverAntigravityConfigPath,
   discoverAntigravityHome,

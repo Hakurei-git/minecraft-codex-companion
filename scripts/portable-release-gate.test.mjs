@@ -7,8 +7,28 @@ import { fileURLToPath } from "node:url";
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
 const buildScript = await readFile(path.join(projectRoot, "scripts", "build-portable.ps1"), "utf8");
+const portableLauncherSource = await readFile(
+  path.join(projectRoot, "apps", "portable-launcher", "src", "launcher.cjs"),
+  "utf8",
+);
+const portableClientSource = await readFile(
+  path.join(projectRoot, "apps", "portable-launcher", "native", "Client.cs"),
+  "utf8",
+);
+const hmclLauncherSource = await readFile(
+  path.join(projectRoot, "apps", "portable-launcher", "native", "HmclLauncher.cs"),
+  "utf8",
+);
+const portableUi = await readFile(
+  path.join(projectRoot, "apps", "portable-launcher", "ui", "index.html"),
+  "utf8",
+);
 const forgeTestScript = await readFile(
   path.join(projectRoot, "scripts", "run-forge-tests-in-process.ps1"),
+  "utf8",
+);
+const neoforgeBuildScript = await readFile(
+  path.join(projectRoot, "scripts", "run-neoforge-gradle.ps1"),
   "utf8",
 );
 const scanScript = await readFile(path.join(projectRoot, "scripts", "scan-portable.ps1"), "utf8");
@@ -58,6 +78,50 @@ test("default portable build forcibly rebuilds and validates the Forge bridge", 
   assert.match(buildScript, /forgeArtifact = \[ordered\]@\{/);
   assert.match(buildScript, /forcedRerun = \$forgeBuildForced/);
   assert.doesNotMatch(buildScript, /-NoNewWindow/);
+});
+
+test("default portable build also rebuilds, hashes, and packages the NeoForge bridge", () => {
+  assert.match(buildScript, /run-neoforge-gradle\.ps1/);
+  assert.match(buildScript, /\$neoforgeBuildForced = \[string\]::IsNullOrWhiteSpace\(\$PinnedNeoForgeJarSha256\)/);
+  assert.match(buildScript, /NeoForge bridge JAR is stale/);
+  assert.match(buildScript, /Get-Sha256Hex -LiteralPath \$neoforgeBridgeJar/);
+  assert.match(buildScript, /packagedNeoForgeBridgeJarHash -ne \$neoforgeBridgeJarHash/);
+  assert.match(buildScript, /neoforgeArtifact = \[ordered\]@\{/);
+  assert.match(buildScript, /Pinned NeoForge bridge JAR SHA-256 does not match/);
+  assert.match(neoforgeBuildScript, /NeoForge 1\.21\.1 requires Java 21 or newer/);
+  assert.match(neoforgeBuildScript, /MC_COMPANION_JAVA21_HOME/);
+  assert.match(neoforgeBuildScript, /gradlew\.bat/);
+});
+
+test("desktop EXE always uses and precisely launches the selected HMCL source instance", () => {
+  assert.match(portableLauncherSource, /instanceMode:\s*"direct-source"/);
+  assert.match(portableLauncherSource, /result\.instanceMode = "direct-source"/);
+  assert.match(portableLauncherSource, /result\.targetVersion = result\.sourceVersion/);
+  assert.match(portableLauncherSource, /MinecraftCodexHmclLauncher\.exe/);
+  assert.match(portableLauncherSource, /instanceVersion,\s*\r?\n\s*context\.stateDirectory/);
+  assert.doesNotMatch(portableClientSource, /Codex 实例名|\+ "-Codex"/);
+  assert.match(portableClientSource, /直接使用所选实例（不创建副本）/);
+  assert.doesNotMatch(portableUi, /id="targetVersion"/);
+  assert.match(portableUi, /直接使用所选实例（不创建副本）/);
+
+  assert.match(hmclLauncherSource, /selectedGameDirectory/);
+  assert.match(hmclLauncherSource, /selectedInstance/);
+  assert.match(hmclLauncherSource, /WriteSettingsAtomically/);
+  assert.match(hmclLauncherSource, /hmcl-settings-backups/);
+  assert.match(hmclLauncherSource, /ContainsExactInstance\(candidate, expectedInstance\)/);
+  assert.match(hmclLauncherSource, /TryFindHmclWindowHandle\(out hmclHandle, out hmclProcessId\)/);
+  assert.match(hmclLauncherSource, /TryFindMinecraftWindowHandle\(out gameHandle, out gameProcessId\)/);
+  assert.match(hmclLauncherSource, /!name\.StartsWith\("Minecraft Codex Companion"/);
+  assert.doesNotMatch(hmclLauncherSource, /PostMessage\(handle,\s*0x0008/);
+  assert.doesNotMatch(hmclLauncherSource, /Console\.OutputEncoding/);
+  assert.doesNotMatch(hmclLauncherSource, /hmcl\.Current\.NativeWindowHandle/);
+  assert.match(hmclLauncherSource, /exactSelectionVerified/);
+  assert.doesNotMatch(hmclLauncherSource, /SendKeys|mouse_event|SetCursorPos/);
+
+  assert.match(buildScript, /MinecraftCodexHmclLauncher\.exe/);
+  assert.match(buildScript, /HmclLauncher\.cs/);
+  assert.match(buildScript, /Exact HMCL launcher self-test/);
+  assert.match(buildScript, /\$hmclLauncherExe/);
 });
 
 test("offline pinned Forge packaging is explicit, hash-bound, and runs every Forge test", () => {

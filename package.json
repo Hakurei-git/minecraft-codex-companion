@@ -1,6 +1,6 @@
 {
   "name": "minecraft-codex-companion",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -11,7 +11,7 @@
     "build": "npm run build -w @mc/protocol && npm run build -w @mc/control-plane && npm run build -w @mc/dashboard",
     "build:control": "npm run build -w @mc/protocol && npm run build -w @mc/control-plane",
     "build:forge": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-forge-gradle.ps1 build",
-    "build:neoforge": "cd mods/neoforge-1.21.1 && gradlew.bat --no-daemon build",
+    "build:neoforge": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-neoforge-gradle.ps1 build",
     "build:mods": "npm run build:forge && npm run build:neoforge",
     "build:portable": "powershell -NoProfile -File scripts/build-portable.ps1",
     "build:single-exe": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-single-exe.ps1",

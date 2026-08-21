@@ -13,12 +13,16 @@ test("background Minecraft chat posts UTF-16 WM_CHAR units through PostMessageW"
   assert.match(source, /clientUiState/u);
   assert.match(source, /RespawnIfDead/u);
   assert.match(source, /ControlBaseUri/u);
+  assert.match(source, /MinecraftProcessId/u);
+  assert.match(source, /NativeWindowHandle/u);
   assert.match(source, /ControlBaseUri must be an HTTP loopback URL/u);
   assert.match(source, /127\.0\.0\.1.*localhost.*::1/u);
   assert.match(source, /active-minecraft-window\.status/u);
   assert.match(source, /GetWindowThreadProcessId/u);
   assert.match(source, /FindLargestWindowForProcess/u);
   assert.match(source, /net\.minecraft\.client\.main\.Main/u);
+  assert.match(source, /neoforge-1\.21\.1/u);
+  assert.match(source, /remote-player/u);
   assert.match(source, /initialUiState\s+-eq\s+"death"/u);
   assert.match(source, /MinecraftBackgroundChatPost\]::Click/u);
   assert.match(source, /Wait-ClientUiState\s+"chat"/u);
@@ -26,6 +30,8 @@ test("background Minecraft chat posts UTF-16 WM_CHAR units through PostMessageW"
   assert.match(source, /ChatOpenAttempts/u);
   assert.match(source, /ClipCursor\(IntPtr\.Zero\)/u);
   assert.match(source, /ReleaseCursorCapture\(\$handle\)/u);
+  assert.match(source, /ShowWindowAsync\(\$handle, 9\)/u);
+  assert.doesNotMatch(source, /0x0008/u);
   assert.match(source, /CursorCaptureReleased\s*=\s*\$true/u);
   assert.doesNotMatch(source, /Set-Clipboard|Get-Clipboard/u);
 });

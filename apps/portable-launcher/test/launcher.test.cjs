@@ -67,6 +67,7 @@ test("defaults are derived from the target environment", () => {
   const config = defaultConfig({ APPDATA: "R:\\Profile\\Roaming", USERPROFILE: "R:\\Profile" });
   assert.equal(config.minecraftRoot, path.join("R:\\Profile\\Roaming", ".minecraft"));
   assert.equal(config.launcherPath, "");
+  assert.equal(config.instanceMode, "direct-source");
   assert.equal(config.playerName, "");
   assert.equal(config.companionName, "Codex");
   assert.equal(config.freeChatEnabled, false);
@@ -208,6 +209,17 @@ test("normalization ignores secrets and unknown fields", () => {
   assert.equal(normalizeConfig({ actionMode: "hybrid" }).actionMode, "smart");
 });
 
+test("normalization migrates every legacy clone configuration to its selected HMCL source instance", () => {
+  const normalized = normalizeConfig({
+    instanceMode: "isolated-clone",
+    sourceVersion: "Dragons_ZH_1.20.1",
+    targetVersion: "Dragons_ZH_1.20.1-Codex",
+  });
+  assert.equal(normalized.instanceMode, "direct-source");
+  assert.equal(normalized.sourceVersion, "Dragons_ZH_1.20.1");
+  assert.equal(normalized.targetVersion, "Dragons_ZH_1.20.1");
+});
+
 test("service identity rejects every legacy or mismatched control service", () => {
   const expected = {
     serviceProtocolVersion: 2,
@@ -268,6 +280,34 @@ test("Minecraft readiness requires the packaged bridge version and a real T deli
   });
   assert.equal(unacknowledged.connected, true);
   assert.equal(unacknowledged.tRoundTripVerified, false);
+
+  const neoforge = classifyMinecraftBridge({
+    minecraftBridge: {
+      bridgeVersions: ["0.1.0"],
+      connections: [{
+        ...connection,
+        companionId: "codex-neoforge",
+        backend: "neoforge-1.21.1",
+        bridgeVersion: "0.1.0",
+      }],
+    },
+  });
+  assert.equal(neoforge.connected, true);
+  assert.deepEqual(neoforge.supportedBackends, ["forge-1.20.1", "neoforge-1.21.1"]);
+  assert.deepEqual(neoforge.connectedBackends, ["neoforge-1.21.1"]);
+
+  const staleNeoforge = classifyMinecraftBridge({
+    minecraftBridge: {
+      bridgeVersions: ["development"],
+      connections: [{
+        ...connection,
+        companionId: "codex-neoforge",
+        backend: "neoforge-1.21.1",
+        bridgeVersion: "development",
+      }],
+    },
+  });
+  assert.equal(staleNeoforge.connected, false);
 });
 
 test("installation identity persists while health exposes only a token fingerprint", async (t) => {
@@ -478,7 +518,7 @@ test("version names cannot escape the versions directory", () => {
   assert.equal(isPathInside("C:\\mc\\versions", "C:\\mc\\private"), false);
 });
 
-test("runtime config requires target-machine choices", async (t) => {
+test("runtime config uses the exact selected source instance and ignores stale clone targets", async (t) => {
   const files = await fixture();
   t.after(() => removeFixture(files.root));
   const config = validateRuntimeConfig({
@@ -492,11 +532,13 @@ test("runtime config requires target-machine choices", async (t) => {
   });
   assert.equal(config.playerName, "LocalPlayer");
   assert.equal(config.companionName, "Codex");
+  assert.equal(config.instanceMode, "direct-source");
+  assert.equal(config.targetVersion, "Forge-1.20.1");
   assert.throws(() => validateRuntimeConfig({ ...config, playerName: "" }));
   assert.throws(() => validateCompanionName("\u0000"));
   assert.equal(validateAntigravityConversationTitle(" Execute Minecraft Woodcutting Task "), "Execute Minecraft Woodcutting Task");
   assert.throws(() => validateAntigravityConversationTitle(""));
-  assert.throws(() => validateRuntimeConfig({ ...config, targetVersion: "..\\outside" }));
+  assert.throws(() => validateRuntimeConfig({ ...config, sourceVersion: "..\\outside" }));
 });
 
 test("NPC skin validation accepts only the model's 128x64 PNG layout", async (t) => {
@@ -721,8 +763,8 @@ test("bridge configuration applies the NPC name and imported skin", async (t) =>
   const files = await fixture();
   t.after(() => removeFixture(files.root));
   const state = path.join(files.root, "state");
-  const targetVersion = "Forge-1.20.1-Codex";
-  const target = path.join(files.minecraftRoot, "versions", targetVersion);
+  const sourceVersion = "Forge-1.20.1";
+  const target = path.join(files.minecraftRoot, "versions", sourceVersion);
   await fsp.mkdir(path.join(target, "config"), { recursive: true });
   await fsp.mkdir(path.join(state, "assets"), { recursive: true });
   const reference = path.resolve(__dirname, "../../../assets/third_party/queen-cats-dogs/humanoid_cat_white.png");
@@ -730,8 +772,8 @@ test("bridge configuration applies the NPC name and imported skin", async (t) =>
   const config = validateRuntimeConfig({
     launcherPath: files.launcherPath,
     minecraftRoot: files.minecraftRoot,
-    sourceVersion: "Forge-1.20.1",
-    targetVersion,
+    sourceVersion,
+    targetVersion: "Forge-1.20.1-Codex",
     playerName: "LocalPlayer",
     companionName: "Luna",
     npcSkinMode: "custom",
@@ -743,10 +785,12 @@ test("bridge configuration applies the NPC name and imported skin", async (t) =>
   assert.equal(bridge.name, "Luna");
   assert.equal(bridge.npcMaterialMode, "survival");
   assert.equal(bridge.npcSkinPath, "config/minecraft-codex-companion-skin.png");
+  assert.equal(config.instanceMode, "direct-source");
+  assert.equal(config.targetVersion, sourceVersion);
   const installedSkin = path.join(target, "config", "minecraft-codex-companion-skin.png");
   assert.deepEqual(await fsp.readFile(installedSkin), await fsp.readFile(reference));
   await configureBridge({ ...config, npcSkinMode: "default" }, state);
-  assert.equal(fs.existsSync(installedSkin), false);
+  assert.equal(fs.existsSync(installedSkin), true);
 });
 
 test("instance discovery distinguishes isolated Codex clones", async (t) => {
@@ -916,4 +960,67 @@ test("native instance manager installs an isolated clone without PowerShell", as
   assert.equal(await fsp.readFile(path.join(target, "mods", path.basename(nextBridge)), "utf8"), "bridge-v2");
   assert.equal(fs.existsSync(path.join(target, "mods", path.basename(bridgeJar))), false);
   assert.equal((await fsp.readdir(path.join(target, "bridge-backups"))).length, 1);
+});
+
+test("instance discovery exposes both requested direct-source loader instances", async (t) => {
+  const files = await fixture();
+  t.after(() => removeFixture(files.root));
+  for (const name of ["Dragons_ZH_1.20.1", "1.21.1-NeoForge"]) {
+    const directory = path.join(files.minecraftRoot, "versions", name);
+    await fsp.mkdir(directory, { recursive: true });
+    await fsp.writeFile(path.join(directory, `${name}.json`), "{}", "utf8");
+    await fsp.writeFile(path.join(directory, `${name}.jar`), "fixture", "utf8");
+  }
+  const instances = await listInstances(files.minecraftRoot);
+  assert.deepEqual(
+    new Set(instances.filter((item) => !item.isCompanionClone).map((item) => item.name)),
+    new Set(["Dragons_ZH_1.20.1", "1.21.1-NeoForge"]),
+  );
+});
+
+test("native instance manager installs and updates an isolated NeoForge clone", async (t) => {
+  const files = await fixture();
+  t.after(() => removeFixture(files.root));
+  const sourceVersion = "Fixture-1.21.1-NeoForge";
+  const targetVersion = `${sourceVersion}-Codex`;
+  const source = path.join(files.minecraftRoot, "versions", sourceVersion);
+  const bridgeJar = path.join(files.root, "minecraft_codex_bridge-neoforge-1.21.1-test.jar");
+  await fsp.mkdir(path.join(source, "mods"), { recursive: true });
+  await fsp.mkdir(path.join(source, "saves", "private-world"), { recursive: true });
+  await fsp.writeFile(path.join(source, `${sourceVersion}.jar`), "minecraft", "utf8");
+  await fsp.writeFile(path.join(source, `${sourceVersion}.json`), JSON.stringify({
+    id: sourceVersion,
+    jar: sourceVersion,
+    libraries: [{ name: "net.neoforged:neoforge:21.1.182" }],
+  }), "utf8");
+  await fsp.writeFile(path.join(source, "mods", "example-neoforge.jar"), "mod", "utf8");
+  await fsp.writeFile(path.join(source, "saves", "private-world", "level.dat"), "private", "utf8");
+  await fsp.writeFile(bridgeJar, "neoforge-bridge-v1", "utf8");
+
+  const target = await installClone({
+    minecraftRoot: files.minecraftRoot,
+    sourceVersion,
+    targetVersion,
+    launcherPath: files.launcherPath,
+    bridgeJar,
+    baritoneJar: null,
+  });
+  const marker = JSON.parse(await fsp.readFile(path.join(target, "CODEX-CLONE.json"), "utf8"));
+  assert.equal(marker.loader, "neoforge");
+  assert.equal(marker.baritoneJar, null);
+  assert.equal(fs.existsSync(path.join(target, "saves", "private-world", "level.dat")), false);
+  assert.equal(fs.existsSync(path.join(target, "mods", "example-neoforge.jar")), true);
+  assert.equal(fs.existsSync(path.join(target, "mods", path.basename(bridgeJar))), true);
+
+  const nextBridge = path.join(files.root, "minecraft_codex_bridge-neoforge-1.21.1-next.jar");
+  await fsp.writeFile(nextBridge, "neoforge-bridge-v2", "utf8");
+  await updateClone({
+    minecraftRoot: files.minecraftRoot,
+    targetVersion,
+    loader: "neoforge",
+    bridgeJar: nextBridge,
+    inspectJavaProcesses: async () => [],
+  });
+  assert.equal(await fsp.readFile(path.join(target, "mods", path.basename(nextBridge)), "utf8"), "neoforge-bridge-v2");
+  assert.equal(fs.existsSync(path.join(target, "mods", path.basename(bridgeJar))), false);
 });

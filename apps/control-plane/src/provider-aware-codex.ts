@@ -203,7 +203,8 @@ function abortedTurnError(signal: AbortSignal | undefined): Error {
 
 export function isRetryableCodexPlanningError(caught: unknown): boolean {
   const message = caught instanceof Error ? caught.message : String(caught);
-  return /(?:\b50[234]\b|bad gateway|service unavailable|gateway timeout|upstream request failed)/iu.test(message);
+  return /(?:\b50[234]\b|bad gateway|service unavailable|gateway timeout|upstream request failed)/iu.test(message)
+    || /(?:invalid schema for response_format|\binvalid_json_schema\b|text\.format\.schema[^\n]*(?:not permitted|unsupported))/iu.test(message);
 }
 
 const PLANNING_FALLBACK_CONTRACT = [
@@ -242,7 +243,11 @@ async function waitBeforePlanningRetry(signal: AbortSignal | undefined): Promise
 }
 
 function assertToolFreeTurn(result: TurnResult, role: "advisor" | "coordinator" | "planner" | "stable"): TurnResult {
-  const allowedItems = new Set(["agent_message", "reasoning"]);
+  // The SDK can report a non-executing transport error (for example a
+  // WebSocket timeout before its HTTPS fallback) alongside a valid final
+  // response. It is not a tool invocation; command, file, MCP, web, and every
+  // other unknown item type remain forbidden by this allowlist.
+  const allowedItems = new Set(["agent_message", "reasoning", "error"]);
   const disallowed = result.items?.find((item) => (
     typeof item.type !== "string" || !allowedItems.has(item.type)
   ));

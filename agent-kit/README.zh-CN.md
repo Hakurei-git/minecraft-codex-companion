@@ -11,7 +11,7 @@ AgentKit 是给支持 Skill 或 MCP 的 AI 客户端导入的轻量包。它包�
 | 版本 | 适合谁 | 是否能单独运行 |
 | --- | --- | --- |
 | `MinecraftCodexCompanion-Setup.exe` | 希望安装后直接配置和启动的 Windows 用户 | 可以；它包含本地控制服务、界面和 Forge 模组安装资源 |
-| `MinecraftCodexCompanion-AgentKit-v0.1.10.zip` | 希望让 Codex、Claude、反重力或其他支持 MCP 的 AI 学会控制 NPC 的用户 | 不可以；它必须连接同一台电脑上由 EXE 启动的本地服务 |
+| `MinecraftCodexCompanion-AgentKit-v0.1.11.zip` | 希望让 Codex、Claude、反重力或其他支持 MCP 的 AI 学会控制 NPC 的用户 | 不可以；它必须连接同一台电脑上由 EXE 启动的本地服务 |
 
 Skill 负责告诉 AI 应该如何观察、规划、确保安全、分配任务和恢复失败；MCP 才是 AI 真正读取 Minecraft 状态并执行动作的工具通道。只有 Skill 而没有 MCP 时，AI 只能阅读说明，不能移动 NPC。只有 MCP 而没有 Skill 时也能调用工具，但复杂任务的规划、交付和恢复通常不如同时导入两者稳定。
 
@@ -53,7 +53,7 @@ AgentKit 不需要也不应包含你的 API Key。Codex、Claude 兼容 API 或�
 1. 运行 `MinecraftCodexCompanion-Setup.exe`。安装器校验并展开本地运行时，然后打开配置程序。
 2. 选择 HMCL、Minecraft 根目录和一个 Forge 1.20.1 源实例。自动发现不正确时使用“浏览”手工选择。
 3. 设置玩家名、NPC 名、人格模式和可选的 `128x64` PNG 皮肤。
-4. 点击“一键准备并启动”，在 HMCL 中进入新建的隔离实例和测试世界。
+4. 点击“一键准备并启动”；EXE 会精确切换并直接启动所选 HMCL 源实例，然后进入测试世界。
 5. 打开 `http://127.0.0.1:8765/api/health`。能得到健康响应说明控制服务已启动；如果浏览器无法连接，先重新打开已安装的 Companion 程序。
 6. 在 Dashboard 确认至少有一个同伴在线。没有同伴时，AI 即使连接 MCP 也无法执行任务。
 

@@ -14,6 +14,10 @@ param(
     [ValidateLength(1, 256)]
     [string]$ControlBaseUri = "",
 
+    [int]$MinecraftProcessId = 0,
+
+    [long]$NativeWindowHandle = 0,
+
     [switch]$DraftOnly,
 
     [switch]$RespawnIfDead
@@ -138,7 +142,8 @@ public static class MinecraftBackgroundChatPost
 
     public static void ReleaseCursorCapture(IntPtr hWnd)
     {
-        PostMessage(hWnd, 0x0008, IntPtr.Zero, IntPtr.Zero); // WM_KILLFOCUS
+        // Do not synthesize WM_KILLFOCUS: fullscreen GLFW treats it as a real
+        // focus loss and minimizes before the targeted T-chat messages arrive.
         ReleaseCapture();
         ClipCursor(IntPtr.Zero);
     }
@@ -156,11 +161,13 @@ function Get-ClientUiState {
     $response = Invoke-RestMethod -Uri ([Uri]::new($baseUri, "api/companions")) -TimeoutSec 2
     $companions = @(
         @($response.companions) | Where-Object {
-            $_.connected -eq $true -and $_.embodiment -eq "in-world-npc"
+            $_.connected -eq $true -and
+            $_.backend -in @("forge-1.20.1", "neoforge-1.21.1") -and
+            $_.embodiment -in @("in-world-npc", "remote-player")
         }
     )
     if ($companions.Count -ne 1) {
-        throw "Background T chat requires exactly one connected Forge NPC"
+        throw "Background T chat requires exactly one connected Forge or NeoForge companion"
     }
     $id = [Uri]::EscapeDataString([string]$companions[0].id)
     $snapshot = Invoke-RestMethod -Uri ([Uri]::new($baseUri, "api/companions/$id/snapshot")) -TimeoutSec 2
@@ -184,7 +191,37 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $activeWindowStatusPath = Join-Path $projectRoot ".runtime\hmcl-background-agent\active-minecraft-window.status"
 $handle = [IntPtr]::Zero
 $resolvedMinecraftProcessId = 0
-if (Test-Path -LiteralPath $activeWindowStatusPath -PathType Leaf) {
+$providedWindow = $MinecraftProcessId -gt 0 -or $NativeWindowHandle -gt 0
+if ($providedWindow) {
+    if ($MinecraftProcessId -le 0 -or $NativeWindowHandle -le 0) {
+        throw "MinecraftProcessId and NativeWindowHandle must be provided together"
+    }
+    $candidateProcess = Get-Process -Id $MinecraftProcessId -ErrorAction Stop
+    if ($candidateProcess.ProcessName -notin @("java", "javaw")) {
+        throw "The verified Minecraft process is not a Java runtime"
+    }
+    $candidateHandle = [IntPtr]$NativeWindowHandle
+    [uint32]$windowProcessId = 0
+    if (-not [MinecraftBackgroundChatPost]::IsWindow($candidateHandle) -or
+        [MinecraftBackgroundChatPost]::GetWindowThreadProcessId(
+            $candidateHandle,
+            [ref]$windowProcessId
+        ) -eq 0 -or
+        $windowProcessId -ne $MinecraftProcessId) {
+        throw "The verified Minecraft window handle changed process ownership"
+    }
+    $jcmd = Get-Command "jcmd.exe" -ErrorAction SilentlyContinue
+    if ($null -ne $jcmd) {
+        $hierarchy = (& $jcmd.Source $MinecraftProcessId `
+            "VM.class_hierarchy" "net.minecraft.client.main.Main" 2>$null | Out-String)
+        if ($hierarchy -notmatch "net\.minecraft\.client\.main\.Main") {
+            throw "The verified Java process is not a loaded Minecraft client"
+        }
+    }
+    $handle = $candidateHandle
+    $resolvedMinecraftProcessId = $MinecraftProcessId
+}
+if ($handle -eq [IntPtr]::Zero -and (Test-Path -LiteralPath $activeWindowStatusPath -PathType Leaf)) {
     $statusFile = Get-Item -LiteralPath $activeWindowStatusPath -Force
     if (-not ($statusFile.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         $status = [regex]::Match(
@@ -242,7 +279,7 @@ if ($handle -eq [IntPtr]::Zero) {
     $minecraft = $null
     foreach ($window in $windows) {
         try {
-            if ([string]$window.Current.Name -match '^Minecraft.*Forge 1\.20\.1') {
+            if ([string]$window.Current.Name -match '^Minecraft.*(?:Forge 1\.20\.1|NeoForge|1\.21\.1)') {
                 $minecraft = $window
                 break
             }
@@ -250,7 +287,7 @@ if ($handle -eq [IntPtr]::Zero) {
             # Ignore windows that close while the UI Automation tree is sampled.
         }
     }
-    if ($null -eq $minecraft) { throw "Minecraft Forge window is unavailable" }
+    if ($null -eq $minecraft) { throw "Minecraft Forge or NeoForge window is unavailable" }
     $handle = [IntPtr]$minecraft.Current.NativeWindowHandle
     $resolvedMinecraftProcessId = [int]$minecraft.Current.ProcessId
 }
@@ -259,7 +296,7 @@ if ($handle -eq [IntPtr]::Zero -or $resolvedMinecraftProcessId -le 0) {
 }
 $wasMinimized = [MinecraftBackgroundChatPost]::IsIconic($handle)
 if ($wasMinimized) {
-    [void][MinecraftBackgroundChatPost]::ShowWindowAsync($handle, 4) # SW_SHOWNOACTIVATE
+    [void][MinecraftBackgroundChatPost]::ShowWindowAsync($handle, 9) # SW_RESTORE
     [MinecraftBackgroundChatPost]::ReleaseCursorCapture($handle)
     Start-Sleep -Milliseconds 250
     [MinecraftBackgroundChatPost]::ReleaseCursorCapture($handle)

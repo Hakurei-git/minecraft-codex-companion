@@ -121,10 +121,20 @@ try {
     $runtimeNode = Join-Path $packageRoot "runtime\node.exe"
     $nativeClient = Join-Path $packageRoot "runtime\MinecraftCodexClient.exe"
     $nativePicker = Join-Path $packageRoot "runtime\MinecraftCodexPicker.exe"
+    $nativeHmclLauncher = Join-Path $packageRoot "runtime\MinecraftCodexHmclLauncher.exe"
+    $packagedLauncherPage = Get-Content `
+        -LiteralPath (Join-Path $packageRoot "apps\portable-launcher\ui\index.html") `
+        -Raw `
+        -Encoding UTF8
     Assert-True (Test-Path -LiteralPath $launcherExe -PathType Leaf) "portable EXE is missing"
     Assert-True (Test-Path -LiteralPath $runtimeNode -PathType Leaf) "portable Node runtime is missing"
     Assert-True (Test-Path -LiteralPath $nativeClient -PathType Leaf) "native desktop client is missing"
     Assert-True (Test-Path -LiteralPath $nativePicker -PathType Leaf) "native path picker is missing"
+    Assert-True (Test-Path -LiteralPath $nativeHmclLauncher -PathType Leaf) "exact HMCL launcher is missing"
+    # Keep this assertion ASCII-only because Windows PowerShell 5 can decode a
+    # UTF-8-without-BOM script literal using the active ANSI code page.
+    Assert-True ($packagedLauncherPage.Contains('readonly aria-label=')) "packaged launcher page is missing the read-only direct-source field"
+    Assert-True (-not $packagedLauncherPage.Contains('id="targetVersion"')) "packaged launcher page still exposes a clone target name"
 
     $clientTestOutput = Join-Path $testRoot "client-self-test.txt"
     $clientSelfTestProcess = Start-Process `
@@ -146,9 +156,19 @@ try {
     Assert-True (Test-Path -LiteralPath $pickerTestOutput -PathType Leaf) "native path picker did not write its self-test result"
     Assert-True ((Get-Content -Raw -Encoding UTF8 -LiteralPath $pickerTestOutput).Trim() -eq 'ok') "native path picker self-test failed"
 
+    $hmclLauncherTestOutput = Join-Path $testRoot "hmcl-launcher-self-test.txt"
+    $hmclLauncherSelfTestProcess = Start-Process `
+        -FilePath $nativeHmclLauncher `
+        -ArgumentList ('self-test "' + $hmclLauncherTestOutput + '"') `
+        -WindowStyle Hidden `
+        -Wait `
+        -PassThru
+    Assert-True ($hmclLauncherSelfTestProcess.ExitCode -eq 0) "exact HMCL launcher self-test exited with an error"
+    Assert-True (Test-Path -LiteralPath $hmclLauncherTestOutput -PathType Leaf) "exact HMCL launcher did not write its self-test result"
+    Assert-True ((Get-Content -Raw -Encoding UTF8 -LiteralPath $hmclLauncherTestOutput).Trim() -eq 'ok') "exact HMCL launcher self-test failed"
+
     $minecraftRoot = Join-Path $testRoot ".minecraft"
     $sourceVersion = "Fixture-Forge-1.20.1"
-    $targetVersion = "$sourceVersion-Codex"
     $source = Join-Path $minecraftRoot "versions\$sourceVersion"
     $fakeLauncher = Join-Path $testRoot "HMCL.exe"
     Write-TestFile $fakeLauncher "fixture launcher"
@@ -181,6 +201,8 @@ try {
     Assert-True ($page.Content.Contains('id="persona-fields"')) "portable launcher page is missing persona settings"
     Assert-True ($page.Content.Contains('id="companionName"')) "portable launcher page is missing the NPC name field"
     Assert-True ($page.Content.Contains('data-action="choose-skin"')) "portable launcher page is missing the NPC skin picker"
+    Assert-True ($page.Content.Contains('readonly aria-label=')) "portable launcher HTTP page is missing the read-only direct-source field"
+    Assert-True (-not $page.Content.Contains('id="targetVersion"')) "portable launcher HTTP page still exposes a clone target name"
     $session = ([Uri]$endpoint.url).Query.TrimStart('?').Split('&') | Where-Object { $_ -like 'session=*' } | Select-Object -First 1
     $sessionValue = [Uri]::UnescapeDataString($session.Substring('session='.Length))
     $headers = @{ 'x-companion-session' = $sessionValue }
@@ -274,8 +296,9 @@ public static class PortablePickerAutomation
             launcherPath = $fakeLauncher
             launcherArguments = ""
             minecraftRoot = $minecraftRoot
+            instanceMode = "isolated-clone"
             sourceVersion = $sourceVersion
-            targetVersion = $targetVersion
+            targetVersion = "$sourceVersion-Codex"
             playerName = "FixturePlayer"
             companionName = "Luna"
             port = $launcherConfigPort
@@ -295,6 +318,8 @@ public static class PortablePickerAutomation
     $saved = Invoke-RestMethod -Method Post -Uri ($baseUrl + '/api/save') -Headers $headers -ContentType 'application/json' -Body $saveBody
     Assert-True ($saved.config.companionName -eq 'Luna') "portable launcher did not save the NPC name"
     Assert-True ($saved.config.persona.mode -eq 'custom') "portable launcher did not save the persona mode"
+    Assert-True ($saved.config.instanceMode -eq 'direct-source') "portable launcher did not migrate to direct-source mode"
+    Assert-True ($saved.config.targetVersion -eq $sourceVersion) "portable launcher retained a stale clone target"
     $chatSettings = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $stateDirectory "chat-settings.json") | ConvertFrom-Json
     Assert-True ($chatSettings.version -eq 2) "portable launcher did not write the multi-NPC chat settings format"
     Assert-True ($chatSettings.selectedCompanionName -eq 'Luna') "portable launcher did not select the configured NPC profile"
@@ -306,19 +331,21 @@ public static class PortablePickerAutomation
     Assert-True ($chatProfile.persona.displayName -eq 'Luna') "portable launcher did not write persona settings for the control service"
 
     $installation = Invoke-RestMethod -Method Post -Uri ($baseUrl + '/api/install') -Headers $headers -ContentType 'application/json' -Body '{}'
-    Assert-True ($installation.action -eq 'installed') "portable launcher did not install the isolated instance"
-    $target = Join-Path $minecraftRoot "versions\$targetVersion"
-    Assert-True (Test-Path -LiteralPath (Join-Path $target "CODEX-CLONE.json")) "clone marker is missing"
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $target "saves\private-world"))) "source world leaked into clone"
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $target "logs"))) "source logs leaked into clone"
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $target "screenshots"))) "source screenshots leaked into clone"
+    Assert-True ($installation.action -eq 'installed') "portable launcher did not install the source-instance bridge"
+    Assert-True ($installation.instanceMode -eq 'direct-source') "portable launcher installed through a non-source mode"
+    $target = $source
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $target "CODEX-CLONE.json"))) "portable launcher wrote a clone marker into the source instance"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $minecraftRoot "versions\$sourceVersion-Codex"))) "portable launcher created a -Codex instance"
+    Assert-True (Test-Path -LiteralPath (Join-Path $target "saves\private-world")) "portable launcher changed the source world layout"
+    Assert-True (Test-Path -LiteralPath (Join-Path $target "logs\latest.log")) "portable launcher changed source logs"
+    Assert-True (Test-Path -LiteralPath (Join-Path $target "screenshots\private.png")) "portable launcher changed source screenshots"
     Assert-True (Test-Path -LiteralPath (Join-Path $stateDirectory "bridge-token.txt")) "target-local bridge token was not generated"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $packageRoot "bridge-token.txt"))) "bridge token was written into the portable package"
     $bridgeSettings = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $target "config\minecraft-codex-companion.json") | ConvertFrom-Json
     Assert-True ($bridgeSettings.name -eq 'Luna') "NPC name was not applied to the Forge bridge"
     Assert-True ($bridgeSettings.npcMaterialMode -eq 'survival') "NPC material mode did not default to survival"
     Assert-True ($bridgeSettings.npcSkinPath -eq 'config/minecraft-codex-companion-skin.png') "custom skin path was not applied to the Forge bridge"
-    Assert-True (Test-Path -LiteralPath (Join-Path $target "config\minecraft-codex-companion-skin.png")) "custom NPC skin was not copied into the isolated instance"
+    Assert-True (Test-Path -LiteralPath (Join-Path $target "config\minecraft-codex-companion-skin.png")) "custom NPC skin was not copied into the source instance"
     $skinPreview = Invoke-WebRequest -UseBasicParsing -Uri ($baseUrl + '/api/skin-preview') -Headers $headers
     Assert-True ($skinPreview.StatusCode -eq 200 -and $skinPreview.RawContentLength -gt 0) "custom NPC skin preview is unavailable"
 

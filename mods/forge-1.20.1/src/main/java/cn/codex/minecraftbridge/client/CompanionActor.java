@@ -48,6 +48,15 @@ public interface CompanionActor {
 
     void speak(Minecraft minecraft, String message, String deliveryId);
 
+    /**
+     * True when {@link #speak} has already placed the reply in the local chat
+     * HUD before returning. Server-backed actors override this only after the
+     * server confirms delivery through their normal acknowledgement path.
+     */
+    default boolean synchronousChatDelivery() {
+        return false;
+    }
+
     default void control(String action) {
     }
 

@@ -54,6 +54,21 @@ function hello(token = TOKEN) {
   };
 }
 
+function helloNeoforge(token = TOKEN) {
+  return {
+    ...hello(token),
+    companion: {
+      ...hello(token).companion,
+      id: "codex-neoforge",
+      backend: "neoforge-1.21.1" as const,
+      gameVersion: "1.21.1",
+      loader: "NeoForge 21.1.182",
+      bridgeVersion: "0.1.0",
+      snapshot: { ...snapshot(), worldId: "neoforge-test-world" },
+    },
+  };
+}
+
 async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
@@ -211,11 +226,11 @@ describe("BridgeManager", () => {
 
     const commandPromise = nextJson(socket);
     let settled = false;
-    const delivery = service.sendChat("codex-forge", "鍙嶉噸鍔?T 杩炴帴閫氳繃", "test").then(() => {
+    const delivery = service.sendChat("codex-forge", "反重力 T 连接通过", "test").then(() => {
       settled = true;
     });
     const command = await commandPromise;
-    expect(command).toMatchObject({ type: "chat", message: "鍙嶉噸鍔?T 杩炴帴閫氳繃" });
+    expect(command).toMatchObject({ type: "chat", message: "反重力 T 连接通过" });
     expect(command.deliveryId).toMatch(/^[0-9a-f-]{36}$/u);
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(settled).toBe(false);
@@ -223,6 +238,32 @@ describe("BridgeManager", () => {
     socket.send(JSON.stringify({
       type: "chat-delivered",
       companionId: "codex-forge",
+      deliveryId: command.deliveryId,
+    }));
+    await delivery;
+    expect(settled).toBe(true);
+  });
+
+  it("requires the NeoForge client bridge to confirm that a reply reached local T chat", async () => {
+    const service = new ControlService();
+    const socket = await connect(new BridgeManager({ service, token: TOKEN }));
+    socket.send(JSON.stringify(helloNeoforge()));
+    await waitFor(() => service.listCompanions().length === 1);
+
+    const commandPromise = nextJson(socket);
+    let settled = false;
+    const delivery = service.sendChat("codex-neoforge", "NeoForge T 回复已显示", "test").then(() => {
+      settled = true;
+    });
+    const command = await commandPromise;
+    expect(command).toMatchObject({ type: "chat", message: "NeoForge T 回复已显示" });
+    expect(command.deliveryId).toMatch(/^[0-9a-f-]{36}$/u);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(settled).toBe(false);
+
+    socket.send(JSON.stringify({
+      type: "chat-delivered",
+      companionId: "codex-neoforge",
       deliveryId: command.deliveryId,
     }));
     await delivery;

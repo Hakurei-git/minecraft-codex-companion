@@ -26,7 +26,7 @@ public final class SnapshotFactory {
         JsonObject snapshot = new JsonObject();
         snapshot.addProperty("sequence", ++sequence);
         snapshot.addProperty("capturedAt", Instant.now().toString());
-        snapshot.addProperty("worldId", minecraft.getCurrentServer() == null ? "singleplayer" : minecraft.getCurrentServer().ip);
+        snapshot.addProperty("worldId", worldId(minecraft));
         snapshot.addProperty("dimension", player.level().dimension().location().toString());
         snapshot.add("position", vector(player.getX(), player.getY(), player.getZ()));
         snapshot.addProperty("yaw", player.getYRot());
@@ -42,6 +42,14 @@ public final class SnapshotFactory {
         snapshot.add("nearbyEntities", nearbyEntities(player, config));
         snapshot.addProperty("status", status);
         return snapshot;
+    }
+
+    private String worldId(Minecraft minecraft) {
+        if (minecraft.getCurrentServer() != null) return minecraft.getCurrentServer().ip;
+        if (minecraft.getSingleplayerServer() != null) {
+            return minecraft.getSingleplayerServer().getWorldData().getLevelName();
+        }
+        return "singleplayer";
     }
 
     private JsonArray inventory(Player player) {

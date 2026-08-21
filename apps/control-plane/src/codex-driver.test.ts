@@ -24,6 +24,7 @@ class FakeThread {
   readonly advisorRoles: Array<"codex" | "claude"> = [];
   readonly coordinatorPrompts: unknown[] = [];
   readonly plannerPrompts: unknown[] = [];
+  readonly plannerOptions: unknown[] = [];
   readonly plannerRoles: Array<"codex" | "claude"> = [];
   readonly plannerTokenBudgets: number[] = [];
   readonly policies: Array<{ toolPolicy: "minecraft" | "none"; tokenBudget: number }> = [];
@@ -116,12 +117,17 @@ class FakeThread {
 
   async runPlanning(
     input: unknown,
-    _options?: unknown,
+    options?: unknown,
     tokenBudget?: number,
   ): Promise<{ finalResponse: string }> {
     this.plannerPrompts.push(input);
+    this.plannerOptions.push(options);
     if (tokenBudget !== undefined) this.plannerTokenBudgets.push(tokenBudget);
-    return { finalResponse: this.plannerRawResponse ?? JSON.stringify(this.plannerDecision) };
+    return {
+      finalResponse: this.plannerRawResponse ?? JSON.stringify({
+        decisionJson: JSON.stringify(this.plannerDecision),
+      }),
+    };
   }
 
   async runPlanningForRole(
@@ -377,7 +383,45 @@ describe("CodexDriver", () => {
     expect(smart.service.listTasks()).toHaveLength(1);
     expect(smart.fake.started.plannerTokenBudgets).toEqual([1_536]);
     expect(String(smart.fake.started.plannerPrompts[0])).toContain("single-turn Minecraft intent planner");
+    expect(String(smart.fake.started.plannerPrompts[0])).toContain("decisionJson");
+    expect(smart.fake.started.plannerOptions).toHaveLength(1);
+    const plannerSchema = (smart.fake.started.plannerOptions[0] as {
+      outputSchema?: Record<string, unknown>;
+    }).outputSchema;
+    expect(plannerSchema).toEqual({
+      type: "object",
+      properties: { decisionJson: { type: "string" } },
+      required: ["decisionJson"],
+      additionalProperties: false,
+    });
+    expect(JSON.stringify(plannerSchema)).not.toContain("oneOf");
     expect(smart.fake.started.policies).toHaveLength(0);
+  });
+
+  it("decodes an envelope-wrapped smart chat decision without creating a task", async () => {
+    const { service, fake, driver } = await createHarness("mc-codex-smart-envelope-");
+    await configureChat(service, { actionMode: "smart", tokenBudget: 512 });
+    fake.started.plannerRawResponse = JSON.stringify({
+      decisionJson: JSON.stringify({
+        type: "chat",
+        reply: "当然，我会陪你一起看龙巢。",
+        summary: "回应玩家的闲聊",
+      }),
+    });
+
+    const request = await driver.enqueue({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "你愿意陪我去看看龙巢吗？",
+    });
+    const finished = await waitForRequest(driver, request.id);
+
+    expect(finished).toMatchObject({
+      status: "succeeded",
+      reply: "当然，我会陪你一起看龙巢。",
+    });
+    expect(service.listTasks()).toHaveLength(0);
+    expect(fake.started.plannerPrompts).toHaveLength(1);
   });
 
   it("routes complex deterministic T-chat actions through the local Agent WorkGraph without model tokens", async () => {
