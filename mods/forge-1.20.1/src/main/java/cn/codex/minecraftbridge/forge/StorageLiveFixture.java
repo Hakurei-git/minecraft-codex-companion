@@ -406,13 +406,8 @@ final class StorageLiveFixture {
         NpcHomeStorage.Home home,
         List<BlockPos> existing
     ) {
-        BlockPos position = NpcHomeStorage.findSafePlacement(
-            level,
-            home,
-            home.position(),
-            12,
-            candidate -> !existing.contains(candidate) && isolatedChestCell(level, candidate)
-        );
+        List<BlockPos> placements = findTerrainChestPlacements(level, home, existing, 1);
+        BlockPos position = placements.isEmpty() ? null : placements.get(0);
         if (position == null || !level.setBlockAndUpdate(position, Blocks.CHEST.defaultBlockState())
             || !(level.getBlockEntity(position) instanceof Container)) {
             throw new IllegalStateException("Storage fixture chest could not be placed");
@@ -468,13 +463,81 @@ final class StorageLiveFixture {
                 if (scenario.equals("craft-expand")
                     && NpcHomeStorage.findCraftingTable(level, home, HomeStoragePolicy.DEFAULT_RADIUS) != null) continue;
                 if (scenario.equals("restart") && restartCellCapacity(level, home) < RESTART_ITEM_COUNT) continue;
-                BlockPos placement = NpcHomeStorage.findSafePlacement(
-                    level, home, candidate, 10, position -> isolatedChestCell(level, position)
-                );
-                if (placement != null) return candidate.immutable();
+                if (!scenario.equals("restart") && findTerrainChestPlacements(
+                    level,
+                    home,
+                    List.of(),
+                    requiredInitialChestCount(scenario)
+                ).size() < requiredInitialChestCount(scenario)) continue;
+                return candidate.immutable();
             }
         }
         return null;
+    }
+
+    static int requiredInitialChestCount(String scenario) {
+        return "retrieve".equals(scenario) ? 2 : 1;
+    }
+
+    private static List<BlockPos> findTerrainChestPlacements(
+        ServerLevel level,
+        NpcHomeStorage.Home home,
+        List<BlockPos> existing,
+        int limit
+    ) {
+        if (limit <= 0 || !home.dimension().equals(level.dimension())) return List.of();
+        BlockPos origin = home.position();
+        List<BlockPos> candidates = new ArrayList<>();
+        int radius = HomeStoragePolicy.DEFAULT_RADIUS;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                int x = origin.getX() + dx;
+                int z = origin.getZ() + dz;
+                int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+                BlockPos candidate = new BlockPos(x, y, z);
+                if (terrainChestCellIsClear(level, home, existing, candidate)) {
+                    candidates.add(candidate.immutable());
+                }
+            }
+        }
+        candidates.sort(Comparator
+            .comparingDouble((BlockPos position) -> position.distSqr(origin))
+            .thenComparingInt(BlockPos::getY)
+            .thenComparingInt(BlockPos::getX)
+            .thenComparingInt(BlockPos::getZ));
+
+        List<BlockPos> selected = new ArrayList<>();
+        List<BlockPos> occupied = new ArrayList<>(existing);
+        for (BlockPos candidate : candidates) {
+            if (!terrainChestCellIsClear(level, home, occupied, candidate)) continue;
+            selected.add(candidate);
+            occupied.add(candidate);
+            if (selected.size() >= limit) break;
+        }
+        return List.copyOf(selected);
+    }
+
+    private static boolean terrainChestCellIsClear(
+        ServerLevel level,
+        NpcHomeStorage.Home home,
+        List<BlockPos> existing,
+        BlockPos position
+    ) {
+        if (position.equals(home.position()) || !withinHomeStorageBounds(home, position)
+            || existing.contains(position) || adjacentRestartChest(existing, position)
+            || !level.hasChunkAt(position) || !level.getWorldBorder().isWithinBounds(position)) return false;
+        BlockPos support = position.below();
+        if (!level.getBlockState(position).canBeReplaced()
+            || !level.getFluidState(position).isEmpty()
+            || !level.getBlockState(position.above()).getCollisionShape(level, position.above()).isEmpty()
+            || !level.getFluidState(position.above()).isEmpty()
+            || !level.getBlockState(support).isFaceSturdy(level, support, Direction.UP)
+            || !isolatedChestCell(level, position)) return false;
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            if (isRestartStandCell(level, position.relative(direction))) return true;
+        }
+        return false;
     }
 
     private static int restartCellCapacity(ServerLevel level, NpcHomeStorage.Home home) {

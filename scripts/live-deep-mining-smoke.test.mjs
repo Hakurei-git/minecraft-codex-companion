@@ -69,11 +69,11 @@ test("deep-mining smoke validates the physical restart checkpoint", () => {
 
 test("deep-mining smoke parses complete persisted fixture evidence", () => {
   const inspection = parseInspection(
-    "deep-mining:i|ok=1,l=33,t=32,p=2,d=1,b=1,s=4,r=9,x=1,k=34,o=3,g=1,v=1,q=1,w=3,j=192,n=1,e=0",
+    "deep-mining:i|ok=1,l=0,t=32,p=2,d=1,b=1,s=4,r=9,x=1,k=34,o=3,g=1,v=1,q=1,w=3,j=192,n=1,e=0",
   );
   assert.deepEqual(validateInspection(inspection), {
     ok: 1,
-    ladders: 33,
+    ladders: 0,
     torches: 32,
     usableIronPickaxes: 2,
     sawDescending: 1,

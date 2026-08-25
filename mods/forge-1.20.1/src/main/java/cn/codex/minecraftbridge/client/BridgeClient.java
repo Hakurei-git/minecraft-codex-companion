@@ -77,13 +77,22 @@ public final class BridgeClient {
     }
 
     public void onLogin() {
+        // A world session is a separate bridge lifetime.  In particular, an
+        // asynchronous connection attempt from the previous world must not be
+        // allowed to keep connectingGeneration occupied or install its socket
+        // after the player has re-entered a world.
+        configurationGeneration++;
+        connectingGeneration = -1;
         sessionActive = true;
-        reconnectAfterTick = 0;
+        reconnectAfterTick = ticks;
         actor.onLogin();
     }
 
     public void onLogout() {
         sessionActive = false;
+        configurationGeneration++;
+        connectingGeneration = -1;
+        reconnectAfterTick = ticks;
         actor.onLogout();
         BridgeChannel current = socket;
         socket = null;
@@ -418,6 +427,14 @@ public final class BridgeClient {
 
     int pendingChatCount() {
         return chatOutbox.size();
+    }
+
+    long connectionGenerationForFixture() {
+        return configurationGeneration;
+    }
+
+    long connectingGenerationForFixture() {
+        return connectingGeneration;
     }
 
     @FunctionalInterface

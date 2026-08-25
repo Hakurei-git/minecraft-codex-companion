@@ -25,6 +25,19 @@ final class GatherNavigationPolicy {
         return dx != 0 || dz != 0 || dy != 0;
     }
 
+    static boolean canInteractWithTarget(
+        boolean withinReach,
+        boolean hasLineOfSight,
+        boolean naturalTreeCluster,
+        boolean clusterReached
+    ) {
+        // Once one log in a scanner-verified natural tree has been reached,
+        // neighbouring trunk logs may be hidden only by that tree's own logs
+        // or canopy. Keep the physical reach requirement, but do not abandon
+        // the rest of the same tree merely because a ray clips its foliage.
+        return withinReach && (hasLineOfSight || naturalTreeCluster && clusterReached);
+    }
+
     static double blockTouchDistance(
         double pointX,
         double pointY,

@@ -53,6 +53,15 @@ final class DragonActionPolicy {
         return collisionBelow && !feetInFluid;
     }
 
+    static boolean supportedLandingComplete(
+        boolean collisionBelow,
+        boolean feetInFluid,
+        boolean flying,
+        boolean onGround
+    ) {
+        return shouldCommitGroundContact(collisionBelow, feetInFluid) && !flying && onGround;
+    }
+
     static Decision command(boolean desiredStateObserved, int stableTicks, int elapsedTicks) {
         if (desiredStateObserved && stableTicks >= COMMAND_STABLE_TICKS) return Decision.COMPLETE;
         if (elapsedTicks >= COMMAND_TIMEOUT_TICKS) return Decision.TIMED_OUT;

@@ -1,7 +1,10 @@
 package cn.codex.minecraftbridge.forge;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import org.junit.jupiter.api.Test;
+
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -19,30 +22,43 @@ final class DeepMiningLiveFixtureTest {
         assertTrue(DeepMiningLiveFixture.INITIAL_COAL_COUNT * 4
             >= DeepMiningPolicy.REQUIRED_TORCHES * 2);
         assertTrue(DeepMiningLiveFixture.BALLAST_STACK_COUNT >= 2);
+        Set<BlockPos> ores = Set.of(
+            DeepMiningLiveFixture.oreStand(origin, 0),
+            DeepMiningLiveFixture.oreStand(origin, 1),
+            DeepMiningLiveFixture.oreStand(origin, 2)
+        );
+        Set<BlockPos> sealed = DeepMiningLiveFixture.sealedUndergroundPositions(ores, origin.getY());
+        for (int index = 0; index < 3; index++) {
+            BlockPos ore = DeepMiningLiveFixture.oreStand(origin, index);
+            for (Direction direction : Direction.values()) {
+                assertTrue(sealed.contains(ore.relative(direction)));
+            }
+        }
     }
 
     @Test
     void acceptanceRequiresSuppliesMovementMiningAndPhysicalDelivery() {
         assertTrue(DeepMiningLiveFixture.acceptanceComplete(
-            32, 32, 2,
+            0, 32, 2,
+            true, true,
+            4, 8, 1, 20, 3, 1,
+            true, true, 2, 128, true, 0
+        ));
+        assertEquals(0, DeepMiningLiveFixture.fixtureRequiredLadders());
+        assertFalse(DeepMiningLiveFixture.acceptanceComplete(
+            0, 31, 2,
             true, true,
             4, 8, 1, 20, 3, 1,
             true, true, 2, 128, true, 0
         ));
         assertFalse(DeepMiningLiveFixture.acceptanceComplete(
-            31, 32, 2,
-            true, true,
-            4, 8, 1, 20, 3, 1,
-            true, true, 2, 128, true, 0
-        ));
-        assertFalse(DeepMiningLiveFixture.acceptanceComplete(
-            32, 32, 2,
+            0, 32, 2,
             true, true,
             4, 8, 1, 20, 3, 0,
             false, true, 2, 128, true, 0
         ));
         assertFalse(DeepMiningLiveFixture.acceptanceComplete(
-            32, 32, 2,
+            0, 32, 2,
             true, true,
             4, 8, 1, 20, 3, 1,
             true, true, 1, 64, false, 0

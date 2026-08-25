@@ -16,7 +16,7 @@ export type DeterministicChatAction =
       operation: "task";
       spec: TaskSpec;
       reply: string;
-      context?: "build-selection";
+      context?: "build-selection" | "explicit-food";
       replaceConflictingDelivery?: boolean;
     }
   | { operation: "resume-build"; reply: string }
@@ -719,6 +719,7 @@ export function parseDeterministicChatAction(message: string, sender: string, co
         note: message.slice(0, 500),
       },
       reply: itemId ? `好，我现在把${foodLabel}吃掉。` : "好，我现在吃点东西。",
+      context: "explicit-food",
     };
   }
   if (!/腐肉/u.test(normalized)
@@ -781,6 +782,7 @@ export function parseDeterministicChatAction(message: string, sender: string, co
       reply: source === "hunt"
         ? `好，我去安全猎取 ${count} 份食物${destinationReply}。`
         : `好，我先检查已有口粮，再去寻找 ${count} 份食物${destinationReply}。`,
+      context: "explicit-food",
     };
   }
   const walkOnly = (normalized.match(WALK_ONLY_HINT)?.length ?? 0) > 0;

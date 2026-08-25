@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -363,7 +364,7 @@ final class DeepMiningLiveFixture {
         boolean sawStoneDropLedger,
         int errors
     ) {
-        return ladders >= DeepMiningPolicy.REQUIRED_LADDERS
+        return ladders >= fixtureRequiredLadders()
             && torches >= DeepMiningPolicy.REQUIRED_TORCHES
             && usableIronPickaxes >= DeepMiningPolicy.REQUIRED_IRON_PICKAXES
             && sawDescending && sawBranching
@@ -378,6 +379,10 @@ final class DeepMiningLiveFixture {
             && discardedStoneItems >= 128
             && sawStoneDropLedger
             && errors == 0;
+    }
+
+    static int fixtureRequiredLadders() {
+        return DeepMiningPolicy.requiredLadders("minecraft:diamond", ENTRY_Y);
     }
 
     private static void cleanup(ServerPlayer player, CodexNpcEntity npc, boolean report) {
@@ -514,11 +519,30 @@ final class DeepMiningLiveFixture {
                 : Blocks.DEEPSLATE.defaultBlockState());
             desired.put(stand.above(), Blocks.DEEPSLATE.defaultBlockState());
         }
+        // Seal every below-entry work block from natural cave air. Without
+        // this fixture-owned shell, an ore block can begin exposed to a cave
+        // and the ordinary visible-resource scan completes before the tested
+        // staircase/branch lifecycle reaches its restart checkpoint.
+        for (BlockPos position : sealedUndergroundPositions(desired.keySet(), origin.getY())) {
+            desired.putIfAbsent(position, Blocks.DEEPSLATE.defaultBlockState());
+        }
         return new Site(
             origin.immutable(),
             Collections.unmodifiableMap(new LinkedHashMap<>(desired)),
             Bounds.of(desired.keySet())
         );
+    }
+
+    static Set<BlockPos> sealedUndergroundPositions(Set<BlockPos> workPositions, int entryY) {
+        LinkedHashSet<BlockPos> sealed = new LinkedHashSet<>();
+        for (BlockPos position : workPositions) sealed.add(position.immutable());
+        for (BlockPos position : List.copyOf(sealed)) {
+            if (position.getY() >= entryY) continue;
+            for (Direction direction : Direction.values()) {
+                sealed.add(position.relative(direction).immutable());
+            }
+        }
+        return Collections.unmodifiableSet(sealed);
     }
 
     static BlockPos oreStand(BlockPos origin, int oreIndex) {

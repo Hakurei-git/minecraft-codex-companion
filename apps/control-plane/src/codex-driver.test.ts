@@ -537,6 +537,38 @@ describe("CodexDriver", () => {
     expect(fake.started.plannerPrompts).toHaveLength(1);
   });
 
+  it("accepts the legacy top-level task alias from a smart Codex planner", async () => {
+    const { service, fake, driver } = await createHarness("mc-codex-smart-task-alias-");
+    await configureChat(service, { actionMode: "smart", tokenBudget: 512 });
+    fake.started.plannerDecision = {
+      type: "task",
+      reply: "我去采集石头。",
+      summary: "gather stone",
+      task: {
+        kind: "gather",
+        itemId: "minecraft:cobblestone",
+        count: 3,
+        requestedBy: "PlayerOne",
+      },
+    };
+
+    const request = await driver.enqueue({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "请规划一个三块圆石的补给任务",
+    });
+    const finished = await waitForRequest(driver, request.id);
+
+    expect(finished.status).toBe("succeeded");
+    expect(service.listTasks()).toContainEqual(expect.objectContaining({
+      spec: expect.objectContaining({
+        kind: "gather",
+        itemId: "minecraft:cobblestone",
+        count: 3,
+      }),
+    }));
+  });
+
   it("documents the common craft, meat, building, and resume mappings in each smart planner turn", async () => {
     const { service, fake, driver } = await createHarness("mc-codex-smart-catalog-");
     await configureChat(service, { actionMode: "smart", tokenBudget: 512 });
@@ -1051,6 +1083,29 @@ describe("CodexDriver", () => {
     expect(fake.started.prompts).toHaveLength(0);
   });
 
+  it("reuses one active build goal for synonymous shelter prompts", async () => {
+    const { service, driver } = await createHarness("mc-codex-build-goal-dedup-");
+    await configureChat(service, { target: "antigravity-mcp" });
+
+    const first = await driver.handleImmediateInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "建造房子吧",
+    });
+    const second = await driver.handleImmediateInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "你来建造",
+    });
+
+    expect(first.handled).toBe(true);
+    expect(second.handled).toBe(true);
+    expect(service.listGoals()).toHaveLength(1);
+    expect(service.listTasks().filter((task) => (
+      task.spec.kind === "macro" && task.spec.skillId === "build.basic-shelter"
+    ))).toHaveLength(1);
+  });
+
   it("runs the exact food prompt immediately even when Antigravity is selected", async () => {
     const { service, fake, driver } = await createHarness("mc-codex-provision-food-chat-");
     await configureChat(service, { target: "antigravity-mcp" });
@@ -1077,6 +1132,44 @@ describe("CodexDriver", () => {
       }),
     }));
     expect(fake.started.prompts).toHaveLength(0);
+  });
+
+  it("preserves explicit eat and default-eight food contracts in Smart Antigravity mode", async () => {
+    const { service, fake, driver } = await createHarness("mc-codex-smart-food-contract-");
+    await configureChat(service, { target: "antigravity-mcp", actionMode: "smart" });
+
+    const eat = await driver.handleImmediateInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "把3个腐肉吃掉",
+    });
+    const provision = await driver.handleImmediateInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "给我找些食物",
+    });
+
+    expect(eat).toMatchObject({ handled: true, request: { status: "succeeded" } });
+    expect(provision).toMatchObject({ handled: true, request: { status: "succeeded" } });
+    expect(service.listTasks()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          kind: "eat",
+          itemId: "minecraft:rotten_flesh",
+          count: 3,
+        }),
+      }),
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          kind: "provision-food",
+          count: 8,
+          source: "auto",
+          destination: "player",
+          player: "PlayerOne",
+        }),
+      }),
+    ]));
+    expect(fake.started.plannerPrompts).toHaveLength(0);
   });
 
   it("keeps the animal-pen build and isolates only the ranch step for armed Minecraft T chat", async () => {

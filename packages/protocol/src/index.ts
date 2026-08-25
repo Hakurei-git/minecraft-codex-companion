@@ -461,7 +461,14 @@ const taskBase = {
 export const taskSpecSchema = z.discriminatedUnion("kind", [
   z.object({ ...taskBase, kind: z.literal("follow"), player: playerReferenceSchema, distance: z.number().min(1).max(16).default(3) }),
   z.object({ ...taskBase, kind: z.literal("guard"), player: playerReferenceSchema, radius: z.number().min(2).max(64).default(12) }),
-  z.object({ ...taskBase, kind: z.literal("move"), target: vec3Schema }),
+  z.object({
+    ...taskBase,
+    kind: z.literal("move"),
+    target: vec3Schema,
+    // Bound by the control plane when the task is accepted.  The Forge NPC
+    // pauses instead of reinterpreting coordinates after a portal transfer.
+    dimension: z.string().trim().min(1).max(128).optional(),
+  }),
   z.object({
     ...taskBase,
     kind: z.literal("gather"),

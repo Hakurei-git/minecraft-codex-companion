@@ -218,6 +218,7 @@ public final class CodexNetwork {
         switch (message.type) {
             case "ensure" -> NpcManager.ensure(player);
             case "snapshot" -> {
+                if (npc == null) npc = NpcManager.ensure(player);
                 if (npc != null) sendSnapshot(player, npc);
             }
             case "run-task" -> {
@@ -228,6 +229,7 @@ public final class CodexNetwork {
                 if (npc != null) npc.tasks().cancel(payload.get("taskId").getAsString(), payload.get("reason").getAsString());
             }
             case "stop" -> {
+                if (npc == null) npc = NpcManager.ensure(player);
                 if (npc != null) npc.tasks().emergencyStop("紧急停止");
             }
             case "speak" -> sendSpeech(
@@ -237,7 +239,8 @@ public final class CodexNetwork {
             );
             case "live-fixture" -> runLiveFixture(player, npc, payload);
             case "recall" -> {
-                npc = npc == null ? NpcManager.ensure(player) : NpcManager.recall(player, npc);
+                if (npc == null) npc = NpcManager.ensure(player);
+                if (npc != null) npc = NpcManager.recall(player, npc);
             }
             case "follow" -> {
                 if (npc == null) npc = NpcManager.ensure(player);

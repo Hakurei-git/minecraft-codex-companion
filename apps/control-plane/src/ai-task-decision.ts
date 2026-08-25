@@ -293,6 +293,12 @@ async function tryCommitViaAgentGoal(
       proposedTaskKind: proposed.kind,
       ...(proposed.kind === "macro" ? { proposedSkillId: proposed.skillId } : {}),
       ...("itemId" in proposed && typeof proposed.itemId === "string" ? { proposedItemId: proposed.itemId } : {}),
+      ...("materialPreference" in proposed && proposed.materialPreference
+        ? { buildMaterialPreference: proposed.materialPreference }
+        : {}),
+      ...(proposed.kind === "macro" && proposed.materialMode
+        ? { buildMaterialMode: proposed.materialMode }
+        : {}),
     },
   };
   const goal = await control.submitGoal(context.companionId, spec, owner);

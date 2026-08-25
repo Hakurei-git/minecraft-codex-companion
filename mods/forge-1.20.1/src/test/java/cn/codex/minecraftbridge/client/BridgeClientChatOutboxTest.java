@@ -45,6 +45,21 @@ final class BridgeClientChatOutboxTest {
         assertEquals(64, client.config().observeRadius);
     }
 
+    @Test
+    void enteringAndLeavingWorldsInvalidateEveryPreviousConnectionAttempt() {
+        BridgeClient client = client();
+
+        client.onLogin();
+        long firstWorld = client.connectionGenerationForFixture();
+        client.onLogout();
+        long loggedOut = client.connectionGenerationForFixture();
+        client.onLogin();
+
+        assertEquals(firstWorld + 1, loggedOut);
+        assertEquals(loggedOut + 1, client.connectionGenerationForFixture());
+        assertEquals(-1, client.connectingGenerationForFixture());
+    }
+
     private static BridgeClient client() {
         return new BridgeClient(new BridgeConfig(), (progress, result, config) -> new CompanionActor() {
             @Override

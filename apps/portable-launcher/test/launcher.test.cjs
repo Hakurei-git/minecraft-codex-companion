@@ -32,6 +32,7 @@ const {
   resolveAntigravityPermissionConfigPath,
   recordedServiceIsManaged,
   saveConfig,
+  selectedInstallTargetIsConnected,
   splitArguments,
   validateCompanionName,
   validateNpcSkin,
@@ -308,6 +309,24 @@ test("Minecraft readiness requires the packaged bridge version and a real T deli
     },
   });
   assert.equal(staleNeoforge.connected, false);
+
+  const mixedRuntime = {
+    minecraftBridge: {
+      bridgeVersions: ["0.2.3", "0.1.0"],
+      connections: [
+        connection,
+        {
+          ...connection,
+          companionId: "codex-neoforge",
+          backend: "neoforge-1.21.1",
+          bridgeVersion: "0.1.0",
+        },
+      ],
+    },
+  };
+  assert.equal(selectedInstallTargetIsConnected(mixedRuntime, "forge"), true);
+  assert.equal(selectedInstallTargetIsConnected(mixedRuntime, "neoforge"), true);
+  assert.equal(selectedInstallTargetIsConnected({ minecraftBridge: { connections: [] } }, "forge"), false);
 });
 
 test("installation identity persists while health exposes only a token fingerprint", async (t) => {

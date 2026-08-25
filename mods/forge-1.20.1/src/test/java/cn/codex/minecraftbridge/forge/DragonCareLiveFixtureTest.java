@@ -3,6 +3,8 @@ package cn.codex.minecraftbridge.forge;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DragonCareLiveFixtureTest {
     @Test
@@ -42,5 +44,19 @@ class DragonCareLiveFixtureTest {
                 "", "minecraft:overworld", "minecraft:overworld", "minecraft:overworld"
             )
         );
+    }
+
+    @Test
+    void fixtureQuiescesOnlyItsOwnAutonomousWorkBetweenStages() {
+        assertTrue(DragonCareLiveFixture.shouldQuiesceForStage(true, true, ""));
+        assertTrue(DragonCareLiveFixture.shouldQuiesceForStage(
+            true, false, "local:auto-food:test"
+        ));
+        assertFalse(DragonCareLiveFixture.shouldQuiesceForStage(
+            true, false, "remote-task"
+        ));
+        assertFalse(DragonCareLiveFixture.shouldQuiesceForStage(
+            false, true, "local:auto-food:test"
+        ));
     }
 }

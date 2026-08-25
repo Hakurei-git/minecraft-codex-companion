@@ -7,13 +7,17 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { ChatMessage, ChatSettings } from "@mc/protocol";
+import { ControlError } from "./errors.js";
 import { redactSensitiveText } from "./skill-security.js";
 
 const execFile = promisify(execFileCallback);
 const SESSION_VERSION = 1;
 const AGENT_API_TIMEOUT_MS = 15_000;
 const CONNECT_MESSAGE_TIMEOUT_SECONDS = 15;
-const CONVERSATION_IDLE_TIMEOUT_SECONDS = 60;
+// Keep one bad Antigravity turn from occupying the fixed-conversation queue
+// long enough to swallow the player's following T messages. The recovery wait
+// below adds another bounded ten seconds before the turn is released.
+const CONVERSATION_IDLE_TIMEOUT_SECONDS = 20;
 const RECOVERY_IDLE_TIMEOUT_SECONDS = 10;
 const DEFAULT_LOCATION_FAILURE_BACKOFF_MS = 30 * 1_000;
 // Antigravity can keep its MCP loader in-flight while its provider caches are
@@ -150,6 +154,8 @@ export interface AntigravityAgentBridgeStatus {
   conversationId: string | null;
   projectId: string | null;
   conversationTitle: string | null;
+  busy?: boolean;
+  queuedTurns?: number;
   message: string;
 }
 
@@ -526,6 +532,8 @@ export class AntigravityAgentBridge {
   readonly #locationFailureBackoffMs: number;
   readonly #now: () => number;
   #queue: Promise<void> = Promise.resolve();
+  #queueGeneration = 0;
+  #pendingTurns = 0;
   #automaticRetryBlockedUntil = 0;
   #automaticRetryBlockCode: AntigravityAutoTriggerError["code"] | null = null;
   #readyMcpConfigFingerprint: string | null = null;
@@ -595,7 +603,16 @@ export class AntigravityAgentBridge {
     settings: ChatSettings["persona"] | AntigravityTurnSettings,
     context: AntigravityTriggerContext = {},
   ): Promise<void> {
+    const queueGeneration = this.#queueGeneration;
+    this.#pendingTurns += 1;
     const execute = async () => {
+      if (queueGeneration !== this.#queueGeneration) {
+        throw new AntigravityAutoTriggerError(
+          "本条消息已被手动恢复操作取消；请重新发送需要执行的内容。",
+          "TRIGGER_FAILED",
+          true,
+        );
+      }
       const now = this.#now();
       if (now < this.#automaticRetryBlockedUntil) {
         const remainingSeconds = Math.max(1, Math.ceil((this.#automaticRetryBlockedUntil - now) / 1_000));
@@ -611,9 +628,23 @@ export class AntigravityAgentBridge {
         const session = await this.#resolveSession(endpoint, false);
         const prompt = promptFor(message, settings, context);
         const mcpConfigFingerprint = await this.#ensureCurrentMcpReady(endpoint);
+        if (queueGeneration !== this.#queueGeneration) {
+          throw new AntigravityAutoTriggerError(
+            "本条消息已被手动恢复操作取消；请重新发送需要执行的内容。",
+            "TRIGGER_FAILED",
+            true,
+          );
+        }
         // The local sender confirms acceptance before the model/tool turn finishes.
         // Waiting on both sides prevents overlapping turns in the one bound chat.
         await this.#waitForConversationIdle(endpoint, session.conversationId);
+        if (queueGeneration !== this.#queueGeneration) {
+          throw new AntigravityAutoTriggerError(
+            "本条消息已被手动恢复操作取消；请重新发送需要执行的内容。",
+            "TRIGGER_FAILED",
+            true,
+          );
+        }
         // MCP reloads and project repairs must never replace the user's bound
         // conversation. Rotation is reserved exclusively for the configured local
         // conversation-size limit.
@@ -632,6 +663,13 @@ export class AntigravityAgentBridge {
           try {
             await this.#sendMessage(endpoint, session, prompt);
             await this.#waitForConversationIdle(endpoint, session.conversationId);
+            if (queueGeneration !== this.#queueGeneration) {
+              throw new AntigravityAutoTriggerError(
+                "本条消息已被手动恢复操作取消；请重新发送需要执行的内容。",
+                "TRIGGER_FAILED",
+                true,
+              );
+            }
             await this.#saveSessionUsage(session, prompt.length, mcpConfigFingerprint);
           } catch (caught) {
             if (!isConversationCapacityFailure(caught)) throw caught;
@@ -664,8 +702,11 @@ export class AntigravityAgentBridge {
       }
     };
     const next = this.#queue.then(execute, execute);
-    this.#queue = next.catch(() => undefined);
-    return next;
+    const tracked = next.finally(() => {
+      this.#pendingTurns = Math.max(0, this.#pendingTurns - 1);
+    });
+    this.#queue = tracked.catch(() => undefined);
+    return tracked;
   }
 
   #conversationLimitReached(session: StoredSession, promptCharacters: number): boolean {
@@ -789,10 +830,19 @@ export class AntigravityAgentBridge {
   async bindConversationByTitle(titleInput: string): Promise<AntigravityAgentBridgeStatus> {
     const title = titleInput.trim();
     if (!title || title.length > 240 || /[\x00-\x1f\x7f]/u.test(title)) {
-      throw new Error("反重力会话标题必须是 1 到 240 个可见字符");
+      throw new ControlError({
+        code: "ANTIGRAVITY_CONVERSATION_TITLE_INVALID",
+        message: "反重力会话标题必须是 1 到 240 个可见字符",
+        statusCode: 400,
+      });
     }
     if (title !== this.#requiredConversationTitle) {
-      throw new Error(`只能绑定配置中完整标题等于“${this.#requiredConversationTitle}”的反重力会话`);
+      throw new ControlError({
+        code: "ANTIGRAVITY_CONVERSATION_TITLE_MISMATCH",
+        message: `只能绑定配置中完整标题等于“${this.#requiredConversationTitle}”的反重力会话`,
+        statusCode: 409,
+        suggestedRecovery: `请在反重力中打开并使用完整标题“${this.#requiredConversationTitle}”，或恢复客户端中已保存的标题。`,
+      });
     }
     const endpoint = await this.#endpoint();
     const mcpConfigFingerprint = await this.#ensureCurrentMcpReady(endpoint);
@@ -869,6 +919,11 @@ export class AntigravityAgentBridge {
     // A manual recovery is an explicit request to try again immediately; it
     // must not be held behind the automatic MCP-loading backoff.
     this.#clearMcpLoadingBackoff();
+    // Detach future T messages from the old promise chain immediately. Any
+    // queued turns from the previous generation fail explicitly when they
+    // eventually wake; the active turn is stopped through Antigravity below.
+    this.#queueGeneration += 1;
+    this.#queue = Promise.resolve();
     const endpoint = await this.#endpoint();
     const session = await this.#resolveSession(endpoint, false);
     await this.#forceStopConversation(endpoint, session.conversationId);
@@ -913,13 +968,18 @@ export class AntigravityAgentBridge {
       const now = this.#now();
       const blocked = now < this.#automaticRetryBlockedUntil;
       const remainingSeconds = Math.max(1, Math.ceil((this.#automaticRetryBlockedUntil - now) / 1_000));
+      const queuedTurns = this.#pendingTurns;
       return {
         available: true,
         connected: true,
         conversationId: session.conversationId,
         projectId: session.projectId,
         conversationTitle: session.conversationTitle ?? null,
-        message: blocked && this.#automaticRetryBlockCode === "LOCATION_UNSUPPORTED"
+        busy: queuedTurns > 0,
+        queuedTurns,
+        message: queuedTurns > 0
+          ? `反重力本地会话已连接；正在处理 ${queuedTurns} 条 Minecraft 消息`
+          : blocked && this.#automaticRetryBlockCode === "LOCATION_UNSUPPORTED"
           ? `反重力本地会话已连接；上游暂时不可用，${remainingSeconds} 秒后下一条消息会自动重试，也可在 T 中输入“恢复反重力”立即重连`
           : "反重力自动触发已就绪",
       };

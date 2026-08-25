@@ -50,6 +50,9 @@ public final class LocalPlayerActor implements CompanionActor {
     }
 
     private String clientUiState(Minecraft minecraft) {
+        // DeathScreen can be installed a tick after the local player has
+        // already died (and can briefly be null during screen transitions).
+        if (minecraft.player != null && minecraft.player.isDeadOrDying()) return "death";
         if (minecraft.screen == null) return "gameplay";
         if (minecraft.screen instanceof ChatScreen) return "chat";
         if (minecraft.screen instanceof PauseScreen) return "pause";

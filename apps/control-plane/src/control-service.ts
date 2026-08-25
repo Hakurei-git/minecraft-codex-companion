@@ -222,6 +222,26 @@ function sameBuildRequest(left: TaskSpec, right: TaskSpec): boolean {
   return buildRequestFingerprint(left) === buildRequestFingerprint(right);
 }
 
+function activeBuildGoalFingerprint(spec: GoalSpec): string | null {
+  const metadata = spec.metadata as Record<string, unknown>;
+  const skillId = [metadata.deterministicSkillId, metadata.proposedSkillId]
+    .find((value): value is string => typeof value === "string" && value.startsWith("build."));
+  const hintedBuild = spec.taskHints.find((hint) => isBuildTask(hint));
+  if (!skillId && !hintedBuild) return null;
+  const materialPreference = metadata.buildMaterialPreference
+    ?? (hintedBuild && "materialPreference" in hintedBuild ? hintedBuild.materialPreference : undefined);
+  const materialMode = metadata.buildMaterialMode
+    ?? (hintedBuild?.kind === "macro" ? hintedBuild.materialMode : undefined);
+  return JSON.stringify(canonicalValue({
+    requestedBy: normalizedPlayerName(spec.requestedBy),
+    source: spec.source,
+    skillId: skillId ?? (hintedBuild?.kind === "macro" ? hintedBuild.skillId : undefined),
+    planId: hintedBuild?.kind === "build" ? hintedBuild.planId : undefined,
+    materialPreference,
+    materialMode,
+  }));
+}
+
 function recentlyFinished(task: TaskRecord, now = Date.now()): boolean {
   const reference = Date.parse(task.finishedAt ?? task.startedAt ?? task.createdAt);
   return Number.isFinite(reference) && now - reference <= BUILD_FAILURE_AUTO_RESUME_WINDOW_MS;
@@ -540,6 +560,23 @@ export class ControlService {
   submitGoal(companionId: string, spec: GoalSpec, owner = "agent"): GoalRecord {
     const runtime = this.#requireCompanion(companionId);
     const parsedSpec = goalSpecSchema.parse(spec);
+    const buildFingerprint = activeBuildGoalFingerprint(parsedSpec);
+    if (buildFingerprint) {
+      const existing = this.#agentState.goals
+        .filter((candidate) => candidate.companionId === companionId)
+        .filter((candidate) => ["planning", "running", "paused"].includes(candidate.status))
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .find((candidate) => activeBuildGoalFingerprint(candidate.spec) === buildFingerprint);
+      if (existing) {
+        this.events.publish({
+          type: "system",
+          companionId,
+          message: `已复用同一建造目标：${existing.spec.title}`,
+          data: { goalId: existing.id, owner, duplicateGoalSuppressed: true },
+        });
+        return structuredClone(existing);
+      }
+    }
     const now = new Date().toISOString();
     const goal = goalRecordSchema.parse({
       id: randomUUID(),
@@ -1278,6 +1315,8 @@ export class ControlService {
           ? this.#prepareBuildSpec(runtime, spec)
         : spec.kind === "provision-food"
           ? this.#prepareProvisionFoodSpec(runtime, spec)
+        : spec.kind === "move"
+          ? this.#prepareMoveSpec(runtime, spec)
         : spec;
     if (isBuildTask(resolvedSpec) && options.replaceConflictingDelivery) {
       for (const candidate of [...this.#tasks.values()]) {
@@ -1512,7 +1551,8 @@ export class ControlService {
   ): Promise<Companion> {
     this.#assertAiDecisionMutationAllowed(companionId, options.aiDecisionInteractionId);
     const runtime = this.#requireCompanion(companionId);
-    if (!runtime.backend.control) {
+    const companion = runtime.backend.describe();
+    if (!runtime.backend.control || companion.embodiment === "remote-player") {
       throw new ControlError({ code: "NPC_CONTROL_UNSUPPORTED", message: "该角色不是可召回的游戏内 NPC", statusCode: 422 });
     }
     await runtime.backend.control(action);
@@ -1615,12 +1655,24 @@ export class ControlService {
         task.finishedAt = new Date().toISOString();
       }
     }
-    await Promise.all([...this.#companions.values()].map(async (runtime) => {
+    const stopResults = await Promise.allSettled([...this.#companions.values()].map(async (runtime) => {
       runtime.queue = [];
       runtime.activeTaskId = null;
       runtime.inFlightTaskIds.clear();
+      if (!runtime.backend.describe().connected) return;
       await runtime.backend.stop(disconnect);
     }));
+    stopResults.forEach((result, index) => {
+      if (result.status !== "rejected") return;
+      const runtime = [...this.#companions.values()][index];
+      this.events.publish({
+        type: "warning",
+        companionId: runtime?.backend.id ?? null,
+        message: `急停命令未被一个已断开的历史实例确认：${redactSensitiveText(
+          result.reason instanceof Error ? result.reason.message : String(result.reason),
+        )}`,
+      });
+    });
     this.#persistTaskState();
     this.events.publish({ type: "warning", companionId: null, message: disconnect ? "所有角色已急停并断开" : "所有角色已急停" });
   }
@@ -2145,7 +2197,17 @@ export class ControlService {
   }
 
   #prepareMacroStepTask(runtime: RuntimeCompanion, task: TaskSpec): TaskSpec {
-    return task.kind === "farm" ? this.#prepareFarmSpec(runtime, task) : task;
+    if (task.kind === "farm") return this.#prepareFarmSpec(runtime, task);
+    if (task.kind === "move") return this.#prepareMoveSpec(runtime, task);
+    return task;
+  }
+
+  #prepareMoveSpec(
+    runtime: RuntimeCompanion,
+    spec: Extract<TaskSpec, { kind: "move" }>,
+  ): Extract<TaskSpec, { kind: "move" }> {
+    if (spec.dimension) return spec;
+    return { ...spec, dimension: runtime.backend.snapshot().dimension };
   }
 
   #isObservedCropFarmland(facility: FacilityRecord): boolean {

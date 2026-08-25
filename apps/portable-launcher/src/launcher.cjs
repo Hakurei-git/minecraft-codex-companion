@@ -939,6 +939,13 @@ async function detectSourceLoader(config) {
 async function installOrUpdate(config, payloadRoot, stateDirectory) {
   const paths = assertPayload(payloadRoot);
   const source = await detectSourceLoader(config);
+  const identity = await expectedServiceIdentity(payloadRoot, stateDirectory);
+  const service = await serviceStatus(config.port, identity);
+  if (service.running && service.identityVerified && selectedInstallTargetIsConnected(service, source.loader)) {
+    throw new Error(
+      `所选 HMCL 源实例“${config.sourceVersion}”正在运行并已连接 Companion；请先保存并退出 Minecraft，再安装或更新桥接。`,
+    );
+  }
   if (config.instanceMode === "direct-source") {
     const result = await installDirectSource(config, paths, source, stateDirectory);
     await configureBridge(config, stateDirectory);
@@ -1101,6 +1108,11 @@ function classifyMinecraftBridge(service, requiredVersion = null) {
     lastDeliveredChatAt: latest("lastDeliveredChatAt"),
     lastRoundTripAt: latest("lastRoundTripAt"),
   };
+}
+
+function selectedInstallTargetIsConnected(service, loader) {
+  const definition = loaderDefinition(loader);
+  return classifyMinecraftBridge(service).connectedBackends.includes(definition.backend);
 }
 
 async function serviceStatus(port, expectedIdentity = null) {
@@ -2111,6 +2123,7 @@ module.exports = {
   recordedServiceIsManaged,
   runtimeBridgeHealthy,
   saveConfig,
+  selectedInstallTargetIsConnected,
   splitArguments,
   validateRuntimeConfig,
   validateAntigravityConversationTitle,

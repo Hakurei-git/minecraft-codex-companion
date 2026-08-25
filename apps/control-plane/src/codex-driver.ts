@@ -86,15 +86,23 @@ const AI_TASK_DECISION_OUTPUT_SCHEMA = {
 type MultiAgentDecision = z.infer<typeof multiAgentDecisionSchema>;
 type AiTaskDecision = z.infer<typeof aiTaskDecisionSchema>;
 
+function normalizeTaskDecisionAlias(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "task" || !("task" in record) || "spec" in record) return value;
+  const { task, ...rest } = record;
+  return { ...rest, spec: task };
+}
+
 function parseAiTaskDecisionResponse(response: string): AiTaskDecision {
   const parsed = JSON.parse(response) as unknown;
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "decisionJson" in parsed) {
     const envelope = z.object({ decisionJson: z.string() }).strict().parse(parsed);
-    return aiTaskDecisionSchema.parse(JSON.parse(envelope.decisionJson));
+    return aiTaskDecisionSchema.parse(normalizeTaskDecisionAlias(JSON.parse(envelope.decisionJson)));
   }
   // Provider-aware planning can retry without a remote output schema when a
   // gateway rejects structured output. Preserve that direct-JSON fallback.
-  return aiTaskDecisionSchema.parse(parsed);
+  return aiTaskDecisionSchema.parse(normalizeTaskDecisionAlias(parsed));
 }
 
 const REQUESTER_ARGUMENT_KEYS = new Set([
@@ -1209,6 +1217,12 @@ export class CodexDriver {
         routedFrom: "deterministic-t-chat",
         deterministicTaskKind: action.spec.kind,
         ...(action.spec.kind === "macro" ? { deterministicSkillId: action.spec.skillId } : {}),
+        ...("materialPreference" in action.spec && action.spec.materialPreference
+          ? { buildMaterialPreference: action.spec.materialPreference }
+          : {}),
+        ...(action.spec.kind === "macro" && action.spec.materialMode
+          ? { buildMaterialMode: action.spec.materialMode }
+          : {}),
       },
     };
     const goal = await this.#control.submitGoal(request.companionId, goalSpec, owner);
@@ -1293,7 +1307,14 @@ export class CodexDriver {
     // gameplay decisions. Keep them deterministic even when Smart AI is on:
     // recording a player-built home and resuming a saved checkpoint must not
     // spend a token or wait for a provider persona to answer.
-    return action && ["control", "home-memory", "resume-build", "resume-goal"].includes(action.operation)
+    if (!action) return null;
+    if (["control", "home-memory", "resume-build", "resume-goal"].includes(action.operation)) return action;
+    // Explicit eating and food-provisioning phrases already have a complete,
+    // bounded local contract (exact action/item/count/destination). Preserve
+    // that contract in Smart mode instead of letting a provider rewrite
+    // "eat rotten flesh" into a hunting expedition or change default 8 to 16.
+    return action.operation === "task"
+      && action.context === "explicit-food"
       ? action
       : null;
   }

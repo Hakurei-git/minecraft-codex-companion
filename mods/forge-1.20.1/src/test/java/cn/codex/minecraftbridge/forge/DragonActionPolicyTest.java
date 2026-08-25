@@ -53,6 +53,9 @@ final class DragonActionPolicyTest {
         assertTrue(DragonActionPolicy.shouldCommitGroundContact(true, false));
         assertFalse(DragonActionPolicy.shouldCommitGroundContact(false, false));
         assertFalse(DragonActionPolicy.shouldCommitGroundContact(true, true));
+        assertTrue(DragonActionPolicy.supportedLandingComplete(true, false, false, true));
+        assertFalse(DragonActionPolicy.supportedLandingComplete(true, false, true, true));
+        assertFalse(DragonActionPolicy.supportedLandingComplete(true, false, false, false));
     }
 
     @Test

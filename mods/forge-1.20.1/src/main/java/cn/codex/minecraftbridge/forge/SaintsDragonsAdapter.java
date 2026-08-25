@@ -97,6 +97,15 @@ final class SaintsDragonsAdapter extends ReflectiveDragonAdapter {
     }
 
     @Override
+    public void commitSupportedLanding(Entity dragon, ServerPlayer owner) {
+        // RideableFlyingDragon exposes one authoritative lifecycle transition.
+        // It clears flying/takeoff/landing/hovering, resets throttle and switches
+        // navigation in one operation; isolated generic setters can be rejected
+        // while the dragon still has co-riders.
+        invokeVoid(dragon, "markLandedNow");
+    }
+
+    @Override
     public boolean flyTo(Entity dragon, Vec3 target, ServerPlayer owner) {
         if (!isOwnedBy(dragon, owner) || dragon.level() != owner.level()) return false;
         ensureFlightState(dragon);

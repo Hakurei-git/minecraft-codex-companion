@@ -136,6 +136,8 @@ public final class NpcTaskEngine {
     private static final int HOME_COMPOUND_MAX_BLOCK_PROBES = 131_072;
     private static final int HOME_COMPOUND_MAX_HORIZONTAL_COORDINATE = 30_000_000;
     private static final String HOME_COMPOUND_LOCK_KEY = "_codexHomeCompoundPlacement";
+    private static final String OWNER_DEATH_PAUSE_REASON = "等待玩家重生";
+    private static final String TASK_DIMENSION_PAUSE_REASON = "任务属于其他维度，等待返回后继续";
     private static final double DRAGON_MOUNTED_FLIGHT_STEP = 0.55D;
     private static final TicketType<UUID> TASK_CHUNK_TICKET = TicketType.create(
         "minecraft_codex_task",
@@ -274,6 +276,7 @@ public final class NpcTaskEngine {
     }
 
     public void assistOwnerAgainst(ServerPlayer owner, LivingEntity target) {
+        if (DragonCareLiveFixture.suppressesAutonomousWork(npc)) return;
         if (!npc.isOwnedBy(owner) || owner.level() != npc.level() || target.level() != npc.level()) return;
         if (!isValidAssistTarget(owner, target)) return;
         UUID targetId = target.getUUID();
@@ -314,6 +317,14 @@ public final class NpcTaskEngine {
 
     public void start(JsonObject task, JsonObject plan) {
         JsonObject spec = task.getAsJsonObject("spec");
+        String currentDimension = npc.level().dimension().location().toString();
+        String configuredDimension = spec.has("dimension") ? spec.get("dimension").getAsString() : "";
+        String boundDimension = TaskDimensionPolicy.bind(
+            spec.get("kind").getAsString(),
+            configuredDimension,
+            currentDimension
+        );
+        if (!boundDimension.isBlank()) spec.addProperty("dimension", boundDimension);
         Stance resumeStance = npc.stance() == Stance.WORK ? Stance.FOLLOW : npc.stance();
         ActiveWork next = new ActiveWork(task.get("id").getAsString(), spec, plan, resumeStance);
         if ("build".equals(next.kind) && recoverableBuild != null
@@ -381,6 +392,15 @@ public final class NpcTaskEngine {
     }
 
     public void cancel(String taskId, String reason) {
+        if (active != null && TaskCancellationPolicy.isDeepMiningProvisionChild(active.id, taskId)) {
+            ActiveWork localFood = active;
+            active = null;
+            recoverAllTaskFurnaces(localFood, "deep-mining-parent-cancel");
+            suspendLifeInteraction(localFood);
+            npc.cancelManagedEating();
+            npc.getNavigation().stop();
+            npc.setTarget(null);
+        }
         if (active != null && active.id.equals(taskId)) {
             fail(active, reason, "CANCELLED");
             return;
@@ -405,6 +425,11 @@ public final class NpcTaskEngine {
         if (!paused.id.startsWith("local:")) {
             CodexNetwork.sendResult(npc, paused.id, false, reason + recovery.detail(), "CANCELLED");
         }
+        if (active == null && !resumePausedWork()) {
+            Stance resume = paused.resumeStance == Stance.WORK ? Stance.FOLLOW : paused.resumeStance;
+            setStance(resume);
+            npc.setStatus(reason);
+        }
     }
 
     public void emergencyStop(String reason) {
@@ -427,6 +452,7 @@ public final class NpcTaskEngine {
     }
 
     public boolean canStartAutomaticEating() {
+        if (DragonCareLiveFixture.suppressesAutonomousWork(npc)) return false;
         if (assistTarget != null || active != null && "combat".equals(active.kind)) return false;
         if (active != null && "provision-food".equals(active.kind) && active.foodCookingInputId != null) return false;
         if (active != null && isSurvivalReserveProvision(active)) return false;
@@ -445,12 +471,13 @@ public final class NpcTaskEngine {
 
     public int pausedTaskCount() {
         return pausedWorks.size()
-            + (assistTarget != null && active != null ? 1 : 0)
+            + (active != null && (assistTarget != null || !active.pauseReason.isBlank()) ? 1 : 0)
             + (recoverableBuild != null ? 1 : 0);
     }
 
     public String primaryPauseReason() {
         if (assistTarget != null && active != null) return "护主战斗中，原任务稍后继续";
+        if (active != null && !active.pauseReason.isBlank()) return active.pauseReason;
         ActiveWork paused = pausedWorks.peekFirst();
         if (paused != null) return paused.pauseReason;
         return recoverableBuild == null ? "" : recoverableBuild.pauseReason;
@@ -514,8 +541,8 @@ public final class NpcTaskEngine {
         }
         if (active != null) result.add(observableTask(
             active,
-            assistTarget == null ? "active" : "paused",
-            assistTarget == null ? "" : "正在优先保护主人"
+            assistTarget == null && active.pauseReason.isBlank() ? "active" : "paused",
+            assistTarget != null ? "正在优先保护主人" : active.pauseReason
         ));
         for (ActiveWork work : pausedWorks) result.add(observableTask(work, "paused", work.pauseReason));
         if (recoverableBuild != null) {
@@ -644,6 +671,7 @@ public final class NpcTaskEngine {
     }
 
     private void maybeStartAutonomousStorage() {
+        if (DragonCareLiveFixture.suppressesAutonomousWork(npc)) return;
         int occupied = 0;
         for (int slot = 0; slot < CodexNpcEntity.BACKPACK_SIZE; slot++) {
             if (!npc.inventory().getStackInSlot(slot).isEmpty()) occupied++;
@@ -660,6 +688,7 @@ public final class NpcTaskEngine {
     }
 
     private void maybeStartAutonomousFoodReserve() {
+        if (DragonCareLiveFixture.suppressesAutonomousWork(npc)) return;
         if (FoodSurvivalLiveFixture.suppressesAutonomousFoodReserve(npc)) return;
         String activeKind = active == null ? "" : active.kind;
         int reserve = safeProvisioningFoodCount();
@@ -787,6 +816,7 @@ public final class NpcTaskEngine {
             // Re-arm the active NPC's chunk as soon as its owner rejoins so a
             // far-away expedition continues ticking after a world restart.
             maintainTaskChunkTicket(npc.blockPosition());
+            if (pauseForWrongTaskDimension(active)) return;
             active.pauseReason = "";
             npc.setStance(Stance.WORK);
             npc.setStatus("主人上线，继续 " + active.kind + " 任务");
@@ -806,6 +836,8 @@ public final class NpcTaskEngine {
     public void onRecalled() {
         resetFollowTracking();
         if (active != null) {
+            if (pauseForWrongTaskDimension(active)) return;
+            resumeInPlacePause(active, TASK_DIMENSION_PAUSE_REASON, "已返回任务维度，继续执行");
             npc.setStance(Stance.WORK);
             npc.setStatus("召回后继续 " + active.kind + " 任务");
         } else {
@@ -868,6 +900,13 @@ public final class NpcTaskEngine {
             npc.setStatus("等待主人上线");
             return;
         }
+        if (!owner.isAlive() || owner.isDeadOrDying()) {
+            pauseInPlace(active, OWNER_DEATH_PAUSE_REASON, "玩家已死亡，任务暂停并等待重生");
+            npc.getNavigation().stop();
+            npc.setTarget(null);
+            npc.setStatus(OWNER_DEATH_PAUSE_REASON);
+            return;
+        }
         if (!NpcManager.isCanonical(owner, npc)) {
             npc.getNavigation().stop();
             npc.discard();
@@ -882,6 +921,9 @@ public final class NpcTaskEngine {
             }
             return;
         }
+        resumeInPlacePause(active, OWNER_DEATH_PAUSE_REASON, "玩家已重生，任务继续执行");
+        if (pauseForWrongTaskDimension(active)) return;
+        resumeInPlacePause(active, TASK_DIMENSION_PAUSE_REASON, "已返回任务维度，继续执行");
         restoreStatusAfterAutomaticEating();
         if (active != null || assistTarget != null || npc.stance() == Stance.FOLLOW || npc.stance() == Stance.GUARD) {
             maintainTaskChunkTicket(npc.blockPosition());
@@ -1434,6 +1476,43 @@ public final class NpcTaskEngine {
         trackNavigation(work, distance);
         if (work.ticks % 10 == 0) progress(work, 1 - Math.min(1, distance / work.startDistance), "移动中，距离 " + Math.round(distance) + " 格");
         if (work.ticks > 20 * 60 * 5) fail(work, "移动超时", "NAVIGATION_TIMEOUT");
+    }
+
+    private boolean pauseForWrongTaskDimension(ActiveWork work) {
+        if (work == null) return false;
+        String taskDimension = string(work.spec, "dimension", "");
+        String currentDimension = npc.level().dimension().location().toString();
+        if (!TaskDimensionPolicy.shouldPause(work.kind, taskDimension, currentDimension)) return false;
+        pauseInPlace(
+            work,
+            TASK_DIMENSION_PAUSE_REASON,
+            "已跨维度召回；坐标任务暂停，返回 " + taskDimension + " 后继续"
+        );
+        return true;
+    }
+
+    private void pauseInPlace(ActiveWork work, String reason, String message) {
+        if (work == null) return;
+        boolean changed = !reason.equals(work.pauseReason);
+        work.pauseReason = reason;
+        suspendLifeInteraction(work);
+        npc.cancelManagedEating();
+        npc.getNavigation().stop();
+        npc.setTarget(null);
+        npc.setStatus(reason);
+        if (changed && !work.id.startsWith("local:")) {
+            sendProgressUpdate(work, activeProgress(work), message, "paused");
+        }
+    }
+
+    private void resumeInPlacePause(ActiveWork work, String reason, String message) {
+        if (work == null || !reason.equals(work.pauseReason)) return;
+        work.pauseReason = "";
+        npc.setStance(Stance.WORK);
+        npc.setStatus(message);
+        if (!work.id.startsWith("local:")) {
+            sendProgressUpdate(work, activeProgress(work), message, "active");
+        }
     }
 
     private void tickExplore(ActiveWork work) {
@@ -2286,8 +2365,9 @@ public final class NpcTaskEngine {
         BlockPos foot = work.bedPlacementFoot;
         Direction facing = work.bedPlacementFacing;
         BlockPos head = foot.relative(facing);
-        if (isBedPairAt(level, foot, facing)) {
-            complete(work, "已在家附近完成床的制作与放置");
+        NpcHomeStorage.BedPlacement confirmedBed = confirmedBedPairAtFoot(level, foot);
+        if (confirmedBed != null) {
+            completeBedPlacement(work, confirmedBed);
             return;
         }
         if (!level.getBlockState(foot).canBeReplaced() || !level.getBlockState(head).canBeReplaced()) {
@@ -2298,6 +2378,11 @@ public final class NpcTaskEngine {
         if (work.ticks - work.lastActionTick < 8) return;
         int bedSlot = npc.creativeResources() ? -1 : findItemSlot(work.outputItemId == null ? "minecraft:white_bed" : work.outputItemId);
         if (!npc.creativeResources() && bedSlot < 0) {
+            confirmedBed = confirmedBedPairAtFoot(level, foot);
+            if (confirmedBed != null) {
+                completeBedPlacement(work, confirmedBed);
+                return;
+            }
             fail(work, "床已制作但背包中找不到待放置的床", "BED_ITEM_MISSING");
             return;
         }
@@ -2310,23 +2395,39 @@ public final class NpcTaskEngine {
         npc.swing(InteractionHand.MAIN_HAND);
         work.lastActionTick = work.ticks;
         proxy.useItemOn(foot.below(), Direction.UP, bed, bedSlot);
-        if (isBedPairAt(level, foot, facing)) {
-            work.bedPlacementPending = false;
-            complete(work, "已在家附近完成床的制作与放置（" + foot.getX() + ", " + foot.getY() + ", " + foot.getZ() + "）");
+        confirmedBed = confirmedBedPairAtFoot(level, foot);
+        if (confirmedBed != null) {
+            completeBedPlacement(work, confirmedBed);
             return;
         }
         retryBedPlacement(work);
     }
 
-    private boolean isBedPairAt(ServerLevel level, BlockPos foot, Direction facing) {
+    private NpcHomeStorage.BedPlacement confirmedBedPairAtFoot(ServerLevel level, BlockPos foot) {
         BlockState footState = level.getBlockState(foot);
-        BlockState headState = level.getBlockState(foot.relative(facing));
-        return footState.getBlock() instanceof BedBlock
-            && headState.getBlock() == footState.getBlock()
-            && footState.getValue(BedBlock.PART) == BedPart.FOOT
-            && headState.getValue(BedBlock.PART) == BedPart.HEAD
-            && footState.getValue(BedBlock.FACING) == facing
-            && headState.getValue(BedBlock.FACING) == facing;
+        if (!(footState.getBlock() instanceof BedBlock)
+            || footState.getValue(BedBlock.PART) != BedPart.FOOT) return null;
+        Direction actualFacing = footState.getValue(BedBlock.FACING);
+        BlockState headState = level.getBlockState(foot.relative(actualFacing));
+        Direction confirmedFacing = headState.getBlock() instanceof BedBlock
+            ? BedPlacementConfirmationPolicy.confirmedFacing(
+                headState.getBlock() == footState.getBlock(),
+                footState.getValue(BedBlock.PART),
+                headState.getValue(BedBlock.PART),
+                actualFacing,
+                headState.getValue(BedBlock.FACING)
+            )
+            : null;
+        return confirmedFacing == null
+            ? null
+            : new NpcHomeStorage.BedPlacement(foot.immutable(), confirmedFacing);
+    }
+
+    private void completeBedPlacement(ActiveWork work, NpcHomeStorage.BedPlacement placement) {
+        work.bedPlacementPending = false;
+        BlockPos foot = placement.foot();
+        complete(work, "已在家附近完成床的制作与放置（" + foot.getX() + ", " + foot.getY() + ", " + foot.getZ()
+            + "，朝向 " + placement.facing().getName() + "）");
     }
 
     private void retryBedPlacement(ActiveWork work) {
@@ -9707,7 +9808,7 @@ public final class NpcTaskEngine {
                     trackNavigation(work, landingDistance);
                     if (DragonTerrainAvoidancePolicy.shouldRecoverStalledLanding(work.stalledTicks)) {
                         boolean recovered = owner.hasPermissions(2)
-                            && forceDragonGrounded(dragon, work.destination, owner);
+                            && forceDragonGrounded(dragon, work.destination, owner, adapter);
                         if (recovered) {
                             work.dragonLandingCommitted = true;
                             finalizingLanding = true;
@@ -9724,7 +9825,9 @@ public final class NpcTaskEngine {
                     }
                 }
                 else {
-                    work.dragonLandingCommitted = forceDragonGrounded(dragon, work.destination, owner);
+                    work.dragonLandingCommitted = forceDragonGrounded(
+                        dragon, work.destination, owner, adapter
+                    );
                     finalizingLanding = work.dragonLandingCommitted;
                     if (!work.dragonLandingCommitted) {
                         trackNavigation(work, landingDistance);
@@ -9831,7 +9934,12 @@ public final class NpcTaskEngine {
         return new Vec3(landingTarget.x, Math.max(dragon.getY(), approachY), landingTarget.z);
     }
 
-    private boolean forceDragonGrounded(Entity dragon, Vec3 destination, ServerPlayer owner) {
+    private boolean forceDragonGrounded(
+        Entity dragon,
+        Vec3 destination,
+        ServerPlayer owner,
+        DragonAdapter adapter
+    ) {
         if (owner != null && owner.getVehicle() == dragon
             && !DragonAutopilotControl.begin(dragon, owner)) return false;
         if (dragon instanceof Mob mob) mob.getNavigation().stop();
@@ -9876,9 +9984,15 @@ public final class NpcTaskEngine {
             invokeEnumOneArg(stateContext, "setTransportMode", "GROUNDED");
             invokeEnumOneArg(stateContext, "setGroundStance", "IDLE");
         }
+        adapter.commitSupportedLanding(dragon, owner);
         dragon.setOnGround(true);
         if (owner != null) DragonAutopilotControl.sync(dragon, owner);
-        return true;
+        return DragonActionPolicy.supportedLandingComplete(
+            collisionBelow,
+            feetInFluid,
+            adapter.isFlying(dragon),
+            dragon.onGround()
+        );
     }
 
     private Vec3 supportedLandingPosition(Entity dragon, Vec3 destination) {
@@ -10174,7 +10288,12 @@ public final class NpcTaskEngine {
         Vec3 targetCenter = Vec3.atCenterOf(target);
         double effectiveReach = GatherNavigationPolicy.effectiveReach(reach, GATHER_INTERACTION_REACH);
         double interactionDistance = gatherInteractionDistance(target);
-        if (interactionDistance <= effectiveReach && hasGatherLineOfSight(npc.getEyePosition(), target)) {
+        if (GatherNavigationPolicy.canInteractWithTarget(
+            interactionDistance <= effectiveReach,
+            hasGatherLineOfSight(npc.getEyePosition(), target),
+            work.gatherTreeCluster,
+            work.gatherClusterReached
+        )) {
             npc.getNavigation().stop();
             npc.getLookControl().setLookAt(targetCenter);
             work.stalledTicks = 0;
@@ -10229,8 +10348,12 @@ public final class NpcTaskEngine {
                     if (!GatherNavigationPolicy.allowsStandOffset(dx, dy, dz)) continue;
                     BlockPos candidate = target.offset(dx, dy, dz);
                     if (gatherInteractionDistanceFromStand(candidate, target) > effectiveReach) continue;
-                    if (!isSafeGatherStand(candidate)
-                        || !hasGatherLineOfSight(gatherEyePositionFromStand(candidate), target)) continue;
+                    if (!isSafeGatherStand(candidate) || !GatherNavigationPolicy.canInteractWithTarget(
+                        true,
+                        hasGatherLineOfSight(gatherEyePositionFromStand(candidate), target),
+                        work.gatherTreeCluster,
+                        work.gatherClusterReached
+                    )) continue;
                     candidates.add(candidate.immutable());
                 }
             }
@@ -10983,8 +11106,11 @@ public final class NpcTaskEngine {
             work.deepMiningDirection = safeDirection;
             work.deepMiningPhase = "seek-cave";
             work.deepMiningPhaseStartedTick = work.ticks;
+            int requiredLadders = DeepMiningPolicy.requiredLadders(itemId, npc.blockPosition().getY());
+            int requiredTorches = DeepMiningPolicy.requiredTorches(itemId);
             progress(work, activeProgress(work),
-                "深层采矿补给已备齐：32 梯子、32 火把和双镐，正在寻找安全洞穴入口");
+                "深层采矿补给已备齐：" + requiredLadders + " 梯子、" + requiredTorches
+                    + " 火把和双镐，正在寻找安全洞穴入口");
             return;
         }
 

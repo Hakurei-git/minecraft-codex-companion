@@ -63,6 +63,14 @@ class StorageLiveFixtureTest {
         assertTrue(complete.length() <= 120);
     }
 
+    @Test
+    void retrievePreflightsTwoIndependentTerrainChestCells() {
+        assertEquals(2, StorageLiveFixture.requiredInitialChestCount("retrieve"));
+        assertEquals(1, StorageLiveFixture.requiredInitialChestCount("organize"));
+        assertEquals(1, StorageLiveFixture.requiredInitialChestCount("expand"));
+        assertEquals(1, StorageLiveFixture.requiredInitialChestCount("craft-expand"));
+    }
+
     private static String refusal(
         boolean downed,
         String activeTaskId,

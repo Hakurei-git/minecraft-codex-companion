@@ -3,8 +3,10 @@ package cn.codex.minecraftbridge.forge;
 /** Pure acceptance rules for dragon care actions. */
 final class DragonCareAcceptancePolicy {
     private static final double EPSILON = 0.000_001D;
-    private static final double BOOK_REGEN_FOOD_LEVEL = 75.0D;
-    private static final int BOOK_REGEN_CONFIRM_TICKS = 100;
+    // Book of Dragons begins natural regeneration at 75 food. Refill above
+    // that edge so one movement/exhaustion tick cannot immediately disable it.
+    private static final double BOOK_REGEN_REFILL_TARGET = 85.0D;
+    private static final int BOOK_REGEN_CONFIRM_TICKS = 160;
     private static final int STANDARD_CONFIRM_TICKS = 40;
     private static final int REFEED_INTERVAL_TICKS = 8;
 
@@ -81,7 +83,7 @@ final class DragonCareAcceptancePolicy {
         return "bookofdragons".equals(modId)
             && Double.isFinite(foodLevel)
             && foodLevel >= 0.0D
-            && foodLevel < BOOK_REGEN_FOOD_LEVEL
+            && foodLevel < BOOK_REGEN_REFILL_TARGET
             && foodAvailable
             && ticksSinceLastFeed >= REFEED_INTERVAL_TICKS;
     }

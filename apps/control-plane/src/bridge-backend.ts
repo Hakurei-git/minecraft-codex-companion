@@ -35,6 +35,7 @@ function observedProgressDetails(message: TaskProgress | TaskResult): TaskProgre
 interface PendingTask {
   callbacks: TaskCallbacks;
   recoveryCommand?: BridgeCommand;
+  observedPhase?: "active" | "paused";
   resolve(message: string): void;
   reject(error: Error): void;
   cleanup(): void;
@@ -51,8 +52,14 @@ interface PendingControl {
 interface PendingChatDelivery {
   incomingChatSequence: number;
   resolve(): void;
+  acceptWithoutAck(): void;
   reject(error: Error): void;
   timer: NodeJS.Timeout;
+}
+
+interface LateChatDelivery {
+  incomingChatSequence: number;
+  expiresAt: number;
 }
 
 export interface MinecraftBridgeConnectionReadiness {
@@ -76,6 +83,8 @@ const MAX_DEFERRED_SAFETY_COMMANDS = 64;
 const STALE_CONNECTION_MS = 30_000;
 const CONTROL_ACK_TIMEOUT_MS = 3_000;
 const CHAT_DELIVERY_ACK_TIMEOUT_MS = 8_000;
+const LATE_CHAT_DELIVERY_TTL_MS = 5 * 60_000;
+const MAX_LATE_CHAT_DELIVERIES = 512;
 const RECALL_ACK_DISTANCE = 8;
 
 export function positionBuildPlanForTask(
@@ -133,6 +142,7 @@ export class WebSocketBridgeBackend implements CompanionBackend {
   readonly #pendingTasks = new Map<string, PendingTask>();
   readonly #pendingControls = new Set<PendingControl>();
   readonly #pendingChatDeliveries = new Map<string, PendingChatDelivery>();
+  readonly #lateChatDeliveries = new Map<string, LateChatDelivery>();
   readonly #deferredSafetyCommands = new Map<string, BridgeCommand>();
   #snapshot: WorldSnapshot;
   #connected = true;
@@ -184,6 +194,7 @@ export class WebSocketBridgeBackend implements CompanionBackend {
     this.#socket = socket;
     this.#base = hello.companion;
     this.#snapshot = hello.companion.snapshot;
+    this.#reconcileSnapshotTaskPhases(this.#snapshot);
     this.#connected = true;
     this.#resetConnectionReadiness();
     if (previous !== socket && previous.readyState === WebSocket.OPEN) {
@@ -337,17 +348,22 @@ export class WebSocketBridgeBackend implements CompanionBackend {
           this.#recordChatDelivery(pending.incomingChatSequence);
           resolve();
         },
+        acceptWithoutAck: () => {
+          clearTimeout(pending.timer);
+          this.#pendingChatDeliveries.delete(deliveryId);
+          this.#rememberLateChatDelivery(deliveryId, pending.incomingChatSequence);
+          // The WebSocket command itself was accepted. Do not turn a delayed
+          // main-thread acknowledgement into a contradictory player-facing
+          // failure; a late ACK still reconciles readiness telemetry below.
+          resolve();
+        },
         reject: (error) => {
           clearTimeout(pending.timer);
           this.#pendingChatDeliveries.delete(deliveryId);
           reject(error);
         },
         timer: setTimeout(() => {
-          pending.reject(new BackendTaskFailure(
-            "CHAT_DELIVERY_ACK_TIMEOUT",
-            "Minecraft accepted the bridge command but did not confirm that the reply appeared in game chat",
-            true,
-          ));
+          pending.acceptWithoutAck();
         }, CHAT_DELIVERY_ACK_TIMEOUT_MS),
       };
       this.#pendingChatDeliveries.set(deliveryId, pending);
@@ -410,6 +426,7 @@ export class WebSocketBridgeBackend implements CompanionBackend {
         if (message.snapshot.sequence >= this.#snapshot.sequence) {
           this.#snapshot = message.snapshot;
           this.#resolvePendingControls(message.snapshot);
+          this.#reconcileSnapshotTaskPhases(message.snapshot);
         }
         break;
       case "task-progress":
@@ -419,7 +436,11 @@ export class WebSocketBridgeBackend implements CompanionBackend {
         this.#handleResult(message);
         break;
       case "chat-delivered":
-        this.#pendingChatDeliveries.get(message.deliveryId)?.resolve();
+        if (this.#pendingChatDeliveries.has(message.deliveryId)) {
+          this.#pendingChatDeliveries.get(message.deliveryId)?.resolve();
+        } else {
+          this.#recordLateChatDelivery(message.deliveryId);
+        }
         break;
       case "heartbeat":
       case "chat":
@@ -460,6 +481,48 @@ export class WebSocketBridgeBackend implements CompanionBackend {
     this.#lastRoundTripAt = now;
   }
 
+  #reconcileSnapshotTaskPhases(snapshot: WorldSnapshot): void {
+    for (const entry of snapshot.taskQueue ?? []) {
+      const pending = this.#pendingTasks.get(entry.id);
+      if (!pending || pending.observedPhase === entry.phase) continue;
+      pending.observedPhase = entry.phase;
+      pending.callbacks.onProgress(
+        entry.progress,
+        entry.pauseReason ?? snapshot.status,
+        entry.phase,
+      );
+    }
+  }
+
+  #rememberLateChatDelivery(deliveryId: string, incomingChatSequence: number): void {
+    const now = Date.now();
+    this.#pruneLateChatDeliveries(now);
+    this.#lateChatDeliveries.set(deliveryId, {
+      incomingChatSequence,
+      expiresAt: now + LATE_CHAT_DELIVERY_TTL_MS,
+    });
+    while (this.#lateChatDeliveries.size > MAX_LATE_CHAT_DELIVERIES) {
+      const oldest = this.#lateChatDeliveries.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.#lateChatDeliveries.delete(oldest);
+    }
+  }
+
+  #recordLateChatDelivery(deliveryId: string): void {
+    const now = Date.now();
+    this.#pruneLateChatDeliveries(now);
+    const late = this.#lateChatDeliveries.get(deliveryId);
+    if (!late) return;
+    this.#lateChatDeliveries.delete(deliveryId);
+    this.#recordChatDelivery(late.incomingChatSequence);
+  }
+
+  #pruneLateChatDeliveries(now: number): void {
+    for (const [deliveryId, delivery] of this.#lateChatDeliveries) {
+      if (delivery.expiresAt <= now) this.#lateChatDeliveries.delete(deliveryId);
+    }
+  }
+
   #resetConnectionReadiness(): void {
     const now = Date.now();
     this.#connectedAt = now;
@@ -489,7 +552,9 @@ export class WebSocketBridgeBackend implements CompanionBackend {
   }
 
   #handleProgress(message: TaskProgress): void {
-    this.#pendingTasks.get(message.taskId)?.callbacks.onProgress(
+    const pending = this.#pendingTasks.get(message.taskId);
+    if (message.phase && pending) pending.observedPhase = message.phase;
+    pending?.callbacks.onProgress(
       message.progress,
       message.message,
       message.phase,

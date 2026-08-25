@@ -123,12 +123,18 @@ final class DragonCareAcceptancePolicyTest {
     }
 
     @Test
-    void bookHealingRefillsToTheNaturalRegenerationThresholdAndWaitsForRegen() {
+    void bookHealingRefillsAboveTheNaturalRegenerationThresholdAndWaitsForRegen() {
         assertTrue(DragonCareAcceptancePolicy.shouldRefillForHealing(
             "bookofdragons", 65, true, 8
         ));
-        assertFalse(DragonCareAcceptancePolicy.shouldRefillForHealing(
+        assertTrue(DragonCareAcceptancePolicy.shouldRefillForHealing(
             "bookofdragons", 75, true, 8
+        ));
+        assertTrue(DragonCareAcceptancePolicy.shouldRefillForHealing(
+            "bookofdragons", 84, true, 8
+        ));
+        assertFalse(DragonCareAcceptancePolicy.shouldRefillForHealing(
+            "bookofdragons", 85, true, 8
         ));
         assertFalse(DragonCareAcceptancePolicy.shouldRefillForHealing(
             "bookofdragons", 65, false, 8
@@ -136,7 +142,7 @@ final class DragonCareAcceptancePolicyTest {
         assertFalse(DragonCareAcceptancePolicy.shouldRefillForHealing(
             "saintsdragons", 20, true, 8
         ));
-        assertTrue(DragonCareAcceptancePolicy.healingConfirmationTicks("bookofdragons") > 40);
+        assertTrue(DragonCareAcceptancePolicy.healingConfirmationTicks("bookofdragons") > 100);
         assertTrue(DragonCareAcceptancePolicy.healingConfirmationTicks("saintsdragons") == 40);
     }
 }

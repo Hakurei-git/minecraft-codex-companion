@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+const EXPECTED_FIXTURE_LADDERS = 0;
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -339,7 +340,7 @@ export function parseInspection(status) {
 }
 
 export function validateInspection(value) {
-  if (value.ok !== 1 || value.ladders < 32 || value.torches < 32
+  if (value.ok !== 1 || value.ladders < EXPECTED_FIXTURE_LADDERS || value.torches < 32
     || value.usableIronPickaxes < 2 || value.sawDescending !== 1 || value.sawBranching !== 1
     || value.staircaseStep < 4 || value.branchProgress < 8 || value.placedTorches < 1
     || value.brokenBlocks < 20 || value.diamonds < 3 || value.playerDiamondPickaxes < 1

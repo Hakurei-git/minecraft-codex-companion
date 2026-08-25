@@ -214,7 +214,7 @@ public final class NpcManager {
 
     public static CodexNpcEntity recall(ServerPlayer player, CodexNpcEntity npc) {
         BlockPos destination = safePosition(player.serverLevel(), player.blockPosition());
-        Vec3 recallPosition = recallPosition(player, destination);
+        Vec3 recallPosition = recallPosition(destination);
         if (npc.level() == player.level()) {
             npc.getNavigation().stop();
             npc.setTarget(null);
@@ -451,8 +451,7 @@ public final class NpcManager {
         return best == null ? ownerPosition.above() : best;
     }
 
-    private static Vec3 recallPosition(ServerPlayer player, BlockPos destination) {
-        if (Math.abs(destination.getY() - player.getY()) > 3.0D) return player.position();
+    static Vec3 recallPosition(BlockPos destination) {
         return new Vec3(destination.getX() + 0.5D, destination.getY(), destination.getZ() + 0.5D);
     }
 

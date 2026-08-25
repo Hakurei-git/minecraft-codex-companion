@@ -33,4 +33,13 @@ final class GatherNavigationPolicyTest {
         assertEquals(0.62, GatherNavigationPolicy.blockTouchDistance(0.5, 1.62, 0.5, 0, 0, 0), 0.0001);
         assertEquals(4.2, GatherNavigationPolicy.blockTouchDistance(5.2, 0.5, 0.5, 0, 0, 0), 0.0001);
     }
+
+    @Test
+    void aReachedNaturalTreeDoesNotLoseUpperLogsToItsOwnCanopy() {
+        assertTrue(GatherNavigationPolicy.canInteractWithTarget(true, true, false, false));
+        assertTrue(GatherNavigationPolicy.canInteractWithTarget(true, false, true, true));
+        assertFalse(GatherNavigationPolicy.canInteractWithTarget(true, false, true, false));
+        assertFalse(GatherNavigationPolicy.canInteractWithTarget(true, false, false, true));
+        assertFalse(GatherNavigationPolicy.canInteractWithTarget(false, true, true, true));
+    }
 }

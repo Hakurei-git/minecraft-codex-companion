@@ -285,6 +285,17 @@ describe("protocol schemas", () => {
     expect(() => worldSnapshotSchema.shape.clientUiState.unwrap().parse("unknown-screen")).toThrow();
   });
 
+  it("preserves an optional source dimension on move tasks", () => {
+    expect(taskSpecSchema.parse({
+      kind: "move",
+      target: { x: 1, y: 64, z: 2 },
+      dimension: "minecraft:overworld",
+    })).toMatchObject({
+      kind: "move",
+      dimension: "minecraft:overworld",
+    });
+  });
+
   it("normalizes omitted health for non-living nearby entities", () => {
     const snapshot = worldSnapshotSchema.parse({
       sequence: 1,

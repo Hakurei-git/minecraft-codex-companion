@@ -114,6 +114,7 @@ describe("parseDeterministicChatAction", () => {
         note: "你先把瓜吃了",
       },
       reply: "好，我现在把西瓜吃掉。",
+      context: "explicit-food",
     });
   });
 
@@ -153,6 +154,7 @@ describe("parseDeterministicChatAction", () => {
         note: "去找些食物",
       },
       reply: "好，我先检查已有口粮，再去寻找 8 份食物，并在背包保留 8 份口粮。",
+      context: "explicit-food",
     });
     expect(parseDeterministicChatAction("去找12份食物打猎", "PlayerOne")).toMatchObject({
       operation: "task",

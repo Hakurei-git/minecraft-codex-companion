@@ -62,6 +62,7 @@ public final class ForgeNpcActor implements CompanionActor {
     }
 
     private String clientUiState(Minecraft minecraft) {
+        if (minecraft.player != null && minecraft.player.isDeadOrDying()) return "death";
         if (minecraft.screen == null) return "gameplay";
         if (minecraft.screen instanceof ChatScreen) return "chat";
         if (minecraft.screen instanceof PauseScreen) return "pause";

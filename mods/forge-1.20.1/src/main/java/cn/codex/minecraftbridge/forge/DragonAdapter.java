@@ -64,6 +64,10 @@ public interface DragonAdapter {
 
     boolean land(Entity dragon, ServerPlayer owner);
 
+    /** Commit a physically supported landing through any mod-specific public lifecycle API. */
+    default void commitSupportedLanding(Entity dragon, ServerPlayer owner) {
+    }
+
     default void dismount(CodexNpcEntity npc) {
         DragonDismountSafety.dismountCompanion(npc);
     }

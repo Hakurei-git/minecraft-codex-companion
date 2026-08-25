@@ -64,6 +64,7 @@ function helloNeoforge(token = TOKEN) {
       gameVersion: "1.21.1",
       loader: "NeoForge 21.1.182",
       bridgeVersion: "0.1.0",
+      embodiment: "remote-player" as const,
       snapshot: { ...snapshot(), worldId: "neoforge-test-world" },
     },
   };
@@ -109,6 +110,7 @@ describe("BridgeManager", () => {
   }
 
   afterEach(async () => {
+    vi.useRealTimers();
     for (const socket of sockets.splice(0)) socket.terminate();
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
   });
@@ -185,6 +187,82 @@ describe("BridgeManager", () => {
     await waitFor(() => !service.getCompanion("codex-forge").connected);
   });
 
+  it("reconciles death and respawn task phases from authoritative NPC snapshots", async () => {
+    const service = new ControlService();
+    const socket = await connect(new BridgeManager({ service, token: TOKEN }));
+    socket.send(JSON.stringify(hello()));
+    await waitFor(() => service.listCompanions().length === 1);
+
+    const commandPromise = nextJson(socket);
+    const task = service.assignTask("codex-forge", {
+      kind: "gather",
+      itemId: "minecraft:oak_log",
+      count: 4,
+      requestedBy: "test",
+    }, "test");
+    await commandPromise;
+
+    socket.send(JSON.stringify({
+      type: "snapshot",
+      companionId: "codex-forge",
+      snapshot: {
+        ...snapshot(2),
+        clientUiState: "death",
+        status: "等待玩家重生",
+        taskQueue: [{
+          id: task.id,
+          kind: "gather",
+          phase: "paused",
+          priority: 50,
+          progress: 0.25,
+          pauseReason: "等待玩家重生",
+        }],
+      },
+    } satisfies BridgeMessage));
+    await waitFor(() => service.getTask(task.id).status === "paused");
+    expect(service.getTask(task.id)).toMatchObject({
+      progress: 0.25,
+      message: "等待玩家重生",
+    });
+
+    socket.send(JSON.stringify({
+      type: "snapshot",
+      companionId: "codex-forge",
+      snapshot: {
+        ...snapshot(3),
+        clientUiState: "gameplay",
+        status: "玩家已重生，任务继续执行",
+        taskQueue: [{
+          id: task.id,
+          kind: "gather",
+          phase: "active",
+          priority: 50,
+          progress: 0.25,
+        }],
+      },
+    } satisfies BridgeMessage));
+    await waitFor(() => service.getTask(task.id).status === "running");
+  });
+
+  it("binds move coordinates to the dimension observed when accepted", async () => {
+    const service = new ControlService();
+    const socket = await connect(new BridgeManager({ service, token: TOKEN }));
+    socket.send(JSON.stringify(hello()));
+    await waitFor(() => service.listCompanions().length === 1);
+
+    const commandPromise = nextJson(socket);
+    service.assignTask("codex-forge", {
+      kind: "move",
+      target: { x: 30, y: 70, z: -12 },
+      requestedBy: "test",
+    }, "test");
+
+    expect(await commandPromise).toMatchObject({
+      type: "run-task",
+      task: { spec: { kind: "move", dimension: "minecraft:overworld" } },
+    });
+  });
+
   it("does not acknowledge recall until a newer snapshot proves the NPC is physically near its owner", async () => {
     const service = new ControlService();
     const socket = await connect(new BridgeManager({ service, token: TOKEN }));
@@ -218,6 +296,38 @@ describe("BridgeManager", () => {
     expect(companion.snapshot).toMatchObject({ sequence: 3, ownerDistance: 1.5 });
   });
 
+  it("rejects deterministic NPC controls for a NeoForge remote player", async () => {
+    const service = new ControlService();
+    const socket = await connect(new BridgeManager({ service, token: TOKEN }));
+    socket.send(JSON.stringify(helloNeoforge()));
+    await waitFor(() => service.listCompanions().length === 1);
+
+    await expect(service.controlCompanion("codex-neoforge", "stay")).rejects.toMatchObject({
+      code: "NPC_CONTROL_UNSUPPORTED",
+      statusCode: 422,
+    });
+  });
+
+  it("stops connected companions even when a historical bridge is disconnected", async () => {
+    const service = new ControlService();
+    const manager = new BridgeManager({ service, token: TOKEN });
+    const forge = await connect(manager);
+    forge.send(JSON.stringify(hello()));
+    await waitFor(() => service.listCompanions().length === 1);
+    const closed = once(forge, "close");
+    forge.close();
+    await closed;
+    await waitFor(() => !service.getCompanion("codex-forge").connected);
+
+    const neo = await connect(manager);
+    neo.send(JSON.stringify(helloNeoforge()));
+    await waitFor(() => service.listCompanions().length === 2);
+    const commandPromise = nextJson(neo);
+
+    await expect(service.emergencyStop(false)).resolves.toBeUndefined();
+    await expect(commandPromise).resolves.toMatchObject({ type: "emergency-stop", disconnect: false });
+  });
+
   it("does not report Forge chat delivery until the client confirms it was displayed", async () => {
     const service = new ControlService();
     const socket = await connect(new BridgeManager({ service, token: TOKEN }));
@@ -242,6 +352,35 @@ describe("BridgeManager", () => {
     }));
     await delivery;
     expect(settled).toBe(true);
+  });
+
+  it("accepts a displayed reply without a contradictory failure and reconciles its late ACK", async () => {
+    const service = new ControlService();
+    const manager = new BridgeManager({ service, token: TOKEN });
+    const socket = await connect(manager);
+    socket.send(JSON.stringify(hello()));
+    await waitFor(() => service.listCompanions().length === 1);
+    vi.useFakeTimers();
+
+    const commandPromise = nextJson(socket);
+    const delivery = service.sendChat("codex-forge", "延迟确认的聊天回复", "test");
+    const command = await commandPromise;
+    await vi.advanceTimersByTimeAsync(8_001);
+    await expect(delivery).resolves.toBeUndefined();
+    expect(manager.readiness()).toMatchObject({
+      connections: [{ deliveredChatCount: 0 }],
+    });
+
+    vi.useRealTimers();
+    await new Promise<void>((resolve, reject) => socket.send(JSON.stringify({
+      type: "chat-delivered",
+      companionId: "codex-forge",
+      deliveryId: command.deliveryId,
+    }), (error) => error ? reject(error) : resolve()));
+    await waitFor(() => manager.readiness().connections[0]?.deliveredChatCount === 1);
+    expect(manager.readiness()).toMatchObject({
+      connections: [{ deliveredChatCount: 1 }],
+    });
   });
 
   it("requires the NeoForge client bridge to confirm that a reply reached local T chat", async () => {

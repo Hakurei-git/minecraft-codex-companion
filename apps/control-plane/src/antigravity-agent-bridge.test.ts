@@ -226,6 +226,13 @@ Local: https://127.0.0.1:57422/
       waitForIdle: async () => undefined,
     });
 
+    await expect(bridge.bindConversationByTitle("Codex Acceptance Missing Title")).rejects.toMatchObject({
+      code: "ANTIGRAVITY_CONVERSATION_TITLE_MISMATCH",
+      statusCode: 409,
+      retryable: false,
+      message: "只能绑定配置中完整标题等于“Execute Minecraft Woodcutting Task”的反重力会话",
+    });
+
     const bound = await bridge.bindConversationByTitle("Execute Minecraft Woodcutting Task");
 
     expect(bound.conversationId).toBe(CONVERSATION_ID);
@@ -1425,5 +1432,74 @@ Local: https://127.0.0.1:57422/
     await expect(bridge.trigger(message, persona)).rejects.toMatchObject({ code: "TRIGGER_FAILED" });
     await expect(bridge.trigger({ ...message, sequence: 2, message: "第二条" }, persona)).resolves.toBeUndefined();
     expect(sends).toBe(2);
+  });
+
+  it("manual recovery detaches new messages from a stuck old turn", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "mc-antigravity-recover-queue-"));
+    const stateDirectory = path.join(root, "state");
+    const home = path.join(root, "antigravity");
+    const logPath = path.join(root, "main.log");
+    await mkdir(path.join(home, "conversations"), { recursive: true });
+    await mkdir(path.join(home, "bin"), { recursive: true });
+    const executable = path.join(home, "language_server.exe");
+    await writeFile(executable, "fixture", "utf8");
+    await writeFile(path.join(home, "bin", "agentapi.bat"), `"${executable}" agentapi %*\n`, "utf8");
+    await writeFile(path.join(home, "agyhub_summaries_proto.pb"), summaryIndex([
+      { conversationId: CONVERSATION_ID, title: "Execute Minecraft Woodcutting Task" },
+    ]));
+    await writeFile(logPath, `
+Starting app (v2.4.3) with dynamic port…
+Spawning: language_server.exe --csrf_token 22222222-2222-2222-2222-222222222222
+Local: https://127.0.0.1:57422/
+`, "utf8");
+    let releaseFirstIdle!: () => void;
+    const firstIdle = new Promise<void>((resolve) => {
+      releaseFirstIdle = resolve;
+    });
+    let idleCalls = 0;
+    let sends = 0;
+    const runner = vi.fn(async () => ({
+      response: { conversationMetadata: { metadata: { projectId: "outside-of-project" } } },
+    }));
+    const connectRunner = vi.fn(async (
+      _endpoint: unknown,
+      method: string,
+    ) => {
+      if (method === "SendAgentMessage") sends += 1;
+      return "{}";
+    });
+    const bridge = new AntigravityAgentBridge({
+      stateDirectory,
+      antigravityHome: home,
+      antigravityLogPath: logPath,
+      runAgentApi: runner,
+      runConnectApi: connectRunner,
+      waitForIdle: async () => {
+        idleCalls += 1;
+        if (idleCalls === 1) await firstIdle;
+      },
+    });
+    await bridge.bindConversationByTitle("Execute Minecraft Woodcutting Task");
+    const persona = { mode: "inherit" as const, displayName: "", personality: "", speakingStyle: "", memoryNotes: "" };
+    const message = {
+      sequence: 1,
+      at: new Date().toISOString(),
+      companionId: "codex-forge",
+      sender: "Player",
+      message: "卡住的第一条",
+    };
+
+    const first = bridge.trigger(message, persona);
+    for (let attempt = 0; attempt < 50 && idleCalls === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await expect(bridge.status()).resolves.toMatchObject({ busy: true, queuedTurns: 1 });
+    await expect(bridge.recoverBoundConversation()).resolves.toMatchObject({ connected: true });
+    await expect(bridge.trigger({ ...message, sequence: 2, message: "恢复后的第二条" }, persona)).resolves.toBeUndefined();
+    expect(sends).toBe(1);
+
+    releaseFirstIdle();
+    await expect(first).rejects.toMatchObject({ code: "TRIGGER_FAILED" });
+    expect(sends).toBe(1);
   });
 });

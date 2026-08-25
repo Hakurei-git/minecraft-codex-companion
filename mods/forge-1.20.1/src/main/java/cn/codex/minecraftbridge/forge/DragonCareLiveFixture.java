@@ -21,6 +21,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.ForgeEventFactory;
 import net.minecraftforge.registries.ForgeRegistries;
@@ -74,13 +75,15 @@ final class DragonCareLiveFixture {
     }
 
     private static void setup(ServerPlayer player, CodexNpcEntity npc, String modId) {
-        requireIdle(npc);
-        cleanup(player, npc, false);
+        if (suppressesAutonomousWork(npc)) cleanup(player, npc, false);
+        else requireIdle(npc);
         requireIdle(npc);
         CompoundTag state = backup(player, npc, modId);
         npc.getPersistentData().put(STATE_KEY, state);
         try {
             player.setGameMode(GameType.SURVIVAL);
+            player.setInvulnerable(true);
+            npc.setInvulnerable(true);
             if (npc.creativeResources()) {
                 throw new IllegalStateException("Dragon care acceptance requires NPC survival material mode");
             }
@@ -161,6 +164,7 @@ final class DragonCareLiveFixture {
     }
 
     private static void stage(ServerPlayer player, CodexNpcEntity npc, String action) {
+        quiesceFixtureAutonomy(npc, "龙照料夹具正在切换验收阶段");
         requireIdle(npc);
         CompoundTag state = fixtureStep("stage-state", () -> requireState(player, npc));
         if (npc.creativeResources()) {
@@ -342,6 +346,14 @@ final class DragonCareLiveFixture {
     ) {
         String entityId = BOOK.equals(modId) ? "bookofdragons:deadlynadder" : "saintsdragons:raevyx";
         Entity dragon = spawnEntity(player, npc, entityId, tag, offset);
+        DragonAdapter adapter = DragonAdapters.forEntity(dragon);
+        Vec3 safe = adapter == null ? null : adapter.safeLandingTarget(dragon, player);
+        if (safe == null) {
+            dragon.discard();
+            throw new IllegalStateException("No collision-free fixture dragon site was found: " + entityId);
+        }
+        dragon.teleportTo(safe.x, safe.y, safe.z);
+        settleFixtureDragon(dragon, adapter, player);
         if (dragon instanceof AgeableMob ageable) ageable.setAge(0);
         if (dragon instanceof LivingEntity living) living.setHealth(living.getMaxHealth());
         return dragon;
@@ -358,7 +370,14 @@ final class DragonCareLiveFixture {
         if (type == null) throw new IllegalStateException("Fixture entity is unavailable: " + entityId);
         Entity entity = type.create(player.serverLevel());
         if (entity == null) throw new IllegalStateException("Fixture entity could not be created: " + entityId);
-        entity.moveTo(npc.getX() + offset, npc.getY(), npc.getZ(), npc.getYRot(), 0.0F);
+        double x = npc.getX() + offset;
+        double z = npc.getZ();
+        double y = player.serverLevel().getHeight(
+            Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+            (int) Math.floor(x),
+            (int) Math.floor(z)
+        );
+        entity.moveTo(x, y, z, npc.getYRot(), 0.0F);
         entity.addTag(tag);
         if (entity instanceof Mob mob) {
             ForgeEventFactory.onFinalizeSpawn(
@@ -395,9 +414,11 @@ final class DragonCareLiveFixture {
         if (adapter == null || !adapter.isOwnedBy(dragon, player)) {
             throw new IllegalStateException("Fixture dragon ownership could not be established");
         }
+        adapter.setStay(dragon, player);
     }
 
     private static void configureWild(Entity dragon, String modId) {
+        if (dragon instanceof Mob mob) mob.setNoAi(true);
         if (dragon instanceof TamableAnimal tameable) {
             tameable.setOrderedToSit(false);
             tameable.setOwnerUUID(null);
@@ -423,7 +444,10 @@ final class DragonCareLiveFixture {
         if (!state.hasUUID("Owner") || !state.getUUID("Owner").equals(player.getUUID())) {
             throw new IllegalStateException("Dragon care fixture owner changed before cleanup");
         }
-        requireIdle(npc);
+        npc.tasks().emergencyStop("龙照料夹具正在清理并恢复现场");
+        npc.cancelManagedEating();
+        npc.getNavigation().stop();
+        npc.setTarget(null);
         requireOriginalDimensions(player, npc, state);
         if (state.contains("EggPos")) {
             BlockPos position = BlockPos.of(state.getLong("EggPos"));
@@ -514,6 +538,29 @@ final class DragonCareLiveFixture {
             throw new IllegalStateException("Dragon care fixture owner changed");
         }
         return state;
+    }
+
+    static boolean suppressesAutonomousWork(CodexNpcEntity npc) {
+        return npc != null
+            && npc.getPersistentData().contains(STATE_KEY, Tag.TAG_COMPOUND)
+            && !npc.getPersistentData().getCompound(STATE_KEY).isEmpty();
+    }
+
+    static boolean shouldQuiesceForStage(
+        boolean fixtureActive,
+        boolean managedEating,
+        String activeTaskId
+    ) {
+        return fixtureActive && (managedEating
+            || activeTaskId != null && activeTaskId.startsWith("local:"));
+    }
+
+    private static void quiesceFixtureAutonomy(CodexNpcEntity npc, String reason) {
+        if (shouldQuiesceForStage(
+            suppressesAutonomousWork(npc),
+            npc.isManagedEating(),
+            npc.tasks().activeTaskId()
+        )) npc.tasks().emergencyStop(reason);
     }
 
     private static void requireIdle(CodexNpcEntity npc) {
@@ -693,10 +740,66 @@ final class DragonCareLiveFixture {
     }
 
     private static void moveNpc(CodexNpcEntity npc, BlockPos position) {
-        npc.teleportTo(position.getX() + 0.5D, position.getY(), position.getZ() + 0.5D);
+        Vec3 safe = findSafeNpcStand(npc, position);
+        npc.teleportTo(safe.x, safe.y, safe.z);
         npc.getNavigation().stop();
         npc.setDeltaMovement(Vec3.ZERO);
         npc.fallDistance = 0.0F;
+        npc.setOnGround(true);
+    }
+
+    private static Vec3 findSafeNpcStand(CodexNpcEntity npc, BlockPos preferred) {
+        if (!(npc.level() instanceof ServerLevel level)) {
+            throw new IllegalStateException("Dragon care fixture NPC level is unavailable");
+        }
+        for (int radius = 0; radius <= 8; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (radius > 0 && Math.abs(dx) != radius && Math.abs(dz) != radius) continue;
+                    int x = preferred.getX() + dx;
+                    int z = preferred.getZ() + dz;
+                    int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+                    BlockPos feet = new BlockPos(x, y, z);
+                    BlockPos floor = feet.below();
+                    if (!level.getWorldBorder().isWithinBounds(feet)
+                        || !level.getFluidState(feet).isEmpty()
+                        || !level.getFluidState(floor).isEmpty()
+                        || level.getBlockState(floor).getCollisionShape(level, floor).isEmpty()) continue;
+                    Vec3 candidate = new Vec3(x + 0.5D, y, z + 0.5D);
+                    AABB box = npc.getBoundingBox().move(
+                        candidate.x - npc.getX(),
+                        candidate.y - npc.getY(),
+                        candidate.z - npc.getZ()
+                    );
+                    if (level.noCollision(npc, box)) return candidate;
+                }
+            }
+        }
+        throw new IllegalStateException("No collision-free dragon care NPC site was found");
+    }
+
+    private static void settleFixtureDragon(
+        Entity dragon,
+        DragonAdapter adapter,
+        ServerPlayer owner
+    ) {
+        if (dragon instanceof Mob mob) mob.getNavigation().stop();
+        Object movement = ReflectiveDragonAdapter.invoke(dragon, "getAIMovement");
+        ReflectiveDragonAdapter.invokeVoid(movement, "clearAllWaypoints");
+        dragon.setNoGravity(false);
+        dragon.setDeltaMovement(Vec3.ZERO);
+        dragon.hasImpulse = true;
+        dragon.fallDistance = 0.0F;
+        dragon.setOnGround(true);
+        ReflectiveDragonAdapter.invokeVoid(dragon, "setGoingUp", false);
+        ReflectiveDragonAdapter.invokeVoid(dragon, "setGoingDown", false);
+        ReflectiveDragonAdapter.invokeVoid(dragon, "setLanding", false);
+        ReflectiveDragonAdapter.invokeVoid(dragon, "setFlying", false);
+        ReflectiveDragonAdapter.invokeVoid(dragon, "setIsOnSolidGround", true);
+        ReflectiveDragonAdapter.invokeEnumVoid(dragon, "setTransportMode", "GROUNDED");
+        ReflectiveDragonAdapter.invokeEnumVoid(dragon, "setGroundStance", "IDLE");
+        adapter.commitSupportedLanding(dragon, owner);
+        dragon.setOnGround(true);
     }
 
     private static boolean ownedBy(Entity dragon, ServerPlayer player) {
