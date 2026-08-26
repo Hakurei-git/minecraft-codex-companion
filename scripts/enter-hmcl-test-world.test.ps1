@@ -3,7 +3,7 @@ $scriptPath = Join-Path $PSScriptRoot "enter-hmcl-test-world.ps1"
 
 $tokens = $null
 $errors = $null
-$ast = [Management.Automation.Language.Parser]::ParseFile(
+[void][Management.Automation.Language.Parser]::ParseFile(
     $scriptPath,
     [ref]$tokens,
     [ref]$errors
@@ -14,54 +14,22 @@ if ($errors.Count -gt 0) {
 
 $source = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
 foreach ($required in @(
-    'EntryPoint = "PostMessageW"',
-    '[MinecraftBackgroundInput]::Text($handle, $targetWorldId)',
-    'ShowWindowAsync($verifiedHandle, $ShowCommand)',
-    'Set-MinecraftWindowStateWithoutInteraction',
-    '# SW_SHOWNOACTIVATE',
-    'GetForegroundWindow()',
-    'GetCursorPos([ref]$point)',
-    'FindLargestWindowForProcess',
-    'ForegroundWindowPreserved = $true',
-    'CursorPositionPreserved = $true',
-    'ClipCursor(IntPtr.Zero)',
-    'ReleaseCursorCapture($verifiedHandle)',
-    'IsWindow($handle)',
-    'GetWindowThreadProcessId($handle, [ref]$windowProcessId)',
-    '[string]$ControlBaseUri = "http://127.0.0.1:8765"',
-    '$PSBoundParameters.ContainsKey("ControlBaseUri")',
-    '$env:MC_COMPANION_URL',
-    '$baseUri = [Uri]$configuredBaseUri',
-    '$baseUri.Scheme -ne "http"',
-    'Minecraft replaced its window without exposing a verified current HWND',
-    '$latestLogCandidates = @(',
-    '(Join-Path $instancePath "logs\latest.log")',
-    '(Join-Path ([string]$config.minecraftRoot) "logs\latest.log")',
-    '$logInfo.LastWriteTime -ge $minecraftProcess.StartTime',
-    '"neoforge-1.21.1"',
-    '"remote-player"',
-    "$minecraftProcess.MainWindowTitle -match 'NeoForge|1\.21\.1'",
-    '0.425',
-    '$playSelectedWorldX = if ($isNeoForgeLayout) { 0.42 } else { 0.31 }',
-    'MinimizedAfterWorldSelection = $true',
-    'CursorCaptureReleased = $true',
-    'SentToBottomAfterWorldSelection = $false'
+    'MANUAL_UI_REQUIRED',
+    'api/companions',
+    'api/companions/$id/snapshot',
+    'ControlBaseUri must be an HTTP loopback URL',
+    'ManualWorldEntryObserved = $true',
+    'WorldSelectionPosted = $false',
+    'MouseOrKeyboardInputUsed = $false',
+    'WindowMutationUsed = $false',
+    'CursorMutationUsed = $false'
 )) {
     if (-not $source.Contains($required)) {
-        throw "Background world entry is missing cursor-release invariant: $required"
+        throw "Manual world-entry waiter is missing invariant: $required"
     }
 }
-if ($source.Contains("$targetWorldId -cmatch '^[\x20-\x7e]+$'")) {
-    throw "Background world entry still skips localized world names"
-}
-if ($source.Contains('$keptRunningAtBottom = [MinecraftBackgroundInput]::SetWindowPos')) {
-    throw "Background world entry still leaves a restored GLFW window able to retain cursor capture"
-}
-if ($source.Contains('0x0008')) {
-    throw "Background world entry still sends synthetic focus loss to fullscreen GLFW"
-}
-if ($source -match 'ShowWindowAsync\([^\r\n]*,\s*9\)') {
-    throw "Background world entry still restores Minecraft with activation"
+if ($source -match '\b(?:PostMessage|ShowWindow(?:Async)?|SetWindowPos|SetForegroundWindow|ClipCursor|ReleaseCapture|SendInput|SetCursorPos|mouse_event|keybd_event)\s*\(') {
+    throw "Manual world-entry waiter still mutates the Minecraft desktop"
 }
 
-Write-Output "Minecraft background cursor-release tests passed"
+Write-Output "Minecraft manual world-entry safety tests passed"

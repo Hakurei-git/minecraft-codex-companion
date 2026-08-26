@@ -109,7 +109,7 @@ test("desktop EXE always uses and precisely launches the selected HMCL source in
   assert.match(hmclLauncherSource, /WriteSettingsAtomically/);
   assert.match(hmclLauncherSource, /hmcl-settings-backups/);
   assert.match(hmclLauncherSource, /ContainsExactInstance\(candidate, expectedInstance\)/);
-  assert.match(hmclLauncherSource, /TryFindHmclWindowHandle\(out hmclHandle, out hmclProcessId\)/);
+  assert.match(hmclLauncherSource, /TryFindHmclWindowHandle\(out window, out processId\)/);
   assert.match(hmclLauncherSource, /TryFindMinecraftWindowHandle\(out gameHandle, out gameProcessId\)/);
   assert.match(hmclLauncherSource, /!name\.StartsWith\("Minecraft Codex Companion"/);
   assert.match(hmclLauncherSource, /IsJavaGameProcess/);
@@ -120,7 +120,10 @@ test("desktop EXE always uses and precisely launches the selected HMCL source in
   assert.doesNotMatch(hmclLauncherSource, /Console\.OutputEncoding/);
   assert.doesNotMatch(hmclLauncherSource, /hmcl\.Current\.NativeWindowHandle/);
   assert.match(hmclLauncherSource, /exactSelectionVerified/);
+  assert.match(hmclLauncherSource, /launcherWindowMutated/);
+  assert.match(hmclLauncherSource, /minecraftWindowMutated/);
   assert.doesNotMatch(hmclLauncherSource, /SendKeys|mouse_event|SetCursorPos/);
+  assert.doesNotMatch(hmclLauncherSource, /SetWindowPos|ShowWindow|ClipCursor|ReleaseCapture/);
 
   assert.match(buildScript, /MinecraftCodexHmclLauncher\.exe/);
   assert.match(buildScript, /HmclLauncher\.cs/);

@@ -5,7 +5,7 @@
 ### Choose an edition
 
 - `MinecraftCodexCompanion-Setup.exe` is the normal user entry point. The single-file installer contains the local Companion service, Dashboard, Forge 1.20.1 in-world NPC bridge, NeoForge 1.21.1 client bridge, and setup application. It does not require a separate Node.js installation or manual JAR build.
-- `MinecraftCodexCompanion-AgentKit-v0.1.13.zip` is an optional AI integration package. Download it when importing the Minecraft Skill/MCP configuration into Codex, Claude, Antigravity, or another AI client. It does not replace the EXE or the in-game mod.
+- `MinecraftCodexCompanion-AgentKit-v0.1.14.zip` is an optional AI integration package. Download it when importing the Minecraft Skill/MCP configuration into Codex, Claude, Antigravity, or another AI client. It does not replace the EXE or the in-game mod.
 
 The EXE does not include a Minecraft account, the Minecraft game, or HMCL login state. Prepare an HMCL environment that can enter either a Forge 1.20.1 or NeoForge 1.21.1 world. The Forge bridge provides an independent in-world NPC; the NeoForge bridge controls the current client player while preserving the same local service, fixed Antigravity conversation, and `T`-chat path.
 

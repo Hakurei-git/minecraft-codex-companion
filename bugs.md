@@ -3,28 +3,29 @@
 > 可直接打开的正式记录，路径：`minecraft-codex-companion/bugs.md`。
 > 原始验收证据仍保存在 `.runtime/full-acceptance-20260825-140819/`，下方原始记录未删除。
 
-## 当前结论（2026-08-26 22:31 v0.1.13 候选构建后）
+## 当前结论（2026-08-26 23:38 v0.1.14 候选构建后）
 
 - `0.1.12` 安装版 EXE 已分别冷启动 `Dragons_ZH_1.20.1` 与 `1.21.1-NeoForge` 原始源实例；实际进程版本/游戏目录匹配选中实例，未创建或启动新的 `-Codex` 副本。
-- 10:40 的双版本实测发现 BUG-009、BUG-019、BUG-025～BUG-027；这些缺陷现已完成代码修复和离线自动回归，但尚未用新构建做双版本实机复测，因此不能标为实机通过。
-- 最新自动回归：Forge 与 NeoForge 完整构建通过；Forge 隔离 JUnit `465/465`；控制层 `311` 项通过、`1` 项按设计跳过；Dashboard `15/15`、worker `4/4`、启动器 `41/41`、协议 `46/46`、脚本 `175/175`；全工作区类型检查和 `git diff --check` 通过。
-- 后续测试期间用户实际观察到 Minecraft 再次捕获鼠标，光标无法离开游戏。此前 RT-10 的“通过”结论已撤销并新增 BUG-028；在根因修复和人工确认前，禁止任何窗口、键盘或鼠标自动化，只允许本地 HTTP/遥测与用户手动界面步骤。
+- 10:40 的双版本实测发现 BUG-009、BUG-019、BUG-025～BUG-027；这些缺陷现已完成代码修复和离线自动回归，但尚未用 `0.1.14` 做双版本实机复测，因此不能标为实机通过。
+- 最新自动回归：Forge 与 NeoForge 完整 clean build 通过；Forge 隔离 JUnit `465/465`；控制层 `311` 项通过、`1` 项按设计跳过；Dashboard `15/15`、worker `4/4`、启动器 `41/41`、协议 `46/46`、脚本 `183/183`；全工作区类型检查和 `git diff --check` 通过。
+- BUG-028 已定位为桌面测试工具的窗口/消息自动化可能触发 GLFW 重新捕获光标。启动器不再置顶、置底、最小化、还原或释放/限制光标；自动截图、后台 T 聊天、重生、进出世界和退出游戏均改为明确的人工步骤，只保留 GET 遥测和只读 Win32 审计。当前运行实例的严格后台审计 `91/91` 采样通过，但仍需由用户用 `0.1.14` 新 EXE 人工冷启动两种源实例并确认鼠标可自由离开，才能标为完整实机通过。
 - 临时聊天设置已恢复为 `freeChatEnabled=true`、`target=active-provider`、`actionMode=smart`、`tokenBudget=512`、`persona.mode=inherit`。未调用 Codex、OpenAI 或反重力在线提供方。
-- 已基于当前工作区生成新 `0.1.13` 安装包候选与 AgentKit，并完成完整性、隐私和本机 ClamAV 门禁；该包仍须通过不使用窗口自动化的双版本实机回归后才能标为最终验收通过。
+- 已基于当前工作区生成新 `0.1.14` 安装包候选与 AgentKit，并完成完整性、隐私和本机 ClamAV 门禁；该包仍须通过不使用窗口自动化的双版本实机回归后才能标为最终验收通过。
 
-最新 `0.1.13` 安装包候选构建证据：
+最新 `0.1.14` 安装包候选构建证据：
 
 - 文件：`build/single-exe/MinecraftCodexCompanion-Setup.exe`
-- SHA-256：`8a39a06e0f4e452fc01bbdc9e02bd2e9b8d9d5c1c56917a2331993de91aca5f7`
-- Package ID：`dcb713426ccd12d71961e90b1e7bf57e21673ee29b041615a328e367e0e924fc`
-- 大小：`195994112` bytes；内含 `5888` 个载荷文件、`562079896` bytes 未压缩载荷
-- Forge JAR SHA-256：`8305dc709f6f977185336c4ea00b06cfac77f79aec1e12cb710058be600dae5a`
-- NeoForge JAR SHA-256：`3ef90fd7d088909b176517349da46262aacc7e457e689397b70498fea6bf381a`
+- SHA-256：`38fa353d1b1057b1322bb9d1119d539edf9864364383a9bc4ef4273f0ec14050`
+- Package ID：`6251c572fc1bb9f9b355ce838781863cb926e2fb4882e3137f68c2ea139cc548`
+- 大小：`195994624` bytes；内含 `5888` 个载荷文件、`562080453` bytes 未压缩载荷
+- Forge JAR SHA-256：`e20dee92cea1c97eb4230d0576bbc495cb3a62b07a7b9f30c5b6637c38d84570`
+- NeoForge JAR SHA-256：`09cc419e93d319344a2d3fe1068adb8e3be09277949ac5889135d0856f297c89`
 - 完整性：已验证
 - 隐私门禁：仅本机、已通过
 - 防病毒扫描：ClamAV 1.5.4，`clean`、感染文件 0；本机静态病毒库报告超过 7 天，需保留该时效警告
 - Authenticode：未签名（构建机没有代码签名证书）
-- AgentKit：`build/agent-kit/MinecraftCodexCompanion-AgentKit-v0.1.13.zip`，SHA-256 `8d989f9384a71c620174624e51c5997943c271c69f64e1dfbbe49478121c20c9`，9 个预期文件，隐私校验通过
+- AgentKit：`build/agent-kit/MinecraftCodexCompanion-AgentKit-v0.1.14.zip`，SHA-256 `c51b14478a084ff2ac4e4719c7ff518b7a843c01fade1c15c99530ff856ae847`，9 个预期文件，隐私校验通过
+- 安装器验证：正式 EXE 的 `--self-test --quiet` 退出码为 `0`；离线安装器套件通过 WinForms 初始化、确定性构建、校验解包、启动、幂等安装、原子更新和未知文件保留测试
 
 ## 修复状态表
 
@@ -57,7 +58,7 @@
 | BUG-025 | 代码已修复；自动化通过；待新构建实机回归 | 常备口粮目标按配置固定，不再随饥饿上移；备粮任务达到目标时先真实进食并复核剩余库存。 |
 | BUG-026 | 代码已修复；自动化通过；待新构建实机回归 | 玩家回 NPC 仅保留为受限验收夹具；正式 NPC 倒地恢复后召回存活玩家，离线或死亡时持久等待。 |
 | BUG-027 | 代码已修复；自动化通过；待新构建实机回归 | 5 格相对步行规范化为水平绝对目标，修正 explore 半径，加入 0.5 格到达阈值、Baritone 停止及树叶/碰撞脱困。 |
-| BUG-028 | 新发现；未修复；停止窗口自动化 | 后续测试中 Minecraft 再次捕获鼠标，用户光标无法离开游戏；此前仅验证“未移动物理鼠标”，没有覆盖 GLFW 重新限制光标。 |
+| BUG-028 | 代码已修复；自动化与只读实机审计通过；待新 EXE 人工冷启动确认 | 移除所有 Minecraft 窗口、键盘、鼠标和截图自动化；启动器不再改变 Minecraft/HMCL 窗口状态；新增只读置顶、前台和光标限制审计。 |
 
 ## 2026-08-26 v0.1.12 双版本实机复测
 
@@ -72,7 +73,7 @@
 | RT-07：NeoForge 无作弊世界与重生 | 通过 | `level.dat` 为 `allowCommands=0`、`GameType=0`、`VersionName=1.21.1`；真实死亡识别为 `death`，后台重生恢复 20/20。 |
 | RT-08：NeoForge + Codex + 无作弊 + T 聊天 | 失败 | T 往返通过；回写 `Invalid input: expected object, received undefined`，路径为 `spec.target`；玩家位置不变。 |
 | RT-09：NeoForge + 固定反重力 + 无作弊 + T 聊天 | 部分通过、终态失败 | 同一固定会话创建 `explore radius=8`；从原点移动约 9.8 格，采样最大单步 0.107 格，确认非传送；随后卡进树叶并以 `NAVIGATION_TIMEOUT` 失败。 |
-| RT-10：不抢占用户鼠标 | 失败，已重新打开 | 自动化没有移动物理鼠标，但后续用户实际观察到 Minecraft 捕获光标、鼠标无法离开游戏；原结论只覆盖坐标不变，没有覆盖 GLFW 光标限制重新生效。见 BUG-028。 |
+| RT-10：不抢占用户鼠标 | 代码修复与当前实例只读审计通过；待新 EXE 人工确认 | 已删除会触发 GLFW 重新捕获的窗口、消息、截图和输入自动化；严格后台审计 `91/91` 采样未见置顶、前台或后台光标限制。仍需 `0.1.14` 双版本冷启动人工确认。见 BUG-028。 |
 
 本轮截图（均为本机可直接打开的绝对证据，位于仓库 `.runtime`）：
 
@@ -136,11 +137,14 @@
 ### BUG-028：后台测试仍可能让 Minecraft 捕获鼠标
 
 - 严重级别：P1 / 高（直接影响用户继续使用桌面）。
-- 状态：用户在 2026-08-26 后续测试中明确复现；尚未定位根因，窗口自动化已全部停止。
+- 状态：代码已修复；专项自动化和当前运行实例只读审计通过；待 `0.1.14` 新 EXE 双版本人工冷启动确认。
 - 实际：测试工具没有移动物理鼠标，但 Minecraft 窗口重新获得 GLFW 光标捕获后，用户鼠标无法离开游戏。此前的光标坐标/前台窗口检查仍可同时通过，因此 RT-10 的观测口径不足。
 - 影响：后台世界选择、聊天、重生、截图、暂停或窗口状态切换即使不调用物理输入，也可能妨碍用户操作 Codex 和其他应用。
-- 临时约束：禁止 `PostMessage`、F2、`PrintWindow`、置顶、还原、最小化、自动进出世界以及任何键鼠/窗口控制；只允许本地 HTTP/桥遥测。必须操作游戏界面的步骤由用户手动完成。
-- 待修复方向：把“鼠标未移动”与“光标未被限制”拆成独立门禁；在每次可能改变游戏 UI/窗口状态后验证 GLFW capture 状态与 Win32 clip rectangle，并在失败时只报告、不得尝试恢复或聚焦窗口。
+- 根因：旧桌面测试链仍调用 `PostMessage`、`PrintWindow`、`ShowWindowAsync`、`SetWindowPos`、`ClipCursor` 和 `ReleaseCapture`。这些调用即使不移动物理光标，也可能改变 Minecraft 的 UI/焦点生命周期并触发 GLFW 重新限制光标。
+- 修复：从桌面启动器移除窗口层级、最小化和光标修改；截图、T 聊天、重生、自动进出世界及 Save and Quit 脚本全部 fail closed 为 `MANUAL_UI_REQUIRED`；新增 `audit-minecraft-desktop-safety.ps1`，只读检查 `WS_EX_TOPMOST`、前台窗口与 `GetClipCursor`；新增仅使用 GET 的人工 T 聊天观察器。
+- 自动证据：桌面安全专项 `28/28` 通过并纳入完整脚本回归 `183/183`；发布门禁禁止启动器重新引入窗口/光标写操作。
+- 当前实机证据：对 PID `50580`、HWND `10096296` 严格后台采样 `91` 次，`WindowTopmostObserved=false`、`MinecraftForegroundObserved=false`、`BackgroundCursorConfinementObserved=false`，且键鼠、窗口和光标写操作均为 0。
+- 剩余边界：该采样来自修复前已运行的 Minecraft 进程，只能证明新观察器自身无副作用；必须由用户手动关闭旧游戏、运行 `0.1.14` EXE、进入 Forge 与 NeoForge 源实例并确认鼠标可自由离开，才可把 RT-10 标为完整实机通过。
 
 ## 原始验收记录（2026-08-25，修复前）
 

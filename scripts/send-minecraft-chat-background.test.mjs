@@ -2,50 +2,24 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("background Minecraft chat posts UTF-16 WM_CHAR units through PostMessageW", async () => {
+test("Minecraft T chat requires manual input and cannot mutate the desktop", async () => {
   const source = await readFile(new URL("./send-minecraft-chat-background.ps1", import.meta.url), "utf8");
-  assert.match(source, /EntryPoint\s*=\s*"PostMessageW"/u);
-  assert.match(source, /foreach \(char codeUnit in value\)/u);
-  assert.match(source, /0x0102/u);
-  assert.doesNotMatch(source, /0x0109|ConvertToUtf32/u);
-  assert.match(source, /DraftOnly/u);
+
+  assert.match(source, /MANUAL_UI_REQUIRED/u);
+  assert.match(source, /automatic Minecraft T-chat, respawn, and UI normalization are disabled/u);
+  assert.match(source, /Press T, type the requested message yourself/u);
   assert.match(source, /Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String/u);
-  assert.match(source, /clientUiState/u);
+  assert.match(source, /NormalizeOnly/u);
   assert.match(source, /RespawnIfDead/u);
   assert.match(source, /RecoverPlayerNearNpcForTest/u);
-  assert.match(source, /suite\s*=\s*"view-npc".*mode\s*=\s*"npc"/u);
-  assert.match(source, /TestPlayerRecoveryNearNpcApplied/u);
-  assert.match(source, /liveFixtureAck/u);
-  assert.match(source, /live-fixture:denied/u);
-  assert.match(source, /view-npc:npc applied/u);
-  assert.match(source, /ownerDistance\s+-gt\s+8\.0/u);
   assert.match(source, /ControlBaseUri/u);
-  assert.match(source, /MinecraftProcessId/u);
-  assert.match(source, /NativeWindowHandle/u);
   assert.match(source, /ControlBaseUri must be an HTTP loopback URL/u);
   assert.match(source, /127\.0\.0\.1.*localhost.*::1/u);
-  assert.match(source, /active-minecraft-window\.status/u);
-  assert.match(source, /GetWindowThreadProcessId/u);
-  assert.match(source, /FindLargestWindowForProcess/u);
-  assert.match(source, /net\.minecraft\.client\.main\.Main/u);
-  assert.match(source, /neoforge-1\.21\.1/u);
-  assert.match(source, /remote-player/u);
-  assert.match(source, /initialUiState\s+-eq\s+"death"/u);
-  assert.match(source, /MinecraftBackgroundChatPost\]::Click/u);
-  assert.match(source, /Wait-ClientUiState\s+"chat"/u);
-  assert.match(source, /Wait-ClientUiState\s+"gameplay"/u);
-  assert.match(source, /ChatOpenAttempts/u);
-  assert.match(source, /ClipCursor\(IntPtr\.Zero\)/u);
-  assert.match(source, /ReleaseCursorCapture\(\$verifiedHandle\)/u);
-  assert.match(source, /GetForegroundWindow/u);
-  assert.match(source, /GetCursorPos/u);
-  assert.match(source, /ForegroundWindowPreserved/u);
-  assert.match(source, /CursorPositionPreserved/u);
-  assert.match(source, /Set-MinecraftWindowStateWithoutInteraction/u);
-  assert.match(source, /SW_SHOWNOACTIVATE/u);
-  assert.match(source, /FindLargestWindowForProcess/u);
-  assert.doesNotMatch(source, /ShowWindowAsync\([^\r\n]*,\s*9\)/u);
-  assert.doesNotMatch(source, /0x0008/u);
-  assert.match(source, /CursorCaptureReleased\s*=\s*\$true/u);
-  assert.doesNotMatch(source, /Set-Clipboard|Get-Clipboard/u);
+  assert.match(source, /MouseOrKeyboardInputUsed\s*=\s*\$false/u);
+  assert.match(source, /WindowMutationUsed\s*=\s*\$false/u);
+  assert.match(source, /CursorMutationUsed\s*=\s*\$false/u);
+  assert.doesNotMatch(
+    source,
+    /PostMessage|ShowWindow|SetWindowPos|SetForegroundWindow|ClipCursor|ReleaseCapture|SendInput|SetCursorPos|mouse_event|keybd_event|Set-Clipboard|Get-Clipboard/u,
+  );
 });

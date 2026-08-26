@@ -12,7 +12,6 @@ using System.Windows.Automation;
 
 internal static class HmclLauncher
 {
-    private const int SwMinimize = 6;
     private static readonly Regex HmclTitle = new Regex("HMCL|Hello Minecraft", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex LaunchText = new Regex("启动游戏|Launch Game", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly UTF8Encoding StrictUtf8 = new UTF8Encoding(false, true);
@@ -35,18 +34,6 @@ internal static class HmclLauncher
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
-
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindowAsync(IntPtr window, int command);
-
-    [DllImport("user32.dll")]
-    private static extern bool ClipCursor(IntPtr rectangle);
-
-    [DllImport("user32.dll")]
-    private static extern bool ReleaseCapture();
 
     private static string Quote(string value)
     {
@@ -459,17 +446,6 @@ internal static class HmclLauncher
         return null;
     }
 
-    private static void BackgroundWindow(IntPtr handle)
-    {
-        // A synthetic WM_KILLFOCUS makes fullscreen GLFW minimize itself. The
-        // Win32 capture release and bottom placement keep interaction in the
-        // background without fabricating a focus transition.
-        ReleaseCapture();
-        ClipCursor(IntPtr.Zero);
-        const uint flags = 0x0001 | 0x0002 | 0x0010;
-        SetWindowPos(handle, (IntPtr)1, 0, 0, 0, 0, flags);
-    }
-
     private static string EscapeJson(string value)
     {
         return value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
@@ -603,16 +579,7 @@ internal static class HmclLauncher
             {
                 throw new TimeoutException("Minecraft 游戏窗口未在限定时间内出现");
             }
-            stage = "background-minecraft-window";
-            BackgroundWindow(gameHandle);
-            IntPtr hmclHandle;
-            int hmclProcessId;
-            if (TryFindHmclWindowHandle(out hmclHandle, out hmclProcessId))
-            {
-                ShowWindowAsync(hmclHandle, SwMinimize);
-            }
-            BackgroundWindow(gameHandle);
-
+            stage = "minecraft-window-ready";
             Console.WriteLine(
                 "{\"launched\":true,\"exactInstance\":\"" + EscapeJson(expectedInstance)
                 + "\",\"instanceMode\":\"direct-source\",\"settingsChanged\":"
@@ -620,6 +587,8 @@ internal static class HmclLauncher
                 + ",\"exactSelectionVerified\":true,\"minecraftWindowReady\":true"
                 + ",\"minecraftProcessId\":" + gameProcessId
                 + ",\"minecraftWindowHandle\":" + gameHandle.ToInt64()
+                + ",\"launcherWindowMutated\":false"
+                + ",\"minecraftWindowMutated\":false"
                 + ",\"mouseOrKeyboardInputUsed\":false}"
             );
             return 0;
