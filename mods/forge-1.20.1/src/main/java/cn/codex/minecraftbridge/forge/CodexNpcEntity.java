@@ -95,6 +95,7 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
     private final NpcTaskEngine tasks = new NpcTaskEngine(this, CONFIG);
     private final NpcTaskCheckpointCache taskCheckpointCache = new NpcTaskCheckpointCache();
     private int recoveryTicks;
+    private boolean recoveryRecallPending;
     private float exhaustion;
     private int naturalRegenerationTicks;
     private int managedEatingSourceSlot = -1;
@@ -430,6 +431,7 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
                 if (--recoveryTicks <= 0) recover();
                 return;
             }
+            if (recoveryRecallPending && !completeRecoveryRecall()) return;
             tasks.tick();
             syncTaskPresentation();
             if (tickCount % 10 == 0) {
@@ -530,17 +532,17 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
         return clientSpeechTicks;
     }
 
-    private void tryStartAutomaticEating() {
+    boolean tryStartAutomaticEating() {
         if (foodLevel() >= 20) {
             automaticEatingUntilFull = false;
-            return;
+            return false;
         }
-        if (!tasks.canStartAutomaticEating()) return;
+        if (!tasks.canStartAutomaticEating()) return false;
         boolean needsRegenerationFood = HungerPolicy.shouldEatToRegenerate(foodLevel(), getHealth(), getMaxHealth());
         if (needsRegenerationFood) automaticEatingUntilFull = true;
-        if (!automaticEatingUntilFull && foodLevel() >= HungerPolicy.AUTO_EAT_THRESHOLD) return;
+        if (!automaticEatingUntilFull && foodLevel() >= HungerPolicy.AUTO_EAT_THRESHOLD) return false;
         if (foodLevel() < HungerPolicy.AUTO_EAT_THRESHOLD) automaticEatingUntilFull = true;
-        if (isUsingItem() || tasks.isExplicitEating()) return;
+        if (isUsingItem() || tasks.isExplicitEating()) return false;
         int bestSlot = -1;
         int bestScore = Integer.MIN_VALUE;
         for (int slot = 0; slot < INVENTORY_SIZE; slot++) {
@@ -554,7 +556,7 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
                 bestSlot = slot;
             }
         }
-        if (bestSlot >= 0) startManagedEating(bestSlot);
+        return bestSlot >= 0 && startManagedEating(bestSlot);
     }
 
     private void tickNaturalRegeneration() {
@@ -753,6 +755,7 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
         setHealth(1.0F);
         entityData.set(DOWNED, true);
         recoveryTicks = CONFIG.npcRecoveryTicks;
+        recoveryRecallPending = false;
         tasks.suspendForDowned();
         setStatus("倒地恢复中");
     }
@@ -761,14 +764,27 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
         entityData.set(DOWNED, false);
         setHealth(Math.max(10.0F, getMaxHealth() * 0.5F));
         setFoodLevel(Math.max(10, foodLevel()));
+        recoveryRecallPending = true;
+        setStatus("已恢复，正在返回玩家身边");
+        completeRecoveryRecall();
+    }
+
+    private boolean completeRecoveryRecall() {
         ServerPlayer owner = owner();
-        boolean restoredTaskCheckpoint = tasks.recoverAtActiveTaskCheckpoint();
-        if (!restoredTaskCheckpoint && owner != null
-            && (owner.level() != level() || distanceToSqr(owner) > 24 * 24)) {
-            NpcManager.recall(owner, this);
+        boolean ownerPresent = owner != null;
+        boolean ownerAlive = ownerPresent && owner.isAlive();
+        boolean ownerRemoved = ownerPresent && owner.isRemoved();
+        if (!NpcRecoveryRecallPolicy.canReturnToOwner(ownerPresent, ownerAlive, ownerRemoved)) {
+            setStatus(ownerPresent
+                ? "已恢复，等待玩家重生后返回身边"
+                : "已恢复，等待玩家上线后返回身边");
+            return false;
         }
-        tasks.resumeAfterRecovery();
-        if (tasks.activeTaskId().isBlank()) setStatus("已恢复");
+        CodexNpcEntity recalled = NpcManager.recall(owner, this);
+        recalled.recoveryRecallPending = false;
+        recalled.tasks.resumeAfterRecovery();
+        if (recalled.tasks.activeTaskId().isBlank()) recalled.setStatus("已恢复并返回玩家身边");
+        return recalled == this;
     }
 
     @Override
@@ -915,6 +931,7 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
         tag.putByte("CodexStance", stance().id());
         tag.putBoolean("CodexDowned", isDowned());
         tag.putInt("CodexRecoveryTicks", recoveryTicks);
+        tag.putBoolean("CodexRecoveryRecallPending", recoveryRecallPending);
         tag.putInt("CodexFood", foodLevel());
         tag.putFloat("CodexSaturation", saturationLevel());
         tag.putFloat("CodexExhaustion", exhaustion);
@@ -948,6 +965,7 @@ public final class CodexNpcEntity extends PathfinderMob implements MenuProvider 
         setStance(NpcTaskEngine.Stance.fromId(tag.getByte("CodexStance")));
         entityData.set(DOWNED, tag.getBoolean("CodexDowned"));
         recoveryTicks = tag.getInt("CodexRecoveryTicks");
+        recoveryRecallPending = !isDowned() && tag.getBoolean("CodexRecoveryRecallPending");
         setFoodLevel(tag.contains("CodexFood") ? tag.getInt("CodexFood") : 20);
         setSaturationLevel(tag.contains("CodexSaturation") ? tag.getFloat("CodexSaturation") : Math.min(5.0F, foodLevel()));
         exhaustion = tag.getFloat("CodexExhaustion");

@@ -54,7 +54,7 @@ if ($null -eq $window) {
     # windowed Java process only when restoring it makes a real HMCL window
     # visible to UI Automation; never inspect the Java command line.
     foreach ($candidate in @(Get-Process -Name "java" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })) {
-        [void][HmclSelectedInstanceWindow]::ShowWindowAsync([IntPtr]$candidate.MainWindowHandle, 9) # SW_RESTORE
+        [void][HmclSelectedInstanceWindow]::ShowWindowAsync([IntPtr]$candidate.MainWindowHandle, 4) # SW_SHOWNOACTIVATE
         Start-Sleep -Milliseconds 700
         $window = Find-HmclWindow
         if ($null -ne $window -and $window.Current.ProcessId -eq $candidate.Id) {

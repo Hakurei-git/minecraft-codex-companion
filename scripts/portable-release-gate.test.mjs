@@ -112,6 +112,10 @@ test("desktop EXE always uses and precisely launches the selected HMCL source in
   assert.match(hmclLauncherSource, /TryFindHmclWindowHandle\(out hmclHandle, out hmclProcessId\)/);
   assert.match(hmclLauncherSource, /TryFindMinecraftWindowHandle\(out gameHandle, out gameProcessId\)/);
   assert.match(hmclLauncherSource, /!name\.StartsWith\("Minecraft Codex Companion"/);
+  assert.match(hmclLauncherSource, /IsJavaGameProcess/);
+  assert.match(hmclLauncherSource, /String\.Equals\(process\.ProcessName, "java"/);
+  assert.match(hmclLauncherSource, /String\.Equals\(process\.ProcessName, "javaw"/);
+  assert.match(hmclLauncherSource, /IsMinecraftGameTitle\(name\);\s*\r?\n\s*}, IsJavaGameProcess/);
   assert.doesNotMatch(hmclLauncherSource, /PostMessage\(handle,\s*0x0008/);
   assert.doesNotMatch(hmclLauncherSource, /Console\.OutputEncoding/);
   assert.doesNotMatch(hmclLauncherSource, /hmcl\.Current\.NativeWindowHandle/);
@@ -129,7 +133,7 @@ test("offline pinned Forge packaging is explicit, hash-bound, and runs every For
   assert.match(buildScript, /\^\[A-Fa-f0-9\]\{64\}\$/);
   assert.match(buildScript, /Pinned Forge bridge JAR SHA-256 does not match/);
   assert.match(buildScript, /run-forge-tests-in-process\.ps1/);
-  assert.match(buildScript, /pinned-sha256-and-449-tests/);
+  assert.match(buildScript, /pinned-sha256-and-465-tests/);
   assert.match(buildScript, /OfflineNodeModulesRoot/);
   assert.match(buildScript, /Assert-OfflineNodeModules/);
   assert.match(buildScript, /Offline node_modules contains filesystem links or reparse points/);

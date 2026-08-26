@@ -181,7 +181,7 @@ async function sendMinecraftTChat(message) {
   const encoded = Buffer.from(message, "utf8").toString("base64");
   await runPowerShell(
     "send-minecraft-chat-background.ps1",
-    ["-MessageUtf8Base64", encoded, "-RespawnIfDead"],
+    ["-MessageUtf8Base64", encoded, "-RespawnIfDead", "-RecoverPlayerNearNpcForTest"],
     30_000,
   );
 }

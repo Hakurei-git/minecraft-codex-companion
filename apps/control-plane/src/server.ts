@@ -152,6 +152,14 @@ const bridgeManager = new BridgeManager({
         Boolean(directedAntigravity?.[1]),
       );
       if (!recorded) return false;
+      const companionPose = settings.actionMode === "smart" ? (() => {
+        const snapshot = service.getSnapshot(recorded.companionId);
+        return {
+          dimension: snapshot.dimension,
+          position: snapshot.position,
+          yaw: snapshot.yaw,
+        };
+      })() : undefined;
       const interactionId = settings.actionMode === "smart"
         ? service.beginAiDecision(recorded, "antigravity-autoplay")
         : undefined;
@@ -164,7 +172,11 @@ const bridgeManager = new BridgeManager({
         )),
       ] : undefined;
       void antigravityAgent.trigger(recorded, settings, interactionId
-        ? { interactionId, ...(capabilityCatalog ? { capabilityCatalog } : {}) }
+        ? {
+            interactionId,
+            ...(capabilityCatalog ? { capabilityCatalog } : {}),
+            ...(companionPose ? { snapshot: companionPose } : {}),
+          }
         : undefined).catch(async (caught) => {
         if (interactionId) service.cancelAiDecision(interactionId);
         const normalized = normalizeAntigravityAutoTriggerFailure(caught);

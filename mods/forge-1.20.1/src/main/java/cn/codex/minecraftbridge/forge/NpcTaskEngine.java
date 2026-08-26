@@ -1,6 +1,7 @@
 package cn.codex.minecraftbridge.forge;
 
 import cn.codex.minecraftbridge.client.BridgeConfig;
+import cn.codex.minecraftbridge.client.MovementTargetPolicy;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonElement;
@@ -455,7 +456,6 @@ public final class NpcTaskEngine {
         if (DragonCareLiveFixture.suppressesAutonomousWork(npc)) return false;
         if (assistTarget != null || active != null && "combat".equals(active.kind)) return false;
         if (active != null && "provision-food".equals(active.kind) && active.foodCookingInputId != null) return false;
-        if (active != null && isSurvivalReserveProvision(active)) return false;
         return nearestHostile(npc, 8.0D, "hostile") == null;
     }
 
@@ -719,6 +719,7 @@ public final class NpcTaskEngine {
         spec.addProperty("destination", "backpack");
         spec.addProperty("count", provisioningTarget);
         spec.addProperty("requestedBy", "npc-food-reserve");
+        spec.addProperty("reserveTargetFrozen", true);
         spec.addProperty("priority", priority);
         active = new ActiveWork(
             "local:auto-food:" + npc.getUUID() + ":" + npc.tickCount,
@@ -1465,9 +1466,18 @@ public final class NpcTaskEngine {
     }
 
     private void tickMove(ActiveWork work, Vec3 destination) {
-        double distance = npc.position().distanceTo(destination);
+        Vec3 delta = destination.subtract(npc.position());
+        double distance = MovementTargetPolicy.distance(
+            delta.x,
+            delta.y,
+            delta.z,
+            "horizontal".equals(string(work.spec, "arrivalMetric", "three-dimensional"))
+        );
         if (work.startDistance < 0) work.startDistance = Math.max(1, distance);
-        if (distance <= 1.6) {
+        double arrivalTolerance = MovementTargetPolicy.arrivalTolerance(
+            number(work.spec, "arrivalTolerance", 1.6D)
+        );
+        if (distance <= arrivalTolerance) {
             complete(work, "已到达目标位置");
             return;
         }
@@ -1519,9 +1529,8 @@ public final class NpcTaskEngine {
         if (work.destination == null) {
             double radius = number(work.spec, "radius", 64);
             String direction = string(work.spec, "direction", "any");
-            double dx = direction.equals("west") ? -radius : direction.equals("east") || direction.equals("any") ? radius : 0;
-            double dz = direction.equals("north") ? -radius : direction.equals("south") ? radius : direction.equals("any") ? radius * 0.6 : 0;
-            work.destination = npc.position().add(dx, 0, dz);
+            MovementTargetPolicy.HorizontalOffset offset = MovementTargetPolicy.exploreOffset(radius, direction);
+            work.destination = npc.position().add(offset.x(), 0, offset.z());
         }
         tickMove(work, work.destination);
     }
@@ -1544,6 +1553,7 @@ public final class NpcTaskEngine {
             work.targetBlock = null;
             work.destination = null;
             work.gatherTargets.clear();
+            work.gatherTreeTargets.clear();
             complete(work, gatherUsesInventoryTotal(work)
                 ? "背包中已有 " + gathered + " 个 " + itemId
                 : "已采集 " + gathered + " 个 " + itemId);
@@ -1589,6 +1599,11 @@ public final class NpcTaskEngine {
         if (!isCurrentGatherTargetValid(work, selector)) {
             work.gatherAccessTarget = false;
             work.targetBlock = pollGatherTarget(work, selector);
+            if (work.targetBlock == null && requeueVerifiedNaturalTree(work, selector)) {
+                if (active != work) return;
+                work.targetBlock = pollGatherTarget(work, selector);
+                if (work.targetBlock == null) return;
+            }
             if (work.targetBlock == null && work.ticks - work.lastSearchTick >= 10) {
                 work.lastSearchTick = work.ticks;
                 BlockPos seed = DeepMiningPolicy.supports(itemId)
@@ -1683,7 +1698,7 @@ public final class NpcTaskEngine {
         if (npc.creativeResources() && !creativeDrop.isEmpty()) npc.insert(creativeDrop);
         else npc.absorbNearbyItemsAt(Vec3.atCenterOf(brokenTarget), 3.0);
         recordInventoryAction(work, "gather-pickup");
-        refreshConnectedResourcesAfterBreak(work, brokenTarget, selector, targetState.is(BlockTags.LOGS));
+        refreshConnectedResourcesAfterBreak(work, brokenTarget, selector, work.gatherTreeCluster);
         npc.addExhaustion(0.08F);
         work.targetBlock = null;
         work.gatherAccessTarget = false;
@@ -2549,6 +2564,8 @@ public final class NpcTaskEngine {
         work.gatherPathFailures = 0;
         work.gatherTreeCluster = false;
         work.gatherClusterReached = false;
+        work.gatherTreeTargets.clear();
+        work.gatherTreeRetryPasses = 0;
         work.gatherAccessTarget = false;
         work.noWorkTicks = 0;
         work.stalledTicks = 0;
@@ -2982,6 +2999,8 @@ public final class NpcTaskEngine {
         work.gatherTargets.clear();
         work.gatherTreeCluster = false;
         work.gatherClusterReached = false;
+        work.gatherTreeTargets.clear();
+        work.gatherTreeRetryPasses = 0;
         work.gatherAccessTarget = false;
         work.gatherPathFailures = 0;
         work.gatherSearchRadius = 16;
@@ -5433,6 +5452,21 @@ public final class NpcTaskEngine {
     private void tickProvisionFood(ActiveWork work) {
         String source = string(work.spec, "source", "auto");
         String destination = string(work.spec, "destination", "backpack");
+        boolean survivalReserve = isSurvivalReserveProvision(work);
+        if (survivalReserve && !bool(work.spec, "reserveTargetFrozen", false)) {
+            int migratedTarget = NpcFoodReservePolicy.taskTarget(
+                config.npcFoodReserveCount,
+                integer(work.spec, "count", FoodProvisionPolicy.DEFAULT_RESERVE_COUNT),
+                false
+            );
+            if (migratedTarget <= 0) {
+                complete(work, "常备安全口粮已在设置中关闭");
+                return;
+            }
+            work.spec.addProperty("count", migratedTarget);
+            work.spec.addProperty("reserveTargetFrozen", true);
+            work.requestedCount = migratedTarget;
+        }
         if (!work.initialized) {
             work.initialized = true;
             work.requestedCount = Math.max(1, integer(work.spec, "count", FoodProvisionPolicy.DEFAULT_RESERVE_COUNT));
@@ -5440,12 +5474,6 @@ public final class NpcTaskEngine {
             work.gatherSearchRadius = 16;
             work.lastSearchTick = -10;
             work.completed = Math.min(work.requestedCount, provisioningFoodCount(work));
-        }
-        if ("npc-food-reserve".equals(string(work.spec, "requestedBy", ""))) {
-            // Upgrade persisted local reserve tasks too. Hunger can fall while
-            // travelling, so include the meal that runs immediately after the
-            // interrupted task resumes instead of entering a 7 -> 8 -> eat -> 7 loop.
-            work.requestedCount = Math.max(work.requestedCount, autonomousFoodProvisionTarget());
         }
         if (hasCraftGatherPrerequisite(work)) {
             tickCraftGatherPrerequisite(work);
@@ -5471,6 +5499,19 @@ public final class NpcTaskEngine {
         int foodItems = provisioningFoodCount(work);
         work.completed = Math.min(work.requestedCount, foodItems);
         if (FoodProvisionPolicy.shouldComplete(foodItems, work.requestedCount)) {
+            // Eat before declaring a reserve complete. Otherwise an 8-item
+            // reserve can complete at low hunger, immediately consume one item,
+            // and start the same 7 -> 8 task again on the next tick.
+            if (survivalReserve) {
+                if (npc.isManagedEating()) {
+                    taskStatus(work, "口粮已达到固定目标，正在安全进食后复核剩余库存");
+                    return;
+                }
+                if (npc.tryStartAutomaticEating()) {
+                    progress(work, activeProgress(work), "口粮已达到固定目标，先安全进食再确认剩余库存");
+                    return;
+                }
+            }
             String rawFood = findRawProvisioningFood(work);
             if (rawFood != null && beginProvisionFoodCooking(work, rawFood)) {
                 tickProvisionFoodCooking(work);
@@ -8725,6 +8766,8 @@ public final class NpcTaskEngine {
         work.gatherPathFailures = 0;
         work.gatherTreeCluster = false;
         work.gatherClusterReached = false;
+        work.gatherTreeTargets.clear();
+        work.gatherTreeRetryPasses = 0;
         work.gatherAccessTarget = false;
         work.noWorkTicks = 0;
         work.stalledTicks = 0;
@@ -10358,9 +10401,14 @@ public final class NpcTaskEngine {
                 }
             }
         }
-        candidates.sort(Comparator.comparingDouble(
-            candidate -> npc.position().distanceToSqr(Vec3.atBottomCenterOf(candidate))
-        ));
+        Comparator<BlockPos> candidateOrder = work.gatherTreeCluster && work.gatherClusterReached
+            ? Comparator
+                .comparingDouble((BlockPos candidate) -> gatherInteractionDistanceFromStand(candidate, target))
+                .thenComparingDouble(candidate -> npc.position().distanceToSqr(Vec3.atBottomCenterOf(candidate)))
+            : Comparator.comparingDouble(
+                candidate -> npc.position().distanceToSqr(Vec3.atBottomCenterOf(candidate))
+            );
+        candidates.sort(candidateOrder);
         int candidateCount = candidates.size();
         int attemptCount = GatherRetryPolicy.candidateAttemptCount(candidateCount);
         int cursor = GatherRetryPolicy.normalizedCandidateCursor(work.gatherStandPathCursor, candidateCount);
@@ -10556,6 +10604,12 @@ public final class NpcTaskEngine {
         work.gatherStandPathCursor = 0;
         resetGatherTargetProgress(work);
         work.noWorkTicks = 0;
+        if (work.gatherTreeCluster
+            && work.gatherClusterReached
+            && work.gatherTreeTargets.contains(target)) {
+            npc.setStatus("已到达同一自然树，当前树干暂不可达；先检查树内其余目标再近距离重试");
+            return;
+        }
         boolean remoteRecoveryAllowed = gatherAllowsRemoteRecovery(work);
         if (!remoteRecoveryAllowed) {
             if (GatherRetryPolicy.afterSkipping(work.skippedGatherTargets.size()) == GatherRetryPolicy.Decision.FAIL_TASK) {
@@ -10591,6 +10645,8 @@ public final class NpcTaskEngine {
             work.lastTeleportTarget = null;
             work.gatherTreeCluster = false;
             work.gatherClusterReached = false;
+            work.gatherTreeTargets.clear();
+            work.gatherTreeRetryPasses = 0;
             progress(work, activeProgress(work),
                 "本区采集目标连续不可达，正在前往第 " + work.gatherExcursions + " 个搜索区继续寻找");
             return;
@@ -12860,7 +12916,10 @@ public final class NpcTaskEngine {
             );
             work.gatherTreeCluster = cluster.natural();
             work.gatherClusterReached = false;
+            work.gatherTreeTargets.clear();
+            work.gatherTreeRetryPasses = 0;
             if (!cluster.natural()) return;
+            work.gatherTreeTargets.addAll(cluster.logs());
             for (BlockPos position : NaturalTreeScanner.orderedTargets(cluster, seed)) {
                 if (work.gatherTargets.size() >= GATHER_MAX_CONNECTED_TARGETS) break;
                 if (work.skippedGatherTargets.contains(position)) continue;
@@ -12877,6 +12936,8 @@ public final class NpcTaskEngine {
         frontier.add(seed.immutable());
         work.gatherTreeCluster = false;
         work.gatherClusterReached = false;
+        work.gatherTreeTargets.clear();
+        work.gatherTreeRetryPasses = 0;
         int queuedBefore = work.gatherTargets.size();
         while (!frontier.isEmpty()
             && work.gatherTargets.size() - queuedBefore < GATHER_MAX_CONNECTED_TARGETS) {
@@ -12897,9 +12958,23 @@ public final class NpcTaskEngine {
         ActiveWork work,
         BlockPos brokenTarget,
         ResourceSelector selector,
-        boolean naturalTreeCluster
+        boolean verifiedNaturalTreeCluster
     ) {
-        if (naturalTreeCluster) return;
+        if (verifiedNaturalTreeCluster) {
+            work.gatherTreeTargets.remove(brokenTarget);
+            work.gatherTreeRetryPasses = 0;
+            Set<BlockPos> alreadyQueued = new HashSet<>(work.gatherTargets);
+            work.skippedGatherTargets.removeIf(position -> work.gatherTreeTargets.contains(position));
+            work.gatherTreeTargets.stream()
+                .filter(position -> matchesGatherBlock(position, selector, ItemStack.EMPTY))
+                .filter(position -> !isProtectedHomeGatherResource(position))
+                .sorted(Comparator.<BlockPos>comparingInt(BlockPos::getY)
+                    .thenComparingDouble(position -> position.distSqr(brokenTarget)))
+                .filter(alreadyQueued::add)
+                .map(BlockPos::immutable)
+                .forEachOrdered(work.gatherTargets::addLast);
+            return;
+        }
         // Breaking an exposed block can make previously occluded vein blocks
         // reachable. Forget only nearby path skips and rebuild the connected
         // queue before any remote-recovery decision is considered.
@@ -12912,6 +12987,45 @@ public final class NpcTaskEngine {
                 enqueueConnectedResources(work, neighbor, selector);
             }
         }
+    }
+
+    private boolean requeueVerifiedNaturalTree(ActiveWork work, ResourceSelector selector) {
+        if (!work.gatherTreeCluster || !work.gatherClusterReached || work.gatherTreeTargets.isEmpty()) {
+            return false;
+        }
+        List<BlockPos> remaining = work.gatherTreeTargets.stream()
+            .filter(position -> matchesGatherBlock(position, selector, ItemStack.EMPTY))
+            .filter(position -> !isProtectedHomeGatherResource(position))
+            .sorted(Comparator.<BlockPos>comparingInt(BlockPos::getY)
+                .thenComparingDouble(position -> position.distSqr(npc.blockPosition())))
+            .map(BlockPos::immutable)
+            .toList();
+        work.gatherTreeTargets.retainAll(remaining);
+        if (remaining.isEmpty()) {
+            work.gatherTreeCluster = false;
+            work.gatherClusterReached = false;
+            work.gatherTreeRetryPasses = 0;
+            return false;
+        }
+        if (!GatherRetryPolicy.shouldRetryVerifiedNaturalTree(
+            remaining.size(),
+            work.gatherTreeRetryPasses
+        )) {
+            fail(work, "已到达自然树，但剩余树干在多次近距离重试后仍不可达", "TREE_CLUSTER_NOT_REACHABLE");
+            return true;
+        }
+        work.gatherTreeRetryPasses++;
+        work.gatherTargets.clear();
+        work.skippedGatherTargets.removeAll(remaining);
+        work.gatherTargets.addAll(remaining);
+        work.gatherPathFailures = 0;
+        work.gatherStandPathCursor = 0;
+        work.lastGatherPathAttemptTick = -1;
+        work.stalledTicks = 0;
+        work.lastDistance = -1;
+        resetGatherTargetProgress(work);
+        npc.setStatus("树干被下层方块遮挡后已打开，正在重试同一自然树剩余 " + remaining.size() + " 个目标");
+        return true;
     }
 
     private boolean isSafeGatherSeed(BlockPos position, ResourceSelector selector) {
@@ -12955,11 +13069,7 @@ public final class NpcTaskEngine {
     }
 
     private int autonomousFoodProvisionTarget() {
-        return NpcFoodReservePolicy.targetWithMealBuffer(
-            foodReserveTarget(),
-            npc.foodLevel(),
-            20
-        );
+        return NpcFoodReservePolicy.target(config.npcFoodReserveCount);
     }
 
     private Vec3 nextGatherSearchDestinationFrom(BlockPos origin, int excursion) {
@@ -15450,6 +15560,10 @@ public final class NpcTaskEngine {
         return object.has(key) && !object.get(key).isJsonNull() ? object.get(key).getAsInt() : fallback;
     }
 
+    private static boolean bool(JsonObject object, String key, boolean fallback) {
+        return object.has(key) && !object.get(key).isJsonNull() ? object.get(key).getAsBoolean() : fallback;
+    }
+
     private boolean gatherUsesInventoryTotal(ActiveWork work) {
         return "gather".equals(work.kind)
             && "inventory-total".equals(string(work.spec, "countMode", "acquire"));
@@ -15637,6 +15751,7 @@ public final class NpcTaskEngine {
         checkpoint.addProperty("gatherExcursions", work.gatherExcursions);
         checkpoint.addProperty("gatherTreeCluster", work.gatherTreeCluster);
         checkpoint.addProperty("gatherClusterReached", work.gatherClusterReached);
+        checkpoint.addProperty("gatherTreeRetryPasses", work.gatherTreeRetryPasses);
         checkpoint.addProperty("gatherAccessTarget", work.gatherAccessTarget);
         checkpoint.addProperty("lastSearchTick", work.lastSearchTick);
         checkpoint.addProperty("deepMiningPhase", work.deepMiningPhase);
@@ -15743,6 +15858,7 @@ public final class NpcTaskEngine {
         checkpoint.add("skippedStorageTargets", blocks(work.skippedStorageTargets));
         checkpoint.add("skippedWorkstationTargets", blocks(work.skippedWorkstationTargets));
         checkpoint.add("gatherTargets", blocks(work.gatherTargets));
+        checkpoint.add("gatherTreeTargets", blocks(work.gatherTreeTargets));
         checkpoint.add("skippedBedPlacements", blocks(work.skippedBedPlacements));
         checkpoint.add("skippedBedSheepTargets", uuids(work.skippedBedSheepTargets));
         checkpoint.add("skippedFoodAnimalTargets", uuids(work.skippedFoodAnimalTargets));
@@ -15792,6 +15908,7 @@ public final class NpcTaskEngine {
         work.gatherExcursions = Math.max(0, integer(value, "gatherExcursions", 0));
         work.gatherTreeCluster = value.has("gatherTreeCluster") && value.get("gatherTreeCluster").getAsBoolean();
         work.gatherClusterReached = value.has("gatherClusterReached") && value.get("gatherClusterReached").getAsBoolean();
+        work.gatherTreeRetryPasses = Math.max(0, integer(value, "gatherTreeRetryPasses", 0));
         work.gatherAccessTarget = value.has("gatherAccessTarget") && value.get("gatherAccessTarget").getAsBoolean();
         work.lastSearchTick = integer(value, "lastSearchTick", -10);
         work.deepMiningPhase = string(value, "deepMiningPhase", "");
@@ -15926,6 +16043,7 @@ public final class NpcTaskEngine {
         readBlocks(value, "skippedStorageTargets", work.skippedStorageTargets);
         readBlocks(value, "skippedWorkstationTargets", work.skippedWorkstationTargets);
         readBlocks(value, "gatherTargets", work.gatherTargets);
+        readBlocks(value, "gatherTreeTargets", work.gatherTreeTargets);
         readBlocks(value, "skippedBedPlacements", work.skippedBedPlacements);
         readUuids(value, "skippedBedSheepTargets", work.skippedBedSheepTargets);
         readUuids(value, "skippedFoodAnimalTargets", work.skippedFoodAnimalTargets);
@@ -16377,6 +16495,7 @@ public final class NpcTaskEngine {
         private int buildStandPathCursor;
         private int gatherSearchRadius = 16;
         private int gatherExcursions;
+        private int gatherTreeRetryPasses;
         private int lastSearchTick = -10;
         private int deepMiningTargetY = Integer.MAX_VALUE;
         private int deepMiningPhaseStartedTick;
@@ -16483,6 +16602,7 @@ public final class NpcTaskEngine {
         private final Set<BlockPos> skippedStorageTargets = new HashSet<>();
         private final Set<BlockPos> skippedWorkstationTargets = new HashSet<>();
         private final Deque<BlockPos> gatherTargets = new ArrayDeque<>();
+        private final Set<BlockPos> gatherTreeTargets = new HashSet<>();
         private final Set<BlockPos> skippedBedPlacements = new HashSet<>();
         private final Set<UUID> skippedBedSheepTargets = new HashSet<>();
         private final Set<UUID> skippedFoodAnimalTargets = new HashSet<>();

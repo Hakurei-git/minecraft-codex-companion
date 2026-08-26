@@ -12,10 +12,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LiveFixturePolicyTest {
     @Test
-    void allowsOnlyReversibleStorageFixturesWithoutCheats() {
+    void allowsOnlyExplicitReversibleFixturesWithoutCheats() {
         assertFalse(LiveFixturePolicy.requiresCheats(request("storage", "setup-restart")));
         assertFalse(LiveFixturePolicy.requiresCheats(request("no-cheat-expedition", "setup")));
         assertFalse(LiveFixturePolicy.requiresCheats(request("save-and-quit", "arm")));
+        assertFalse(LiveFixturePolicy.requiresCheats(request("view-npc", "npc")));
+        assertFalse(LiveFixturePolicy.requiresCheats(request("food-reserve-audit", "inspect")));
+        assertFalse(LiveFixturePolicy.requiresCheats(request("npc-recovery", "setup")));
+        assertTrue(LiveFixturePolicy.requiresCheats(request("view-npc", "fishing")));
+        assertTrue(LiveFixturePolicy.requiresCheats(request("view-npc", "sleep")));
         assertTrue(LiveFixturePolicy.requiresCheats(request("dragon", "spawn-book")));
         assertTrue(LiveFixturePolicy.requiresCheats(request("ranch", "setup-establish")));
         assertTrue(LiveFixturePolicy.requiresCheats(request("build-palette", "setup-mixed")));
@@ -93,7 +98,9 @@ class LiveFixturePolicyTest {
             )),
             Map.entry("deep-mining", List.of("setup", "inspect", "cleanup")),
             Map.entry("save-and-quit", List.of("arm")),
-            Map.entry("view-npc", List.of("npc", "fishing", "sleep"))
+            Map.entry("view-npc", List.of("npc", "fishing", "sleep")),
+            Map.entry("food-reserve-audit", List.of("inspect")),
+            Map.entry("npc-recovery", List.of("setup", "down", "inspect", "cleanup"))
         );
         fixtures.forEach((suite, modes) -> modes.forEach(mode ->
             assertFalse(LiveFixturePolicy.commands(request(suite, mode)).isEmpty(), suite + "/" + mode)
@@ -122,6 +129,8 @@ class LiveFixturePolicyTest {
         assertThrows(IllegalArgumentException.class, () -> LiveFixturePolicy.commands(request("food-survival", "spawn-cow")));
         assertThrows(IllegalArgumentException.class, () -> LiveFixturePolicy.commands(request("no-cheat-expedition", "teleport")));
         assertThrows(IllegalArgumentException.class, () -> LiveFixturePolicy.commands(request("save-and-quit", "release")));
+        assertThrows(IllegalArgumentException.class, () -> LiveFixturePolicy.commands(request("food-reserve-audit", "setup")));
+        assertThrows(IllegalArgumentException.class, () -> LiveFixturePolicy.commands(request("npc-recovery", "teleport-player")));
         assertThrows(IllegalArgumentException.class, () -> LiveFixturePolicy.commands(request("unknown", "cleanup")));
     }
 

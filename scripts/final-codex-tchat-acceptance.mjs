@@ -104,11 +104,12 @@ function sendBackgroundChat(message) {
   return runBackgroundChatHelper([
     "-MessageUtf8Base64", Buffer.from(message, "utf8").toString("base64"),
     "-RespawnIfDead",
+    "-RecoverPlayerNearNpcForTest",
   ]);
 }
 
 function normalizeBackgroundMinecraft() {
-  return runBackgroundChatHelper(["-NormalizeOnly", "-RespawnIfDead"]);
+  return runBackgroundChatHelper(["-NormalizeOnly", "-RespawnIfDead", "-RecoverPlayerNearNpcForTest"]);
 }
 
 async function waitFor(check, timeoutMs, label) {

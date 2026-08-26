@@ -20,7 +20,9 @@ param(
 
     [switch]$DraftOnly,
 
-    [switch]$RespawnIfDead
+    [switch]$RespawnIfDead,
+
+    [switch]$RecoverPlayerNearNpcForTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,6 +64,9 @@ public static class MinecraftBackgroundChatPost
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left, Top, Right, Bottom; }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X, Y; }
+
     [DllImport("user32.dll")]
     public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
 
@@ -79,6 +84,12 @@ public static class MinecraftBackgroundChatPost
 
     [DllImport("user32.dll")]
     public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT point);
 
     [DllImport("user32.dll")]
     public static extern bool ClipCursor(IntPtr rect);
@@ -151,13 +162,109 @@ public static class MinecraftBackgroundChatPost
 '@
 }
 
+function Get-DesktopInteractionSnapshot {
+    $point = [MinecraftBackgroundChatPost+POINT]::new()
+    if (-not [MinecraftBackgroundChatPost]::GetCursorPos([ref]$point)) {
+        throw "The physical cursor position could not be audited"
+    }
+    return [PSCustomObject]@{
+        ForegroundWindow = [MinecraftBackgroundChatPost]::GetForegroundWindow().ToInt64()
+        CursorX = $point.X
+        CursorY = $point.Y
+    }
+}
+
+function Test-MinecraftWindowOwnership([IntPtr]$Candidate, [int]$ExpectedProcessId) {
+    if ($Candidate -eq [IntPtr]::Zero -or
+        -not [MinecraftBackgroundChatPost]::IsWindow($Candidate)) {
+        return $false
+    }
+    [uint32]$ownerProcessId = 0
+    return [MinecraftBackgroundChatPost]::GetWindowThreadProcessId(
+        $Candidate,
+        [ref]$ownerProcessId
+    ) -ne 0 -and $ownerProcessId -eq $ExpectedProcessId
+}
+
+function Resolve-VerifiedMinecraftWindowHandle(
+    [int]$ExpectedProcessId,
+    [IntPtr]$PreferredHandle
+) {
+    $process = Get-Process -Id $ExpectedProcessId -ErrorAction Stop
+    if ($process.ProcessName -notin @("java", "javaw")) {
+        throw "The verified Minecraft process is not a Java runtime"
+    }
+    if (Test-MinecraftWindowOwnership $PreferredHandle $ExpectedProcessId) {
+        return $PreferredHandle
+    }
+    $replacement = [MinecraftBackgroundChatPost]::FindLargestWindowForProcess(
+        [uint32]$ExpectedProcessId
+    )
+    if (-not (Test-MinecraftWindowOwnership $replacement $ExpectedProcessId)) {
+        throw "Minecraft did not expose a current verified window handle"
+    }
+    return $replacement
+}
+
+function Set-MinecraftWindowStateWithoutInteraction(
+    [IntPtr]$CurrentHandle,
+    [int]$ExpectedProcessId,
+    [int]$ShowCommand,
+    [bool]$ExpectedIconic
+) {
+    $verifiedHandle = Resolve-VerifiedMinecraftWindowHandle `
+        $ExpectedProcessId `
+        $CurrentHandle
+    $before = Get-DesktopInteractionSnapshot
+    if ($before.ForegroundWindow -eq $verifiedHandle.ToInt64()) {
+        throw "Minecraft is foreground; background chat stopped to avoid user interaction"
+    }
+
+    [void][MinecraftBackgroundChatPost]::ShowWindowAsync($verifiedHandle, $ShowCommand)
+    [MinecraftBackgroundChatPost]::ReleaseCursorCapture($verifiedHandle)
+    $deadline = (Get-Date).AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 50
+        $verifiedHandle = Resolve-VerifiedMinecraftWindowHandle `
+            $ExpectedProcessId `
+            $verifiedHandle
+        $isIconic = [MinecraftBackgroundChatPost]::IsIconic($verifiedHandle)
+    } while ($isIconic -ne $ExpectedIconic -and (Get-Date) -lt $deadline)
+    if ($isIconic -ne $ExpectedIconic) {
+        throw "Minecraft window did not reach the requested background state"
+    }
+    Start-Sleep -Milliseconds 100
+    $after = Get-DesktopInteractionSnapshot
+    $foregroundPreserved = $before.ForegroundWindow -eq $after.ForegroundWindow
+    $cursorPreserved = $before.CursorX -eq $after.CursorX -and
+        $before.CursorY -eq $after.CursorY
+    if (-not $foregroundPreserved -or -not $cursorPreserved) {
+        if (-not $ExpectedIconic) {
+            [void][MinecraftBackgroundChatPost]::ShowWindowAsync($verifiedHandle, 6)
+            [MinecraftBackgroundChatPost]::ReleaseCursorCapture($verifiedHandle)
+        }
+        throw "Minecraft background window transition changed the foreground window or physical cursor position"
+    }
+    return [PSCustomObject]@{
+        Handle = $verifiedHandle
+        ForegroundWindowPreserved = $true
+        CursorPositionPreserved = $true
+    }
+}
+
+function Assert-MinecraftIsNotForeground([IntPtr]$CurrentHandle) {
+    if ([MinecraftBackgroundChatPost]::GetForegroundWindow() -eq $CurrentHandle) {
+        throw "Minecraft became foreground; background chat stopped to avoid user interaction"
+    }
+}
+
 $controlUri = [Uri]$ControlBaseUri
 if ($controlUri.Scheme -ne "http" -or
     $controlUri.Host.ToLowerInvariant() -notin @("127.0.0.1", "localhost", "::1", "[::1]")) {
     throw "ControlBaseUri must be an HTTP loopback URL"
 }
 $baseUri = [Uri]($controlUri.GetLeftPart([UriPartial]::Authority) + "/")
-function Get-ClientUiState {
+function Get-ConnectedMinecraftCompanion {
     $response = Invoke-RestMethod -Uri ([Uri]::new($baseUri, "api/companions")) -TimeoutSec 2
     $companions = @(
         @($response.companions) | Where-Object {
@@ -169,7 +276,12 @@ function Get-ClientUiState {
     if ($companions.Count -ne 1) {
         throw "Background T chat requires exactly one connected Forge or NeoForge companion"
     }
-    $id = [Uri]::EscapeDataString([string]$companions[0].id)
+    return $companions[0]
+}
+
+function Get-ClientUiState {
+    $companion = Get-ConnectedMinecraftCompanion
+    $id = [Uri]::EscapeDataString([string]$companion.id)
     $snapshot = Invoke-RestMethod -Uri ([Uri]::new($baseUri, "api/companions/$id/snapshot")) -TimeoutSec 2
     $state = [string]$snapshot.clientUiState
     if ($state -notin @("gameplay", "chat", "pause", "death", "other")) {
@@ -185,6 +297,59 @@ function Wait-ClientUiState([string]$Expected, [int]$TimeoutMilliseconds) {
         Start-Sleep -Milliseconds 100
     } while ((Get-Date) -lt $deadline)
     return $false
+}
+
+function Invoke-TestPlayerRecoveryNearNpc {
+    $companion = Get-ConnectedMinecraftCompanion
+    if ([string]$companion.embodiment -ne "in-world-npc" -or
+        [string]$companion.backend -ne "forge-1.20.1") {
+        return $false
+    }
+    $id = [Uri]::EscapeDataString([string]$companion.id)
+    $beforeSnapshot = Invoke-RestMethod `
+        -Uri ([Uri]::new($baseUri, "api/companions/$id/snapshot")) `
+        -TimeoutSec 2
+    $beforeAck = if ($null -eq $beforeSnapshot.liveFixtureAck) {
+        0L
+    } else {
+        [long]$beforeSnapshot.liveFixtureAck.sequence
+    }
+    $body = @{ suite = "view-npc"; mode = "npc" } | ConvertTo-Json -Compress
+    $response = Invoke-RestMethod `
+        -Uri ([Uri]::new($baseUri, "api/companions/$id/live-fixtures")) `
+        -Method Post `
+        -ContentType "application/json; charset=utf-8" `
+        -Body $body `
+        -TimeoutSec 5
+    if (-not [bool]$response.ok) { throw "Test-only player recovery fixture was rejected" }
+
+    $deadline = (Get-Date).AddSeconds(8)
+    do {
+        Start-Sleep -Milliseconds 150
+        $snapshot = Invoke-RestMethod `
+            -Uri ([Uri]::new($baseUri, "api/companions/$id/snapshot")) `
+            -TimeoutSec 2
+        $acknowledgement = $snapshot.liveFixtureAck
+        if ($null -eq $acknowledgement -or
+            [long]$acknowledgement.sequence -le $beforeAck -or
+            [string]$acknowledgement.suite -ne "view-npc" -or
+            [string]$acknowledgement.mode -ne "npc") {
+            continue
+        }
+        $status = [string]$acknowledgement.status
+        if ($status.StartsWith("live-fixture:denied ") -or
+            $status.StartsWith("live-fixture:failed ")) {
+            throw "Test-only player recovery fixture failed: $status"
+        }
+        if (-not $status.StartsWith("view-npc:npc applied ")) {
+            throw "Test-only player recovery fixture returned an unexpected acknowledgement: $status"
+        }
+        if ([double]$snapshot.ownerDistance -gt 8.0) {
+            throw "Test-only player recovery did not place the player near the NPC"
+        }
+        return $true
+    } while ((Get-Date) -lt $deadline)
+    throw "Test-only player recovery fixture was not acknowledged"
 }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -294,19 +459,26 @@ if ($handle -eq [IntPtr]::Zero) {
 if ($handle -eq [IntPtr]::Zero -or $resolvedMinecraftProcessId -le 0) {
     throw "Minecraft window handle is unavailable"
 }
+$handle = Resolve-VerifiedMinecraftWindowHandle $resolvedMinecraftProcessId $handle
 $wasMinimized = [MinecraftBackgroundChatPost]::IsIconic($handle)
+$foregroundWindowPreserved = $true
+$cursorPositionPreserved = $true
 if ($wasMinimized) {
-    [void][MinecraftBackgroundChatPost]::ShowWindowAsync($handle, 9) # SW_RESTORE
-    [MinecraftBackgroundChatPost]::ReleaseCursorCapture($handle)
-    Start-Sleep -Milliseconds 250
-    [MinecraftBackgroundChatPost]::ReleaseCursorCapture($handle)
+    $restored = Set-MinecraftWindowStateWithoutInteraction `
+        $handle `
+        $resolvedMinecraftProcessId `
+        4 `
+        $false # SW_SHOWNOACTIVATE
+    $handle = [IntPtr]$restored.Handle
 }
 
 $initialUiState = Get-ClientUiState
 $normalizedUiState = $initialUiState
 $chatOpenAttempts = 0
 $respawned = $false
+$testPlayerRecoveryApplied = $false
 try {
+    Assert-MinecraftIsNotForeground $handle
     if ($initialUiState -eq "death") {
         if (-not $RespawnIfDead) {
             throw "Minecraft is on the death screen; pass -RespawnIfDead to continue"
@@ -332,6 +504,9 @@ try {
         }
         $respawned = $true
         $normalizedUiState = "gameplay"
+        if ($RecoverPlayerNearNpcForTest) {
+            $testPlayerRecoveryApplied = Invoke-TestPlayerRecoveryNearNpc
+        }
     } elseif ($initialUiState -ne "gameplay") {
         if (-not [MinecraftBackgroundChatPost]::Key($handle, 0x1B, 0x01)) { # Escape
             throw "Minecraft rejected the background UI normalization message"
@@ -344,6 +519,7 @@ try {
 
     if (-not $NormalizeOnly) {
         do {
+            Assert-MinecraftIsNotForeground $handle
             $chatOpenAttempts++
             if (-not [MinecraftBackgroundChatPost]::Key($handle, 0x54, 0x14)) { # T
                 throw "Minecraft rejected the background T key message"
@@ -360,6 +536,7 @@ try {
         } while (-not $chatOpened -and $chatOpenAttempts -lt 3)
         if (-not $chatOpened) { throw "Minecraft T chat did not open after three background attempts" }
 
+        Assert-MinecraftIsNotForeground $handle
         if (-not [MinecraftBackgroundChatPost]::Text($handle, $Message)) {
             throw "Minecraft rejected background chat characters"
         }
@@ -375,11 +552,14 @@ try {
         }
     }
 } finally {
-    [MinecraftBackgroundChatPost]::ReleaseCursorCapture($handle)
     if ($wasMinimized) {
-        [void][MinecraftBackgroundChatPost]::ShowWindowAsync($handle, 6) # SW_MINIMIZE
+        $minimized = Set-MinecraftWindowStateWithoutInteraction `
+            $handle `
+            $resolvedMinecraftProcessId `
+            6 `
+            $true # SW_MINIMIZE
+        $handle = [IntPtr]$minimized.Handle
     }
-    [MinecraftBackgroundChatPost]::ReleaseCursorCapture($handle)
 }
 
 [PSCustomObject]@{
@@ -393,9 +573,13 @@ try {
     ChatOpenConfirmed = -not $NormalizeOnly
     GameplayRestored = -not $DraftOnly
     Respawned = $respawned
+    TestPlayerRecoveryNearNpcRequested = [bool]$RecoverPlayerNearNpcForTest
+    TestPlayerRecoveryNearNpcApplied = $testPlayerRecoveryApplied
     RestoredWithoutActivation = $wasMinimized
     MinimizedAfterSend = $wasMinimized
     CursorCaptureReleased = $true
+    ForegroundWindowPreserved = $foregroundWindowPreserved
+    CursorPositionPreserved = $cursorPositionPreserved
     ForegroundInteractionUsed = $false
     PhysicalMouseOrKeyboardInputUsed = $false
     ClipboardUsed = $false

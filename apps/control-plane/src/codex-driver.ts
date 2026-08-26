@@ -22,7 +22,11 @@ import {
   type DeterministicChatAction,
 } from "./chat-action-intent.js";
 import { redactSensitiveText } from "./skill-security.js";
-import { commitAiTaskDecision } from "./ai-task-decision.js";
+import {
+  commitAiTaskDecision,
+  normalizeAiTaskDecisionInput,
+  type AiDecisionNormalizationContext,
+} from "./ai-task-decision.js";
 
 const DRIVER_OWNER = "codex-driver";
 const DEFAULT_MODEL_TURN_TIMEOUT_MS = 240_000;
@@ -86,23 +90,18 @@ const AI_TASK_DECISION_OUTPUT_SCHEMA = {
 type MultiAgentDecision = z.infer<typeof multiAgentDecisionSchema>;
 type AiTaskDecision = z.infer<typeof aiTaskDecisionSchema>;
 
-function normalizeTaskDecisionAlias(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const record = value as Record<string, unknown>;
-  if (record.type !== "task" || !("task" in record) || "spec" in record) return value;
-  const { task, ...rest } = record;
-  return { ...rest, spec: task };
-}
-
-function parseAiTaskDecisionResponse(response: string): AiTaskDecision {
+function parseAiTaskDecisionResponse(
+  response: string,
+  context: AiDecisionNormalizationContext,
+): AiTaskDecision {
   const parsed = JSON.parse(response) as unknown;
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "decisionJson" in parsed) {
     const envelope = z.object({ decisionJson: z.string() }).strict().parse(parsed);
-    return aiTaskDecisionSchema.parse(normalizeTaskDecisionAlias(JSON.parse(envelope.decisionJson)));
+    return aiTaskDecisionSchema.parse(normalizeAiTaskDecisionInput(JSON.parse(envelope.decisionJson), context));
   }
   // Provider-aware planning can retry without a remote output schema when a
   // gateway rejects structured output. Preserve that direct-JSON fallback.
-  return aiTaskDecisionSchema.parse(normalizeTaskDecisionAlias(parsed));
+  return aiTaskDecisionSchema.parse(normalizeAiTaskDecisionInput(parsed, context));
 }
 
 const REQUESTER_ARGUMENT_KEYS = new Set([
@@ -864,11 +863,17 @@ export class CodexDriver {
       "For a requested crafted item, use kind=craft with the exact namespaced itemId and count. Set deliverTo to the current player only when the player asks to receive it.",
       "For meat, use kind=provision-food with foodCategory=meat and source=hunt. '给我' requires destination=player. Never substitute melons or plant food for meat.",
       "For ordinary gathering that must be handed over, prefer skill=life.gather-and-deliver. For explicit long-range collection, prefer life.expedition-and-deliver.",
+      "For an exact relative walking request such as walking forward 5 blocks, use kind=move toward the absolute target derived from the supplied pose. Never broaden it into explore, and never teleport.",
       "For an unspecified building, return clarify with a concise choice request. For '继续建造' or equivalent, use type=retry-build so the existing checkpoint is resumed instead of starting over. Use only listed audited skills or confirmed build plans; never approve a new destructive build yourself.",
       "Do not create or download skills, do not include URLs or local paths, and do not expose configuration, keys, logs, or hidden reasoning.",
       `Output budget: ${tokenBudget} tokens. Keep reply under 120 characters and summary under 160 characters, using the language of the player's current message.`,
       ...personaPrompt,
       `Player display name: ${JSON.stringify(request.sender)}.`,
+      `Current companion pose JSON: ${JSON.stringify({
+        dimension: companion.snapshot.dimension,
+        position: companion.snapshot.position,
+        yaw: companion.snapshot.yaw,
+      })}.`,
       `Current task summary: ${activeTask ? JSON.stringify({
         kind: activeTask.spec.kind,
         status: activeTask.status,
@@ -880,7 +885,11 @@ export class CodexDriver {
       `Player message JSON: ${JSON.stringify(request.message)}`,
     ].join("\n").slice(0, 12_000);
     const turn = await this.#runPlanningTurn(thread, request.providerRole, prompt, tokenBudget);
-    const decision = parseAiTaskDecisionResponse(turn.finalResponse);
+    const decision = parseAiTaskDecisionResponse(turn.finalResponse, {
+      message: request.message,
+      requester: request.sender,
+      snapshot: companion.snapshot,
+    });
     const result = await commitAiTaskDecision(this.#control, {
       companionId: request.companionId,
       requester: request.sender,

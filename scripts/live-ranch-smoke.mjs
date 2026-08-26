@@ -95,6 +95,7 @@ async function sendMinecraftTChat(message) {
     "-File", path.join(projectRoot, "scripts", "send-minecraft-chat-background.ps1"),
     "-MessageUtf8Base64", encoded,
     "-RespawnIfDead",
+    "-RecoverPlayerNearNpcForTest",
   ], {
     cwd: projectRoot,
     windowsHide: true,

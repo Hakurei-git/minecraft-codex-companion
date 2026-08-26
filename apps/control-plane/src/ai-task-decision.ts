@@ -6,8 +6,10 @@ import {
   type Companion,
   type GoalSpec,
   type InventoryItem,
+  MIN_NAVIGATION_ARRIVAL_TOLERANCE,
   type TaskRecord,
   type TaskSpec,
+  type WorldSnapshot,
 } from "@mc/protocol";
 import type { MinecraftControlApi } from "./control-api.js";
 
@@ -22,6 +24,113 @@ const REQUESTER_ARGUMENT_KEYS = new Set([
   "targetplayer",
 ]);
 const EXACT_SKILL_PLACEHOLDER = /^\$\{([A-Za-z][A-Za-z0-9_]{0,47})\}$/u;
+const CHINESE_RELATIVE_MOVE = /^\s*(?:请|麻烦)?\s*(?:你\s*)?(向前|往前|前进|向后|往后|后退|向左|往左|左移|向右|往右|右移)\s*(?:走|移动|行走)?\s*(\d+(?:\.\d+)?)\s*(?:格|个?方块)\s*(?:[,，;；]\s*)?(?:(?:不要|别|禁止)\s*(?:传送|瞬移))?\s*[。.!！]?\s*$/iu;
+const ENGLISH_RELATIVE_MOVE = /^\s*(?:please\s+)?(?:walk|move|go)\s+(forward|forwards|back|backward|backwards|left|right)\s+(\d+(?:\.\d+)?)\s+blocks?\s*(?:[,;]\s*)?(?:(?:do\s+not|don't|without)\s+(?:teleport|teleporting))?\s*[.!]?\s*$/iu;
+
+type RelativeDirection = "forward" | "back" | "left" | "right";
+
+export interface AiDecisionNormalizationContext {
+  message?: string | undefined;
+  requester?: string | undefined;
+  snapshot?: Pick<WorldSnapshot, "position" | "yaw"> | undefined;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function relativeMoveRequest(message: string | undefined): { direction: RelativeDirection; distance: number } | null {
+  if (!message) return null;
+  const chinese = message.match(CHINESE_RELATIVE_MOVE);
+  const english = chinese ? null : message.match(ENGLISH_RELATIVE_MOVE);
+  const rawDirection = chinese?.[1] ?? english?.[1];
+  const rawDistance = chinese?.[2] ?? english?.[2];
+  if (!rawDirection || !rawDistance) return null;
+  const distance = Number(rawDistance);
+  if (!Number.isFinite(distance) || distance < 0.5 || distance > 64) return null;
+  const direction: RelativeDirection = /^(?:向前|往前|前进|forward|forwards)$/iu.test(rawDirection)
+    ? "forward"
+    : /^(?:向后|往后|后退|back|backward|backwards)$/iu.test(rawDirection)
+      ? "back"
+      : /^(?:向左|往左|左移|left)$/iu.test(rawDirection)
+        ? "left"
+        : "right";
+  return { direction, distance };
+}
+
+function relativeMoveTarget(
+  request: { direction: RelativeDirection; distance: number },
+  snapshot: Pick<WorldSnapshot, "position" | "yaw">,
+): { x: number; y: number; z: number } {
+  const radians = snapshot.yaw * Math.PI / 180;
+  const forward = { x: -Math.sin(radians), z: Math.cos(radians) };
+  const right = { x: -Math.cos(radians), z: -Math.sin(radians) };
+  const vector = request.direction === "forward" ? forward
+    : request.direction === "back" ? { x: -forward.x, z: -forward.z }
+      : request.direction === "right" ? right
+        : { x: -right.x, z: -right.z };
+  const rounded = (value: number): number => Math.round(value * 10_000) / 10_000;
+  return {
+    x: rounded(snapshot.position.x + vector.x * request.distance),
+    y: rounded(snapshot.position.y),
+    z: rounded(snapshot.position.z + vector.z * request.distance),
+  };
+}
+
+/** Normalize only bounded, documented provider aliases before strict Zod validation. */
+export function normalizeAiTaskDecisionInput(
+  value: unknown,
+  context: AiDecisionNormalizationContext = {},
+): unknown {
+  const source = objectRecord(value);
+  if (!source) return value;
+  const record: Record<string, unknown> = { ...source };
+
+  if (record.type === "skill") {
+    const parameters = objectRecord(record.parameters);
+    if (parameters) {
+      const argumentsRecord = objectRecord(record.arguments) ?? {};
+      record.arguments = { ...parameters, ...argumentsRecord };
+      delete record.parameters;
+    }
+  }
+
+  if (record.type === "task") {
+    let spec = objectRecord(record.spec);
+    for (const alias of ["task", "action", "input"] as const) {
+      const candidate = objectRecord(record[alias]);
+      if (!spec && candidate) spec = candidate;
+      delete record[alias];
+    }
+    const parameters = objectRecord(record.parameters);
+    if (parameters) {
+      const parameterSpec = objectRecord(parameters.spec) ?? parameters;
+      spec = { ...parameterSpec, ...(spec ?? {}) };
+      delete record.parameters;
+    }
+
+    const relative = relativeMoveRequest(context.message);
+    if (relative && context.snapshot) {
+      const taskBase = spec ?? {};
+      record.spec = {
+        kind: "move",
+        target: relativeMoveTarget(relative, context.snapshot),
+        arrivalTolerance: MIN_NAVIGATION_ARRIVAL_TOLERANCE,
+        arrivalMetric: "horizontal",
+        requestedBy: typeof taskBase.requestedBy === "string"
+          ? taskBase.requestedBy
+          : context.requester ?? "user",
+        ...(typeof taskBase.note === "string" ? { note: taskBase.note } : {}),
+        ...(typeof taskBase.priority === "number" ? { priority: taskBase.priority } : {}),
+      };
+    } else if (spec) {
+      record.spec = spec;
+    }
+  }
+  return record;
+}
 
 function normalizedPlayerName(value: string): string {
   return value.trim().toLocaleLowerCase("en-US");
@@ -321,12 +430,22 @@ export async function commitAiTaskDecision(
   context: AiDecisionCommitContext,
   input: AiTaskDecision,
 ): Promise<AiTaskDecisionResult> {
-  const decision = aiTaskDecisionSchema.parse(input);
+  let normalizedCompanion: Companion | undefined;
+  let normalizedInput: unknown = input;
+  if (input.type === "task" && relativeMoveRequest(context.message)) {
+    normalizedCompanion = await control.getCompanion(context.companionId);
+    normalizedInput = normalizeAiTaskDecisionInput(input, {
+      message: context.message,
+      requester: context.requester,
+      snapshot: normalizedCompanion.snapshot,
+    });
+  }
+  const decision = aiTaskDecisionSchema.parse(normalizedInput);
   let taskId: string | undefined;
   let goalId: string | undefined;
   let reply = decision.reply;
   if (decision.type === "inspect") {
-    const companion = await control.getCompanion(context.companionId);
+    const companion = normalizedCompanion ?? await control.getCompanion(context.companionId);
     const activeTask = companion.activeTaskId
       ? await Promise.resolve(control.getTask(companion.activeTaskId)).catch(() => null)
       : null;

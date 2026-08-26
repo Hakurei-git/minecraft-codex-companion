@@ -104,6 +104,37 @@ describe("live fixture route", () => {
     ]);
   });
 
+  it("forwards the no-cheat food audit and NPC recovery fixtures", async () => {
+    const service = new ControlService();
+    const backend = new LiveFixtureBackend();
+    service.registerBackend(backend);
+    const app = testApp(service);
+    apps.push(app);
+
+    for (const payload of [
+      { suite: "food-reserve-audit", mode: "inspect" },
+      { suite: "npc-recovery", mode: "setup" },
+      { suite: "npc-recovery", mode: "down" },
+      { suite: "npc-recovery", mode: "inspect" },
+      { suite: "npc-recovery", mode: "cleanup" },
+    ] as const) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/companions/${backend.id}/live-fixtures`,
+        payload,
+      });
+      expect(response.statusCode).toBe(202);
+    }
+
+    expect(backend.commands).toEqual([
+      { type: "live-fixture", suite: "food-reserve-audit", mode: "inspect" },
+      { type: "live-fixture", suite: "npc-recovery", mode: "setup" },
+      { type: "live-fixture", suite: "npc-recovery", mode: "down" },
+      { type: "live-fixture", suite: "npc-recovery", mode: "inspect" },
+      { type: "live-fixture", suite: "npc-recovery", mode: "cleanup" },
+    ]);
+  });
+
   it("arms the next ranch chat acceptance locally without forwarding a fake world command", async () => {
     const service = new ControlService();
     const backend = new LiveFixtureBackend();

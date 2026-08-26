@@ -2,6 +2,7 @@ package cn.codex.minecraftbridge.client;
 
 import cn.codex.minecraftbridge.NeoMinecraftCodexBridge;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.PauseScreen;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -19,6 +20,7 @@ public final class NeoClientBridgeEvents {
     private static final BridgeConfig CONFIG = BridgeConfig.load();
     private static final BridgeClient CLIENT = new BridgeClient(CONFIG);
     private static final BridgeConfigWatcher CONFIG_WATCHER = new BridgeConfigWatcher(BridgeConfig.path());
+    private static final BackgroundPauseLease BACKGROUND_PAUSE_LEASE = new BackgroundPauseLease();
     private static int configReloadTicks;
 
     private NeoClientBridgeEvents() {
@@ -26,11 +28,13 @@ public final class NeoClientBridgeEvents {
 
     @SubscribeEvent
     public static void onLogin(ClientPlayerNetworkEvent.LoggingIn event) {
+        BACKGROUND_PAUSE_LEASE.clear();
         CLIENT.onLogin();
     }
 
     @SubscribeEvent
     public static void onLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+        BACKGROUND_PAUSE_LEASE.clear();
         CLIENT.onLogout();
     }
 
@@ -40,6 +44,7 @@ public final class NeoClientBridgeEvents {
             configReloadTicks = 0;
             CONFIG_WATCHER.changedConfiguration(CLIENT.config()).ifPresent(CLIENT::applyConfig);
         }
+        keepSingleplayerTasksRunning();
         CLIENT.tick();
     }
 
@@ -74,5 +79,24 @@ public final class NeoClientBridgeEvents {
             if (info != null) return info.getProfile().getName();
         }
         return null;
+    }
+
+    private static void keepSingleplayerTasksRunning() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level == null || minecraft.player == null) {
+            BACKGROUND_PAUSE_LEASE.clear();
+            return;
+        }
+        boolean windowActive = minecraft.isWindowActive();
+        if (windowActive) BACKGROUND_PAUSE_LEASE.clear();
+        if (!windowActive && minecraft.mouseHandler.isMouseGrabbed()) {
+            minecraft.mouseHandler.releaseMouse();
+        }
+        if (!CLIENT.config().keepSingleplayerRunningInBackground) return;
+        if (minecraft.options.pauseOnLostFocus) minecraft.options.pauseOnLostFocus = false;
+        if (!windowActive && minecraft.screen instanceof PauseScreen
+            && !BACKGROUND_PAUSE_LEASE.isActive(System.nanoTime())) {
+            minecraft.setScreen(null);
+        }
     }
 }

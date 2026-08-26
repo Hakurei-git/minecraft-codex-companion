@@ -7,6 +7,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -147,18 +148,38 @@ public final class TaskEngine {
 
     private void tickMove(Minecraft minecraft, ActiveTask task, Vec3 target) {
         Player player = minecraft.player;
-        double distance = player.position().distanceTo(target);
+        Vec3 delta = target.subtract(player.position());
+        double distance = MovementTargetPolicy.distance(
+            delta.x,
+            delta.y,
+            delta.z,
+            "horizontal".equals(string(task.spec, "arrivalMetric", "three-dimensional"))
+        );
+        double arrivalTolerance = MovementTargetPolicy.arrivalTolerance(
+            number(task.spec, "arrivalTolerance", 1.6D)
+        );
         if (task.startDistance < 0) task.startDistance = Math.max(1, distance);
         if (!task.issued) {
             task.issued = true;
             task.usedBaritone = baritone.execute(String.format(Locale.ROOT, "goto %d %d %d", (int) target.x, (int) target.y, (int) target.z));
         }
-        if (distance <= 1.8) {
+        if (distance <= arrivalTolerance) {
             releaseKeys(minecraft);
+            if (task.usedBaritone) baritone.cancel();
             complete(task, "已到达目标位置");
             return;
         }
-        if (!task.usedBaritone) driveToward(minecraft, target);
+        if (!task.usedBaritone) {
+            if (task.ticks % 10 == 0) {
+                if (MovementTargetPolicy.madeProgress(task.moveBestDistance, distance)) {
+                    task.moveBestDistance = distance;
+                    task.moveStalledSamples = 0;
+                } else {
+                    task.moveStalledSamples++;
+                }
+            }
+            driveToward(minecraft, target, task);
+        }
         if (task.ticks % 10 == 0) {
             double progress = 1 - Math.min(1, distance / task.startDistance);
             progress(task, progress, "移动中，距离 " + Math.round(distance) + " 格");
@@ -170,9 +191,8 @@ public final class TaskEngine {
         if (task.target == null) {
             double radius = number(task.spec, "radius", 64);
             String direction = string(task.spec, "direction", "any");
-            double dx = direction.equals("west") ? -radius : direction.equals("east") ? radius : direction.equals("any") ? radius : 0;
-            double dz = direction.equals("north") ? -radius : direction.equals("south") ? radius : direction.equals("any") ? radius * 0.6 : 0;
-            task.target = minecraft.player.position().add(dx, 0, dz);
+            MovementTargetPolicy.HorizontalOffset offset = MovementTargetPolicy.exploreOffset(radius, direction);
+            task.target = minecraft.player.position().add(offset.x(), 0, offset.z());
         }
         tickMove(minecraft, task, task.target);
     }
@@ -890,15 +910,31 @@ public final class TaskEngine {
     }
 
     private void driveToward(Minecraft minecraft, Vec3 target) {
+        driveToward(minecraft, target, null);
+    }
+
+    private void driveToward(Minecraft minecraft, Vec3 target, ActiveTask task) {
         Player player = minecraft.player;
         lookAt(player, target.add(0, player.getEyeHeight() * 0.5, 0));
         Vec3 delta = target.subtract(player.position());
         double length = Math.max(0.001, Math.sqrt(delta.x * delta.x + delta.z * delta.z));
         BlockPos ahead = BlockPos.containing(player.getX() + delta.x / length * 1.4, player.getY() - 1, player.getZ() + delta.z / length * 1.4);
         boolean deepDrop = minecraft.level.getBlockState(ahead).isAir() && minecraft.level.getBlockState(ahead.below()).isAir();
+        BlockPos feet = player.blockPosition();
+        boolean insideLeaves = minecraft.level.getBlockState(feet).is(BlockTags.LEAVES)
+            || minecraft.level.getBlockState(feet.above()).is(BlockTags.LEAVES);
+        int stalledSamples = task == null ? 0 : task.moveStalledSamples;
+        boolean unstuck = MovementTargetPolicy.shouldUseUnstuckControls(
+            stalledSamples,
+            player.horizontalCollision,
+            insideLeaves
+        );
         minecraft.options.keyUp.setDown(!deepDrop);
-        minecraft.options.keySprint.setDown(!deepDrop);
-        minecraft.options.keyJump.setDown(!deepDrop && (player.horizontalCollision || target.y > player.getY() + 0.6));
+        minecraft.options.keySprint.setDown(!deepDrop && !unstuck);
+        minecraft.options.keyJump.setDown(!deepDrop && (unstuck || target.y > player.getY() + 0.6));
+        boolean strafeLeft = !deepDrop && unstuck && MovementTargetPolicy.strafeLeft(task == null ? ticks : task.ticks);
+        minecraft.options.keyLeft.setDown(strafeLeft);
+        minecraft.options.keyRight.setDown(!deepDrop && unstuck && !strafeLeft);
     }
 
     private void lookAt(Player player, Vec3 target) {
@@ -913,6 +949,9 @@ public final class TaskEngine {
 
     private void releaseKeys(Minecraft minecraft) {
         minecraft.options.keyUp.setDown(false);
+        minecraft.options.keyDown.setDown(false);
+        minecraft.options.keyLeft.setDown(false);
+        minecraft.options.keyRight.setDown(false);
         minecraft.options.keySprint.setDown(false);
         minecraft.options.keyJump.setDown(false);
         minecraft.options.keyAttack.setDown(false);
@@ -1388,6 +1427,8 @@ public final class TaskEngine {
         private boolean issued;
         private boolean usedBaritone;
         private double startDistance = -1;
+        private double moveBestDistance = Double.POSITIVE_INFINITY;
+        private int moveStalledSamples;
         private int initialCount = -1;
         private int clearTicks;
         private Vec3 target;

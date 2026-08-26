@@ -33,8 +33,13 @@ using System.Runtime.InteropServices;
 
 public static class MinecraftBackgroundInput
 {
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X, Y; }
 
     [DllImport("user32.dll")]
     public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
@@ -50,6 +55,15 @@ public static class MinecraftBackgroundInput
 
     [DllImport("user32.dll")]
     public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT point);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
 
     [DllImport("user32.dll")]
     public static extern bool ClipCursor(IntPtr rect);
@@ -101,6 +115,29 @@ public static class MinecraftBackgroundInput
         PostMessage(hWnd, 0x0202, IntPtr.Zero, point);// WM_LBUTTONUP
     }
 
+    public static IntPtr FindLargestWindowForProcess(uint processId)
+    {
+        IntPtr best = IntPtr.Zero;
+        long bestArea = 0;
+        EnumWindows((candidate, ignored) =>
+        {
+            uint owner;
+            RECT rect;
+            if (GetWindowThreadProcessId(candidate, out owner) == 0 || owner != processId
+                || !GetClientRect(candidate, out rect)) return true;
+            long width = Math.Max(0, rect.Right - rect.Left);
+            long height = Math.Max(0, rect.Bottom - rect.Top);
+            long area = width * height;
+            if (width >= 640 && height >= 360 && area > bestArea)
+            {
+                best = candidate;
+                bestArea = area;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return best;
+    }
+
     public static void ReleaseCursorCapture(IntPtr hWnd)
     {
         // A synthetic WM_KILLFOCUS makes fullscreen GLFW minimize itself.
@@ -111,6 +148,96 @@ public static class MinecraftBackgroundInput
     }
 }
 '@
+}
+
+function Get-DesktopInteractionSnapshot {
+    $point = [MinecraftBackgroundInput+POINT]::new()
+    if (-not [MinecraftBackgroundInput]::GetCursorPos([ref]$point)) {
+        throw "The physical cursor position could not be audited"
+    }
+    return [PSCustomObject]@{
+        ForegroundWindow = [MinecraftBackgroundInput]::GetForegroundWindow().ToInt64()
+        CursorX = $point.X
+        CursorY = $point.Y
+    }
+}
+
+function Test-MinecraftWindowOwnership([IntPtr]$Candidate, [int]$ExpectedProcessId) {
+    if ($Candidate -eq [IntPtr]::Zero -or
+        -not [MinecraftBackgroundInput]::IsWindow($Candidate)) {
+        return $false
+    }
+    [uint32]$ownerProcessId = 0
+    return [MinecraftBackgroundInput]::GetWindowThreadProcessId(
+        $Candidate,
+        [ref]$ownerProcessId
+    ) -ne 0 -and $ownerProcessId -eq $ExpectedProcessId
+}
+
+function Resolve-VerifiedMinecraftWindowHandle(
+    [int]$ExpectedProcessId,
+    [IntPtr]$PreferredHandle
+) {
+    $process = Get-Process -Id $ExpectedProcessId -ErrorAction Stop
+    if ($process.ProcessName -notin @("java", "javaw")) {
+        throw "The verified Minecraft process is no longer a Java runtime"
+    }
+    $largest = [MinecraftBackgroundInput]::FindLargestWindowForProcess(
+        [uint32]$ExpectedProcessId
+    )
+    if (Test-MinecraftWindowOwnership $largest $ExpectedProcessId) {
+        return $largest
+    }
+    if (Test-MinecraftWindowOwnership $PreferredHandle $ExpectedProcessId) {
+        return $PreferredHandle
+    }
+    throw "Minecraft replaced its window without exposing a verified current HWND"
+}
+
+function Assert-MinecraftIsNotForeground([IntPtr]$CurrentHandle) {
+    if ([MinecraftBackgroundInput]::GetForegroundWindow() -eq $CurrentHandle) {
+        throw "Minecraft became foreground; background world entry stopped to avoid user interaction"
+    }
+}
+
+function Set-MinecraftWindowStateWithoutInteraction(
+    [IntPtr]$CurrentHandle,
+    [int]$ExpectedProcessId,
+    [int]$ShowCommand,
+    [bool]$ExpectedIconic
+) {
+    $verifiedHandle = Resolve-VerifiedMinecraftWindowHandle `
+        $ExpectedProcessId `
+        $CurrentHandle
+    $before = Get-DesktopInteractionSnapshot
+    if ($before.ForegroundWindow -eq $verifiedHandle.ToInt64()) {
+        throw "Minecraft is foreground; background world entry stopped to avoid user interaction"
+    }
+    [void][MinecraftBackgroundInput]::ShowWindowAsync($verifiedHandle, $ShowCommand)
+    [MinecraftBackgroundInput]::ReleaseCursorCapture($verifiedHandle)
+    $deadline = (Get-Date).AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 50
+        $verifiedHandle = Resolve-VerifiedMinecraftWindowHandle `
+            $ExpectedProcessId `
+            $verifiedHandle
+        $isIconic = [MinecraftBackgroundInput]::IsIconic($verifiedHandle)
+    } while ($isIconic -ne $ExpectedIconic -and (Get-Date) -lt $deadline)
+    if ($isIconic -ne $ExpectedIconic) {
+        throw "Minecraft window did not reach the requested background state"
+    }
+    Start-Sleep -Milliseconds 100
+    $after = Get-DesktopInteractionSnapshot
+    if ($before.ForegroundWindow -ne $after.ForegroundWindow -or
+        $before.CursorX -ne $after.CursorX -or
+        $before.CursorY -ne $after.CursorY) {
+        if (-not $ExpectedIconic) {
+            [void][MinecraftBackgroundInput]::ShowWindowAsync($verifiedHandle, 6)
+            [MinecraftBackgroundInput]::ReleaseCursorCapture($verifiedHandle)
+        }
+        throw "Minecraft background window transition changed the foreground window or physical cursor position"
+    }
+    return $verifiedHandle
 }
 
 $configuredBaseUri = if ($PSBoundParameters.ContainsKey("ControlBaseUri")) {
@@ -173,7 +300,7 @@ function Find-MinecraftWindow {
     )
     foreach ($window in $windows) {
         try {
-            if ([string]$window.Current.Name -match '^Minecraft.*Forge 1\.20\.1') { return $window }
+            if ([string]$window.Current.Name -match '^Minecraft.*(?:Forge 1\.20\.1|NeoForge|1\.21\.1)') { return $window }
         } catch {
             # Ignore windows that close while sampling the UI Automation tree.
         }
@@ -251,17 +378,20 @@ $rect = [MinecraftBackgroundInput+RECT]::new()
 if ($handle -eq [IntPtr]::Zero) {
     throw "Minecraft client bounds are unavailable"
 }
+$handle = Resolve-VerifiedMinecraftWindowHandle $resolvedMinecraftProcessId $handle
 $wasMinimized = [MinecraftBackgroundInput]::IsIconic($handle)
+$restoredWithoutActivation = $false
 $minimizedAfterWorldSelection = $false
 if ($wasMinimized) {
-    # Fullscreen GLFW does not reliably restore its client area with
-    # SW_SHOWNOACTIVATE. SW_RESTORE is bounded to the verified game HWND; the
-    # window is minimized again after world selection.
-    [void][MinecraftBackgroundInput]::ShowWindowAsync($handle, 9)
-    [MinecraftBackgroundInput]::ReleaseCursorCapture($handle)
+    $handle = Set-MinecraftWindowStateWithoutInteraction `
+        $handle `
+        $resolvedMinecraftProcessId `
+        4 `
+        $false # SW_SHOWNOACTIVATE
+    $restoredWithoutActivation = $true
 }
 try {
-    [MinecraftBackgroundInput]::ReleaseCursorCapture($handle)
+    Assert-MinecraftIsNotForeground $handle
     $boundsDeadline = (Get-Date).AddSeconds(5)
     do {
         Start-Sleep -Milliseconds 100
@@ -275,6 +405,7 @@ try {
     if ($width -lt 640 -or $height -lt 360) { throw "Minecraft client window is unexpectedly small" }
 
     function Click-Normalized([double]$xFraction, [double]$yFraction) {
+        Assert-MinecraftIsNotForeground $handle
         $x = [Math]::Round($width * $xFraction)
         $y = [Math]::Round($height * $yFraction)
         [MinecraftBackgroundInput]::Click($handle, $x, $y)
@@ -319,35 +450,14 @@ try {
 
     $worldSelectionPosted = $false
     if ($null -eq $companion) {
-        if (-not [MinecraftBackgroundInput]::IsWindow($handle)) {
-            $minecraftProcess = Get-Process -Id $resolvedMinecraftProcessId -ErrorAction Stop
-            $minecraftProcess.Refresh()
-            $replacementHandle = [IntPtr]$minecraftProcess.MainWindowHandle
-            if ($replacementHandle -eq [IntPtr]::Zero -or
-                -not [MinecraftBackgroundInput]::IsWindow($replacementHandle)) {
-                $replacementWindow = Find-MinecraftWindow
-                if ($null -ne $replacementWindow -and
-                    $replacementWindow.Current.ProcessId -eq $resolvedMinecraftProcessId) {
-                    $replacementHandle = [IntPtr]$replacementWindow.Current.NativeWindowHandle
-                }
-            }
-            if ($replacementHandle -eq [IntPtr]::Zero -or
-                -not [MinecraftBackgroundInput]::IsWindow($replacementHandle)) {
-                throw "Minecraft replaced its loading window without exposing a verified main-menu HWND"
-            }
-            [uint32]$replacementProcessId = 0
-            [void][MinecraftBackgroundInput]::GetWindowThreadProcessId(
-                $replacementHandle,
-                [ref]$replacementProcessId
-            )
-            if ($replacementProcessId -ne $resolvedMinecraftProcessId) {
-                throw "The replacement Minecraft window changed process ownership"
-            }
-            $handle = $replacementHandle
-        }
+        $handle = Resolve-VerifiedMinecraftWindowHandle $resolvedMinecraftProcessId $handle
         if ([MinecraftBackgroundInput]::IsIconic($handle)) {
-            [void][MinecraftBackgroundInput]::ShowWindowAsync($handle, 9)
-            [MinecraftBackgroundInput]::ReleaseCursorCapture($handle)
+            $handle = Set-MinecraftWindowStateWithoutInteraction `
+                $handle `
+                $resolvedMinecraftProcessId `
+                4 `
+                $false # SW_SHOWNOACTIVATE
+            $restoredWithoutActivation = $true
         }
         $boundsDeadline = (Get-Date).AddSeconds(5)
         do {
@@ -369,6 +479,7 @@ try {
         # Canonicalize any nested title-screen page (Options, Language, world
         # list, etc.) back to the main menu. Escape is harmless on the main
         # menu and is posted only while the Forge bridge is disconnected.
+        Assert-MinecraftIsNotForeground $handle
         1..3 | ForEach-Object {
             [MinecraftBackgroundInput]::Key($handle, 0x1B)
             Start-Sleep -Milliseconds 300
@@ -398,6 +509,7 @@ try {
             # state consistently; Ctrl+A can therefore insert a literal "a".
             # A bounded series of Backspace messages is deterministic and
             # never needs the foreground keyboard or clipboard.
+            Assert-MinecraftIsNotForeground $handle
             1..128 | ForEach-Object {
                 [MinecraftBackgroundInput]::Key($handle, 0x08)
             }
@@ -417,7 +529,7 @@ try {
         $connectDeadline = (Get-Date).AddSeconds($WaitSeconds)
         do {
             Start-Sleep -Milliseconds 500
-            [MinecraftBackgroundInput]::ReleaseCursorCapture($handle)
+            Assert-MinecraftIsNotForeground $handle
             $companion = Get-TargetCompanion
             if ($null -eq $companion -and $null -ne $targetWorldId) {
                 $wrongWorld = @(Get-ConnectedCompanions) | Select-Object -First 1
@@ -440,16 +552,12 @@ try {
     # Windows releases that capture. The local bridge remains the authoritative
     # liveness check; chat and Save/Quit helpers temporarily restore the window
     # with SW_SHOWNOACTIVATE and minimize it again when their work is complete.
-    [void][MinecraftBackgroundInput]::ShowWindowAsync($handle, 6) # SW_MINIMIZE
-    [MinecraftBackgroundInput]::ReleaseCursorCapture($handle)
-    $cursorReleaseDeadline = (Get-Date).AddSeconds(3)
-    do {
-        Start-Sleep -Milliseconds 100
-        $minimizedAfterWorldSelection = [MinecraftBackgroundInput]::IsIconic($handle)
-    } while (-not $minimizedAfterWorldSelection -and (Get-Date) -lt $cursorReleaseDeadline)
-    if (-not $minimizedAfterWorldSelection) {
-        throw "Minecraft window could not be minimized to release cursor capture"
-    }
+    $handle = Set-MinecraftWindowStateWithoutInteraction `
+        $handle `
+        $resolvedMinecraftProcessId `
+        6 `
+        $true # SW_MINIMIZE
+    $minimizedAfterWorldSelection = $true
 
     [PSCustomObject]@{
         MinecraftProcessId = $resolvedMinecraftProcessId
@@ -459,10 +567,12 @@ try {
         RequestedWorldId = $targetWorldId
         WorldId = [string]$companion.snapshot.worldId
         SnapshotSequence = [long]$companion.snapshot.sequence
-        RestoredWithoutActivation = $wasMinimized
+        RestoredWithoutActivation = $restoredWithoutActivation
         MinimizedAfterWorldSelection = $true
         SentToBottomAfterWorldSelection = $false
         CursorCaptureReleased = $true
+        ForegroundWindowPreserved = $true
+        CursorPositionPreserved = $true
         ForegroundInteractionUsed = $false
         PhysicalMouseOrKeyboardInputUsed = $false
         ClipboardUsed = $false
@@ -471,9 +581,14 @@ try {
         NoLogMenuGraceSeconds = $noLogGraceApplied
     }
 } finally {
-    [MinecraftBackgroundInput]::ReleaseCursorCapture($handle)
     if (-not $minimizedAfterWorldSelection) {
-        [void][MinecraftBackgroundInput]::ShowWindowAsync($handle, 6) # SW_MINIMIZE
+        if ((Get-Process -Id $resolvedMinecraftProcessId -ErrorAction SilentlyContinue) -and
+            (Test-MinecraftWindowOwnership $handle $resolvedMinecraftProcessId)) {
+            $handle = Set-MinecraftWindowStateWithoutInteraction `
+                $handle `
+                $resolvedMinecraftProcessId `
+                6 `
+                $true # SW_MINIMIZE
+        }
     }
-    [MinecraftBackgroundInput]::ReleaseCursorCapture($handle)
 }

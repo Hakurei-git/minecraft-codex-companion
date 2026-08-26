@@ -19,8 +19,15 @@ final class LiveFixturePolicy {
     }
 
     static boolean requiresCheats(JsonObject request) {
-        return !Set.of("storage", "no-cheat-expedition", "save-and-quit")
-            .contains(requiredString(request, "suite"));
+        String suite = requiredString(request, "suite");
+        String mode = requiredString(request, "mode");
+        return !Set.of(
+            "storage",
+            "no-cheat-expedition",
+            "save-and-quit",
+            "food-reserve-audit",
+            "npc-recovery"
+        ).contains(suite) && !(suite.equals("view-npc") && mode.equals("npc"));
     }
 
     static List<String> commands(JsonObject request) {
@@ -49,6 +56,8 @@ final class LiveFixturePolicy {
             case "deep-mining" -> deepMining(mode);
             case "save-and-quit" -> saveAndQuit(mode);
             case "view-npc" -> viewNpc(mode);
+            case "food-reserve-audit" -> foodReserveAudit(mode);
+            case "npc-recovery" -> npcRecovery(mode);
             case "drop-to-npc" -> dropToNpc(mode, request);
             case "npc-state" -> npcState(mode, request);
             default -> throw new IllegalArgumentException("Unknown live fixture suite");
@@ -295,11 +304,27 @@ final class LiveFixturePolicy {
 
     private static List<String> viewNpc(String mode) {
         return switch (mode) {
-            case "npc" -> List.of("execute at " + NPC + " run tp @s ~ ~1 ~5 180 10");
+            // Applied by Java after this fixed no-op passes validation. This
+            // remains a test-only live fixture, not a player control action.
+            case "npc" -> List.of("execute if entity @s");
             case "fishing" -> List.of("execute at " + NPC + " run tp @s ~12 ~4 ~12 facing entity " + NPC + " eyes");
             case "sleep" -> List.of("execute at " + NPC + " run tp @s ~10 ~4 ~-10 facing entity " + NPC + " eyes");
             default -> throw new IllegalArgumentException("Unknown view-npc fixture mode");
         };
+    }
+
+    private static List<String> foodReserveAudit(String mode) {
+        if (!mode.equals("inspect")) {
+            throw new IllegalArgumentException("Unknown food reserve audit fixture mode");
+        }
+        return List.of("execute if entity @s");
+    }
+
+    private static List<String> npcRecovery(String mode) {
+        if (!Set.of("setup", "down", "inspect", "cleanup").contains(mode)) {
+            throw new IllegalArgumentException("Unknown NPC recovery fixture mode");
+        }
+        return List.of("execute if entity @s");
     }
 
     private static List<String> dropToNpc(String mode, JsonObject request) {

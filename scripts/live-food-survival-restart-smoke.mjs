@@ -282,6 +282,7 @@ export function minecraftChatArguments(message, base) {
     "-MessageUtf8Base64", Buffer.from(message, "utf8").toString("base64"),
     "-ControlBaseUri", control.origin,
     "-RespawnIfDead",
+    "-RecoverPlayerNearNpcForTest",
   ];
 }
 

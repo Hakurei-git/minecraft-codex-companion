@@ -1,6 +1,6 @@
 {
   "name": "minecraft-codex-companion",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -53,7 +53,7 @@
     "smoke:live-dragon-care": "node scripts/live-dragon-care-smoke.mjs",
     "start": "npm run build && npm run start -w @mc/control-plane",
     "start:control": "npm run build:control && npm run start -w @mc/control-plane",
-    "test": "npm run test --workspaces --if-present && node --test scripts/live-preflight.test.mjs scripts/live-action-smoke.test.mjs scripts/live-ranch-smoke.test.mjs scripts/live-food-delivery-smoke.test.mjs scripts/live-food-survival-restart-smoke.test.mjs scripts/live-storage-smoke.test.mjs scripts/live-storage-restart-smoke.test.mjs scripts/live-deep-mining-smoke.test.mjs scripts/final-smart-tchat-acceptance.test.mjs scripts/final-stable-tchat-acceptance.test.mjs scripts/live-build-palette-smoke.test.mjs scripts/live-build-material-chain-smoke.test.mjs scripts/live-build-resume-smoke.test.mjs scripts/live-natural-tree-smoke.test.mjs scripts/live-no-cheat-expedition-smoke.test.mjs scripts/live-player-life-smoke.test.mjs scripts/live-follow-resilience-smoke.test.mjs scripts/live-craft-chain-smoke.test.mjs scripts/live-resource-priority-smoke.test.mjs scripts/live-explicit-crafting-smoke.test.mjs scripts/live-bed-sleep-smoke.test.mjs scripts/live-dragon-action-smoke.test.mjs scripts/live-dragon-care-smoke.test.mjs scripts/send-minecraft-chat-background.test.mjs scripts/portable-release-gate.test.mjs && npm run test:background-automation",
+    "test": "npm run test --workspaces --if-present && node --test scripts/live-preflight.test.mjs scripts/live-action-smoke.test.mjs scripts/live-ranch-smoke.test.mjs scripts/live-food-delivery-smoke.test.mjs scripts/live-food-survival-restart-smoke.test.mjs scripts/live-storage-smoke.test.mjs scripts/live-storage-restart-smoke.test.mjs scripts/live-deep-mining-smoke.test.mjs scripts/final-smart-tchat-acceptance.test.mjs scripts/final-stable-tchat-acceptance.test.mjs scripts/live-build-palette-smoke.test.mjs scripts/live-build-material-chain-smoke.test.mjs scripts/live-build-resume-smoke.test.mjs scripts/live-natural-tree-smoke.test.mjs scripts/live-no-cheat-expedition-smoke.test.mjs scripts/live-player-life-smoke.test.mjs scripts/live-follow-resilience-smoke.test.mjs scripts/live-craft-chain-smoke.test.mjs scripts/live-resource-priority-smoke.test.mjs scripts/live-explicit-crafting-smoke.test.mjs scripts/live-bed-sleep-smoke.test.mjs scripts/live-dragon-action-smoke.test.mjs scripts/live-dragon-care-smoke.test.mjs scripts/capture-minecraft-window.test.mjs scripts/send-minecraft-chat-background.test.mjs scripts/portable-release-gate.test.mjs && npm run test:background-automation",
     "test:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-hmcl-clone.test.ps1",
     "test:forge-in-process": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-forge-tests-in-process.ps1",
     "test:background-automation": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-minecraft-for-update.test.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/launch-hmcl-background.test.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/enter-hmcl-test-world.test.ps1",

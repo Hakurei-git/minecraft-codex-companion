@@ -98,6 +98,7 @@ async function sendMinecraftTChat(message, base) {
     "-MessageUtf8Base64", encoded,
     "-ControlBaseUri", base.origin,
     "-RespawnIfDead",
+    "-RecoverPlayerNearNpcForTest",
   ], {
     cwd: projectRoot,
     windowsHide: true,

@@ -296,6 +296,29 @@ describe("protocol schemas", () => {
     });
   });
 
+  it("keeps legacy exact-move tolerances valid on the wire", () => {
+    expect(taskSpecSchema.parse({
+      kind: "move",
+      target: { x: 1, y: 64, z: 2 },
+    })).not.toHaveProperty("arrivalTolerance");
+    expect(taskSpecSchema.parse({
+      kind: "move",
+      target: { x: 1, y: 64, z: 2 },
+      arrivalTolerance: 0.35,
+      arrivalMetric: "horizontal",
+    })).toMatchObject({ arrivalTolerance: 0.35, arrivalMetric: "horizontal" });
+    expect(() => taskSpecSchema.parse({
+      kind: "move",
+      target: { x: 1, y: 64, z: 2 },
+      arrivalTolerance: 0.01,
+    })).toThrow();
+    expect(() => taskSpecSchema.parse({
+      kind: "move",
+      target: { x: 1, y: 64, z: 2 },
+      arrivalMetric: "taxicab",
+    })).toThrow();
+  });
+
   it("normalizes omitted health for non-living nearby entities", () => {
     const snapshot = worldSnapshotSchema.parse({
       sequence: 1,
@@ -959,6 +982,14 @@ describe("protocol schemas", () => {
       suite: "no-cheat-expedition",
       mode: "cleanup",
     });
+    expect(liveFixtureRequestSchema.parse({ suite: "food-reserve-audit", mode: "inspect" })).toEqual({
+      suite: "food-reserve-audit",
+      mode: "inspect",
+    });
+    expect(liveFixtureRequestSchema.parse({ suite: "npc-recovery", mode: "down" })).toEqual({
+      suite: "npc-recovery",
+      mode: "down",
+    });
     expect(liveFixtureRequestSchema.parse({ suite: "build-palette", mode: "setup-mixed" })).toEqual({
       suite: "build-palette",
       mode: "setup-mixed",
@@ -1070,6 +1101,8 @@ describe("protocol schemas", () => {
     expect(() => liveFixtureRequestSchema.parse({ suite: "build-resume", mode: "setup", command: "/setblock ~ ~ ~ air" })).toThrow();
     expect(() => liveFixtureRequestSchema.parse({ suite: "natural-tree", mode: "setup-mixed" })).toThrow();
     expect(() => liveFixtureRequestSchema.parse({ suite: "no-cheat-expedition", mode: "teleport" })).toThrow();
+    expect(() => liveFixtureRequestSchema.parse({ suite: "food-reserve-audit", mode: "setup" })).toThrow();
+    expect(() => liveFixtureRequestSchema.parse({ suite: "npc-recovery", mode: "teleport-player" })).toThrow();
     expect(() => liveFixtureRequestSchema.parse({
       suite: "no-cheat-expedition",
       mode: "setup",

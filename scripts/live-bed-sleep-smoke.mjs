@@ -47,6 +47,7 @@ function runBackgroundChat(message) {
       "-File", script,
       "-MessageUtf8Base64", encoded,
       "-RespawnIfDead",
+      "-RecoverPlayerNearNpcForTest",
     ], {
       cwd: projectRoot,
       windowsHide: true,

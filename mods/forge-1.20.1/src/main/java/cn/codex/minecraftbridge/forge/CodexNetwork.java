@@ -393,6 +393,18 @@ public final class CodexNetwork {
             }
             return;
         }
+        if (suite.equals("view-npc") && mode.equals("npc")) {
+            PlayerRecoveryLiveFixture.moveNearNpc(player, npc);
+            return;
+        }
+        if (suite.equals("food-reserve-audit")) {
+            FoodReserveAuditLiveFixture.apply(npc, mode);
+            return;
+        }
+        if (suite.equals("npc-recovery")) {
+            NpcRecoveryLiveFixture.apply(player, npc, mode);
+            return;
+        }
         if (suite.equals("dragon-care")) {
             DragonCareLiveFixture.apply(player, npc, mode);
             return;

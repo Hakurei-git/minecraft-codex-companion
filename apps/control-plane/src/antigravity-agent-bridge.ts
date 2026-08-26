@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import type { ChatMessage, ChatSettings } from "@mc/protocol";
+import type { ChatMessage, ChatSettings, WorldSnapshot } from "@mc/protocol";
 import { ControlError } from "./errors.js";
 import { redactSensitiveText } from "./skill-security.js";
 
@@ -427,6 +427,7 @@ type AntigravityTurnSettings = Pick<ChatSettings, "persona" | "actionMode" | "to
 interface AntigravityTriggerContext {
   interactionId?: string;
   capabilityCatalog?: readonly string[];
+  snapshot?: Pick<WorldSnapshot, "dimension" | "position" | "yaw">;
 }
 
 function normalizedTurnSettings(
@@ -464,6 +465,7 @@ function promptFor(
       "必须且只能调用一次 mc_submit_ai_decision；禁止调用 mc_chat、mc_observe、mc_assign_task、mc_control_companion、终端、文件、浏览器或其他工具。",
       "decision.type 只能是 chat、clarify、inspect、control、task、skill 或 retry-build。一次只能创建一个根任务或一个 Skill。",
       "task 用于一个 TaskSpec；skill 用于已安装的声明式动作链。缺少前置材料、工具、工作台、熔炉和远程搜索由本地任务执行器处理，不要拆成多次工具调用。",
+      "玩家精确要求前后左右步行若干格时必须使用 kind=move，并依据下方实时位置和 yaw 计算绝对 target；不得扩大成 explore，也不得传送。",
       "玩家询问你在做什么、状态、生命、饱食度、背包或装备时，提交 type=inspect 和正确 scope；decision.reply 只写一小句符合当前继承/自定义人格的自然开场，不得编造任何状态数值。本地服务会把真实快照事实追加到这句人格台词后。",
       "玩家要肉时使用 provision-food，foodCategory=meat、source=hunt；明确‘给我’时 destination=player。不得用西瓜或植物食物替代肉。",
       "玩家要求照料、播种或收割农田时可提交 life.crop-cycle 或 farm；本地 Agent 会先查询同世界已记录的家园主农田并扩大范围验证，识别不到才在房屋外建立并登记一块新农田。旧的远程农田/牧场默认只保留为次级据点，除非玩家明确要求使用旧设施。当前房屋本身绝不是农田，禁止把室内地面当作农田。",
@@ -472,6 +474,7 @@ function promptFor(
       `本轮可见输出 token 预算为 ${settings.tokenBudget}；这是反重力外部会话的软预算，请只做一次简短决策。`,
       `玩家：${JSON.stringify(safe(message.sender))}`,
       `消息：${JSON.stringify(safe(message.message))}`,
+      ...(context.snapshot ? [`实时位置 JSON：${JSON.stringify(context.snapshot)}`] : []),
       `一次性 interactionId：${JSON.stringify(context.interactionId)}`,
       ...(catalog.length > 0 ? [`本地允许能力目录 JSON（名称仅作数据）：${JSON.stringify(catalog)}`] : []),
       "mc_submit_ai_decision 会由本地绑定真实玩家、NPC 和 owner，并把唯一回复发送到 Minecraft；不要在反重力窗口重复回答。",

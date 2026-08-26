@@ -224,6 +224,20 @@ final class GatherRetryPolicyTest {
     }
 
     @Test
+    void retriesAFirstScanVerifiedTreeBeforeAnyRemoteExcursion() {
+        assertTrue(GatherRetryPolicy.shouldRetryVerifiedNaturalTree(2, 0));
+        assertTrue(GatherRetryPolicy.shouldRetryVerifiedNaturalTree(
+            1,
+            GatherRetryPolicy.MAX_NATURAL_TREE_RETRY_PASSES - 1
+        ));
+        assertFalse(GatherRetryPolicy.shouldRetryVerifiedNaturalTree(
+            1,
+            GatherRetryPolicy.MAX_NATURAL_TREE_RETRY_PASSES
+        ));
+        assertFalse(GatherRetryPolicy.shouldRetryVerifiedNaturalTree(0, 0));
+    }
+
+    @Test
     void standCandidateBatchesRotateInsteadOfRetryingTheSameCandidates() {
         int total = GatherRetryPolicy.MAX_STAND_PATH_CANDIDATES_PER_ATTEMPT + 7;
         int attempted = GatherRetryPolicy.candidateAttemptCount(total);

@@ -264,6 +264,7 @@ internal static class HmclLauncher
 
     private static bool TryFindTopLevelWindow(
         Predicate<string> predicate,
+        Predicate<int> processPredicate,
         out IntPtr handle,
         out int processId
     )
@@ -279,8 +280,10 @@ internal static class HmclLauncher
             uint candidateProcessId;
             GetWindowThreadProcessId(window, out candidateProcessId);
             if (candidateProcessId == 0) return true;
+            int candidateProcessIdValue = unchecked((int)candidateProcessId);
+            if (processPredicate != null && !processPredicate(candidateProcessIdValue)) return true;
             foundHandle = window;
-            foundProcessId = unchecked((int)candidateProcessId);
+            foundProcessId = candidateProcessIdValue;
             return false;
         };
         EnumWindows(callback, IntPtr.Zero);
@@ -298,6 +301,7 @@ internal static class HmclLauncher
     {
         return TryFindTopLevelWindow(
             delegate(string name) { return HmclTitle.IsMatch(name); },
+            null,
             out handle,
             out processId
         );
@@ -310,12 +314,27 @@ internal static class HmclLauncher
             && !name.StartsWith("Minecraft Launcher", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsJavaGameProcess(int processId)
+    {
+        try
+        {
+            using (Process process = Process.GetProcessById(processId))
+            {
+                return String.Equals(process.ProcessName, "java", StringComparison.OrdinalIgnoreCase)
+                    || String.Equals(process.ProcessName, "javaw", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch (ArgumentException) { return false; }
+        catch (InvalidOperationException) { return false; }
+        catch (System.ComponentModel.Win32Exception) { return false; }
+    }
+
     private static bool TryFindMinecraftWindowHandle(out IntPtr handle, out int processId)
     {
         return TryFindTopLevelWindow(delegate(string name)
         {
             return IsMinecraftGameTitle(name);
-        }, out handle, out processId);
+        }, IsJavaGameProcess, out handle, out processId);
     }
 
     private static void CloseExistingHmcl()

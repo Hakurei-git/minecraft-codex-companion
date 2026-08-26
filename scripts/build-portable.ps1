@@ -298,7 +298,7 @@ if (-not $forgeBuildForced) {
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $PSScriptRoot "run-forge-tests-in-process.ps1"),
-        "-ExpectedTestCount", "449"
+        "-ExpectedTestCount", "465"
     ) $projectRoot
 }
 $baritoneJar = Get-SingleFile (Join-Path $projectRoot "vendor\baritone") "baritone-api-forge-1.20.1-*.jar" "Baritone JAR"
@@ -510,7 +510,7 @@ Invoke-Checked $csc @(
 
 $productionPackage = [ordered]@{
     name = 'minecraft-codex-companion-portable-runtime'
-    version = '0.1.12'
+    version = '0.1.13'
     private = $true
     type = 'module'
     dependencies = [ordered]@{
@@ -563,7 +563,7 @@ Assert-TransparentRuntime $stage
 $manifest = [ordered]@{
     format = 2
     name = 'Minecraft Codex Companion Portable'
-    version = '0.1.12'
+    version = '0.1.13'
     platform = 'win32-x64'
     packaging = [ordered]@{
         model = 'transparent-multi-file'
@@ -581,7 +581,7 @@ $manifest = [ordered]@{
         sha256 = $bridgeJarHash
         packagedSha256 = $packagedBridgeJarHash
         forcedRerun = $forgeBuildForced
-        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-449-tests' }
+        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-465-tests' }
     }
     neoforgeArtifact = [ordered]@{
         path = "mods/neoforge-1.21.1/build/libs/$(Split-Path -Leaf $neoforgeBridgeJar)"

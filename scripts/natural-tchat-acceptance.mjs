@@ -42,6 +42,7 @@ function runBackgroundChat(message, processId, windowHandle) {
     "-File", path.join(projectRoot, "scripts", "send-minecraft-chat-background.ps1"),
     "-MessageUtf8Base64", Buffer.from(message, "utf8").toString("base64"),
     "-RespawnIfDead",
+    "-RecoverPlayerNearNpcForTest",
     "-MinecraftProcessId", String(processId),
     "-NativeWindowHandle", String(windowHandle),
   ];

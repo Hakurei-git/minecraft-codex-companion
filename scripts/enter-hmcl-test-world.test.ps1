@@ -16,10 +16,16 @@ $source = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
 foreach ($required in @(
     'EntryPoint = "PostMessageW"',
     '[MinecraftBackgroundInput]::Text($handle, $targetWorldId)',
-    'ShowWindowAsync($handle, 6)',
-    'ShowWindowAsync($handle, 9)',
+    'ShowWindowAsync($verifiedHandle, $ShowCommand)',
+    'Set-MinecraftWindowStateWithoutInteraction',
+    '# SW_SHOWNOACTIVATE',
+    'GetForegroundWindow()',
+    'GetCursorPos([ref]$point)',
+    'FindLargestWindowForProcess',
+    'ForegroundWindowPreserved = $true',
+    'CursorPositionPreserved = $true',
     'ClipCursor(IntPtr.Zero)',
-    'ReleaseCursorCapture($handle)',
+    'ReleaseCursorCapture($verifiedHandle)',
     'IsWindow($handle)',
     'GetWindowThreadProcessId($handle, [ref]$windowProcessId)',
     '[string]$ControlBaseUri = "http://127.0.0.1:8765"',
@@ -27,7 +33,7 @@ foreach ($required in @(
     '$env:MC_COMPANION_URL',
     '$baseUri = [Uri]$configuredBaseUri',
     '$baseUri.Scheme -ne "http"',
-    'Minecraft replaced its loading window without exposing a verified main-menu HWND',
+    'Minecraft replaced its window without exposing a verified current HWND',
     '$latestLogCandidates = @(',
     '(Join-Path $instancePath "logs\latest.log")',
     '(Join-Path ([string]$config.minecraftRoot) "logs\latest.log")',
@@ -53,6 +59,9 @@ if ($source.Contains('$keptRunningAtBottom = [MinecraftBackgroundInput]::SetWind
 }
 if ($source.Contains('0x0008')) {
     throw "Background world entry still sends synthetic focus loss to fullscreen GLFW"
+}
+if ($source -match 'ShowWindowAsync\([^\r\n]*,\s*9\)') {
+    throw "Background world entry still restores Minecraft with activation"
 }
 
 Write-Output "Minecraft background cursor-release tests passed"

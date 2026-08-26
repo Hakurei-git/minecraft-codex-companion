@@ -71,6 +71,7 @@ function sendBackgroundChat(message) {
       "-File", path.join(projectRoot, "scripts", "send-minecraft-chat-background.ps1"),
       "-MessageUtf8Base64", encoded,
       "-RespawnIfDead",
+      "-RecoverPlayerNearNpcForTest",
     ], {
       cwd: projectRoot,
       windowsHide: true,
@@ -97,6 +98,7 @@ function normalizeBackgroundMinecraft() {
       "-File", path.join(projectRoot, "scripts", "send-minecraft-chat-background.ps1"),
       "-NormalizeOnly",
       "-RespawnIfDead",
+      "-RecoverPlayerNearNpcForTest",
     ], {
       cwd: projectRoot,
       windowsHide: true,

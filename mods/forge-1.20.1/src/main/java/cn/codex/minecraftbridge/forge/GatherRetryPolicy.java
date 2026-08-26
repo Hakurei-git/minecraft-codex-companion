@@ -8,6 +8,7 @@ final class GatherRetryPolicy {
     static final double SEARCH_REGION_ARRIVAL_DISTANCE = 8.0;
     static final int REPATH_INTERVAL_TICKS = 10;
     static final int MAX_STAND_PATH_CANDIDATES_PER_ATTEMPT = 24;
+    static final int MAX_NATURAL_TREE_RETRY_PASSES = 3;
 
     private GatherRetryPolicy() {
     }
@@ -157,6 +158,12 @@ final class GatherRetryPolicy {
             && !activeTarget
             && noWorkTicks > 40
             && searchRadius >= localSearchRadius;
+    }
+
+    static boolean shouldRetryVerifiedNaturalTree(int remainingTargets, int completedRetryPasses) {
+        return remainingTargets > 0
+            && completedRetryPasses >= 0
+            && completedRetryPasses < MAX_NATURAL_TREE_RETRY_PASSES;
     }
 
     /**

@@ -150,6 +150,7 @@ test("food survival restart uses loopback only and never requests log inspection
     "-MessageUtf8Base64", Buffer.from(PROMPT, "utf8").toString("base64"),
     "-ControlBaseUri", "http://127.0.0.1:8766",
     "-RespawnIfDead",
+    "-RecoverPlayerNearNpcForTest",
   ]);
 });
 

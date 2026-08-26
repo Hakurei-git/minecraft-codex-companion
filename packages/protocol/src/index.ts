@@ -458,6 +458,8 @@ const taskBase = {
   priority: z.number().int().min(0).max(1000).optional(),
 };
 
+export const MIN_NAVIGATION_ARRIVAL_TOLERANCE = 0.5;
+
 export const taskSpecSchema = z.discriminatedUnion("kind", [
   z.object({ ...taskBase, kind: z.literal("follow"), player: playerReferenceSchema, distance: z.number().min(1).max(16).default(3) }),
   z.object({ ...taskBase, kind: z.literal("guard"), player: playerReferenceSchema, radius: z.number().min(2).max(64).default(12) }),
@@ -465,6 +467,12 @@ export const taskSpecSchema = z.discriminatedUnion("kind", [
     ...taskBase,
     kind: z.literal("move"),
     target: vec3Schema,
+    // Legacy 0.1-0.49 values remain valid on the wire. Game bridges clamp
+    // them to MIN_NAVIGATION_ARRIVAL_TOLERANCE while new planners emit 0.5.
+    arrivalTolerance: z.number().min(0.1).max(2).optional(),
+    // Relative walking is measured on X/Z so ordinary terrain height changes
+    // cannot turn an exact horizontal request into an unreachable 3D target.
+    arrivalMetric: z.enum(["three-dimensional", "horizontal"]).optional(),
     // Bound by the control plane when the task is accepted.  The Forge NPC
     // pauses instead of reinterpreting coordinates after a portal transfer.
     dimension: z.string().trim().min(1).max(128).optional(),
@@ -1401,6 +1409,14 @@ export const liveFixtureRequestSchema = z.discriminatedUnion("suite", [
   z.object({
     suite: z.literal("no-cheat-expedition"),
     mode: z.enum(["setup", "inspect", "cleanup"]),
+  }).strict(),
+  z.object({
+    suite: z.literal("food-reserve-audit"),
+    mode: z.literal("inspect"),
+  }).strict(),
+  z.object({
+    suite: z.literal("npc-recovery"),
+    mode: z.enum(["setup", "down", "inspect", "cleanup"]),
   }).strict(),
   z.object({
     suite: z.literal("build-palette"),
