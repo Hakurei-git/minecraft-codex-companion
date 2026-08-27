@@ -643,6 +643,7 @@ function payloadPaths(payloadRoot) {
     picker: path.join(payloadRoot, "runtime", "MinecraftCodexPicker.exe"),
     secretHelper: path.join(payloadRoot, "runtime", "MinecraftCodexSecret.exe"),
     hmclLauncher: path.join(payloadRoot, "runtime", "MinecraftCodexHmclLauncher.exe"),
+    windowFocusAgent: path.join(payloadRoot, "runtime", "MinecraftCodexWindowFocusAgent.jar"),
     launcherSource: path.join(payloadRoot, "apps", "portable-launcher", "src", "launcher.cjs"),
     instanceManager: path.join(payloadRoot, "apps", "portable-launcher", "src", "instance-manager.cjs"),
     controlServer: path.join(payloadRoot, "apps", "control-plane", "dist", "server.js"),
@@ -677,7 +678,7 @@ function assertPayload(payloadRoot) {
   const entries = new Map((Array.isArray(manifest.files) ? manifest.files : [])
     .map((entry) => [String(entry.path || "").replaceAll("/", path.sep), entry]));
   for (const name of [
-    "node", "client", "picker", "secretHelper", "hmclLauncher", "launcherSource", "instanceManager",
+    "node", "client", "picker", "secretHelper", "hmclLauncher", "windowFocusAgent", "launcherSource", "instanceManager",
     "controlServer", "mcpStdio", "dashboard", "mcpSmoke", "forgeBridgeJar",
     "neoforgeBridgeJar", "baritoneJar",
   ]) {

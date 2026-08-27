@@ -40,4 +40,20 @@ final class MovementTargetPolicyTest {
         assertEquals(5.0D, MovementTargetPolicy.distance(3.0D, 12.0D, 4.0D, true), 0.000001D);
         assertEquals(13.0D, MovementTargetPolicy.distance(3.0D, 12.0D, 4.0D, false), 0.000001D);
     }
+
+    @Test
+    void predictedClientArrivalRequiresFreshAuthoritativeConfirmation() {
+        assertFalse(MovementTargetPolicy.arrivalConfirmed(true, false, 0.1D, 0.5D, 200));
+        assertFalse(MovementTargetPolicy.arrivalConfirmed(true, true, 3.394D, 0.5D, 200));
+        assertTrue(MovementTargetPolicy.arrivalConfirmed(true, true, 0.49D, 0.5D, 1));
+    }
+
+    @Test
+    void multiplayerFallbackRequiresTwoContinuousSecondsAtTheTarget() {
+        int required = MovementTargetPolicy.clientOnlyArrivalConfirmationTicks();
+        assertEquals(40, required);
+        assertFalse(MovementTargetPolicy.arrivalConfirmed(false, false, Double.NaN, 0.5D, 1));
+        assertFalse(MovementTargetPolicy.arrivalConfirmed(false, false, Double.NaN, 0.5D, required - 1));
+        assertTrue(MovementTargetPolicy.arrivalConfirmed(false, false, Double.NaN, 0.5D, required));
+    }
 }

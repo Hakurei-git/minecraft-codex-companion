@@ -3,7 +3,37 @@
 > 可直接打开的正式记录，路径：`minecraft-codex-companion/bugs.md`。
 > 原始验收证据仍保存在 `.runtime/full-acceptance-20260825-140819/`，下方原始记录未删除。
 
-## 当前结论（2026-08-27 v0.1.14 双版本实机回归后）
+## 当前结论（2026-08-28 v0.1.14 RC6 Forge 单版本实测）
+
+- 本轮范围按用户决定收敛为 `Dragons_ZH_1.20.1`；`1.21.1-NeoForge` 明确记为**未测试（本轮范围排除）**，不计为通过或失败。
+- 新安装包 `build/single-exe/MinecraftCodexCompanion-Setup.exe` 已完成自检和静默安装，两个退出码均为 `0`。EXE SHA-256 为 `1ea379df309906c6effe46aefe74192bd9a2146c987e9f00e58e6369d5cf4aab`，Package ID 为 `4292725eab1253d1b6b626d3403b3424db104f440c3962a096cdb52635b1e640`，载荷文件数 `5889`、未压缩载荷 `562232222` bytes，Authenticode 未签名。
+- 自动门禁已通过：发布门禁 `19/19`、启动器 `41/41`、Forge 隔离测试 `470/470`。窗口代理 SHA-256 为 `00e7daa67c0f7727dd9d6b02abb547c1bd93a01c3b14a6b92ce02e081ca05a17`，并已通过 synthetic、LWJGL `3.3.1`、LWJGL `3.3.3` 的 `java -Xverify:all`。
+- EXE 四次都精确冷启动所选源实例 `Dragons_ZH_1.20.1`，`instanceMode=direct-source`、`exactSelectionVerified=true`；实际 JVM 命令包含源版本且不含 `-Codex`。历史 `Dragons_ZH_1.20.1-Codex` 基线仍为 `764` 个文件、`483204540` bytes，本轮没有创建或启动副本。
+- RC5 首次实机发现的 `GLFW.glfwShowWindow(J)V` `VerifyError` 已修复；RC6 四次真实启动均无 `VerifyError`。状态证据为 v3 策略 `glfw-create-show-noactivate-and-explicit-focus-v3`，`WS_EX_NOACTIVATE` 只在原生显示期间临时使用，显示后恢复，`minecraftWindowPersistentMutation=false`。
+- **BUG-028 仍为间歇性失败。** 四次冷启动只读审计中，第 1、3、4 次观察到 Minecraft 曾成为前台，仅第 2 次没有；第 2 次独立世界进入审计也没有。五份审计均未观察到置顶或光标限制，且测试器没有使用键盘、鼠标、窗口层级或光标写操作。Attempt 4 进入 gameplay 后 Minecraft 正处于前台，严格后台截图按设计拒绝执行，因此不能只凭代理内部校验判通过。
+- 固定测试世界 `Codex-NoCheat-Retest-20260826` 的前三次客户端线程打开请求在 Netty selector 阶段因 `Unable to establish loopback connection` / `Invalid argument: connect` 崩溃。诊断发现用户 Temp 中已有 `261` 个 `socket_*` 条目；同一 Java 17 把 `TEMP/TMP` 和 `jdk.net.unixdomain.tmpdir` 临时指向全新短目录后，最小 `Selector.open()` 通过。该环境前置不需要改系统变量或产品代码。
+- Attempt 4 使用仅对 Companion 子进程生效的干净 Temp 后成功进入固定世界，Forge `codex-forge / 唯 / Crow` 已连接，snapshot 为 `clientUiState=gameplay`、`gameMode=survival`、`materialMode=survival`。随后 BUG-028 再次触发前台化；为遵守“不把游戏放到最前端”的硬约束，本轮立即通过回环急停并由 Minecraft 客户端线程原生保存退出。因此清理夹具、无作弊 5 格步行、NPC 倒地回到玩家附近、龙/NPC 不陷地、玩家原生死亡重生、Minecraft T 聊天与本地自然语言回写均记为**受 BUG-028 安全门禁中止，未执行**。
+- 只读截图 `.runtime/v014-rc6-forge-live-20260828-015123/screenshots/01-attempt2-main-menu-background.png` 只含 Minecraft 客户区，`854x480`、`ForegroundUnchanged=true`、`CursorClipUnchanged=true`，未使用 `PrintWindow`、剪贴板或输入。
+- 测试结束已正常关闭 Companion、控制服务和 HMCL；Forge 临时配置、`options.txt`、聊天、启动器及 HMCL 设置共 7 个文件均按 RC5 测试前备份恢复并通过 SHA-256 对比。世界存档和已安装的新桥接 JAR未回滚。
+- 本轮未调用 Codex、OpenAI 或反重力在线提供方。当前构建可作为带已知问题的测试候选提交和上传，但不能标记为完整实机验收通过或正式稳定 Release。
+
+### RC6 Forge 实测明细
+
+| 用例 | 结果 | 核心证据 |
+| --- | --- | --- |
+| RC6-F01：EXE 自检与静默安装 | 通过 | 自检、安装退出码均为 `0`；Package ID `4292725eab1253d1b6b626d3403b3424db104f440c3962a096cdb52635b1e640`。 |
+| RC6-F02：精确冷启动源实例 | 通过 | 四次均为 `direct-source`、`exactSelectionVerified=true`，实际 JVM包含 `Dragons_ZH_1.20.1`，无 `-Codex` 路径。 |
+| RC6-F03：不创建或启动 `-Codex` | 通过 | 实际进程不含副本路径；历史副本基线未变化。 |
+| RC6-F04：v3 窗口代理 JVM 校验 | 通过 | 四次真实 LWJGL 启动均无 `VerifyError`；临时 `WS_EX_NOACTIVATE` 显示后恢复，无持久窗口样式修改。 |
+| RC6-F05：冷启动全过程不抢前台 | **失败（间歇，BUG-028）** | 第 1/3/4 次审计记录 `MinecraftForegroundObserved=true`，第 2 次为 `false`；四次均未置顶或限制光标。 |
+| RC6-F06：世界进入阶段不抢前台 | 通过（单次） | 第 2 次独立世界进入审计为 `Safe=true`，无前台化、置顶、光标限制或输入。 |
+| RC6-F07：后台 Minecraft 客户区截图 | 通过 | `01-attempt2-main-menu-background.png` 为 `854x480`，只读 `GetDC + BitBlt`，前台和光标边界未变化。 |
+| RC6-F08：进入固定无作弊测试世界 | 通过（环境隔离后） | 前三次受用户 Temp 中 Java socket 环境阻塞；Attempt 4 使用进程级干净 Temp 后进入 gameplay，Forge `codex-forge` 成功连接。 |
+| RC6-F09：NPC、龙、步行、重生、T 聊天回写 | 未执行（BUG-028 安全中止） | 世界已连接，但 Minecraft 成为前台；按用户硬约束立即急停并原生保存退出，未继续长时间功能测试。 |
+| RC6-F10：测试后恢复 | 通过 | 7 个配置文件与测试前备份哈希一致；Minecraft、HMCL、`8776` 均已清空。 |
+| RC6-N01：`1.21.1-NeoForge` | 未测试（范围排除） | 用户明确决定本轮只测 `1.20.1`。 |
+
+## 上一轮基线结论（2026-08-27 v0.1.14 双版本实机回归后）
 
 - 当前 `0.1.14` 安装包候选已分别冷启动 `Dragons_ZH_1.20.1` 与 `1.21.1-NeoForge` 原始源实例；实际进程 `--version`/`--gameDir` 与所选实例一致，均未使用 `-Codex` 路径。历史 `Dragons_ZH_1.20.1-Codex` 仍只有一个，创建时间 `2026-07-31T11:55:49.1256206Z`、修改时间 `2026-08-25T11:50:19.1373874Z`、文件数 `764` 均未变化。
 - Forge 已完成源世界、原生重生、正式 NPC 倒地恢复、无作弊远征和真实 Minecraft T 聊天本地回写；T 聊天遥测为 `incoming=3`、`delivered=3`、`roundTrip=3`，固定本地请求 `原地等待喵` 成功回写 `好，我在这里等你。`。
@@ -61,7 +91,7 @@
 | 缺陷 | 当前状态 | 本次修复摘要 |
 | --- | --- | --- |
 | BUG-001 | 代码已修复；自动化通过；待实机回归 | 反重力标题不匹配改为明确的 4xx/可公开错误，不再折叠为可重试 500。 |
-| BUG-002 | v0.1.14 双版本实机回归通过（2026-08-27） | EXE 精确冷启动两个选定源实例，进程 `--version`/`--gameDir` 匹配，未新增或启动 `-Codex` 副本；历史副本时间戳与文件数未变化。 |
+| BUG-002 | v0.1.14 双版本基线通过；RC6 Forge 再次通过（2026-08-28） | RC6 四次精确冷启动 `Dragons_ZH_1.20.1` 源实例，均为 `direct-source`、`exactSelectionVerified=true`，未新增或启动 `-Codex` 副本。 |
 | BUG-003 | 代码已修复；自动化通过；待实机回归 | NeoForge `remote-player` 不支持的 NPC 控制返回明确 422，不再虚报 202。 |
 | BUG-004 | 代码已修复；自动化通过；待实机回归 | 全局急停改为隔离各实例失败，断开的历史实例不再让在线实例急停返回 500。 |
 | BUG-005 | 代码已修复；自动化通过；待实机回归 | 桥连接加入重连代次管理，退出世界再进入可建立新连接。 |
@@ -86,8 +116,8 @@
 | BUG-024 | 代码已修复；自动化通过；待实机回归 | 移动任务绑定源维度；跨维度后暂停/重新绑定，不再复用原维度坐标。 |
 | BUG-025 | 代码已修复；自动化通过；待新构建实机回归 | 常备口粮目标按配置固定，不再随饥饿上移；备粮任务达到目标时先真实进食并复核剩余库存。 |
 | BUG-026 | Forge 正式链与双版本原生重生实机通过（2026-08-27） | 玩家回 NPC 仅保留为受限验收夹具；正式 Forge NPC 倒地恢复后回到玩家身边；Forge/NeoForge 玩家死亡测试均由客户端原生重生恢复。 |
-| BUG-027 | **v0.1.14 NeoForge 实机失败；自动化漏报** | 5 格相对 move 不再被放大为 explore，也未传送，但任务在客户端预测短暂到达后提前成功；服务端校正后只走约 1.56 格、仍差约 3.394 格。 |
-| BUG-028 | v0.1.14 双版本实机回归通过（2026-08-27） | 启动、进世界、T 聊天、重生、截图和退出全程不改变 Minecraft/HMCL 窗口状态，不使用键鼠或光标写操作；多段后台审计全部安全。 |
+| BUG-027 | **上一候选 NeoForge 实机失败；RC6 未覆盖** | 服务端权威位置与连续 40 tick 到达确认的自动化通过；本轮按用户决定不测 NeoForge，Forge 进入 gameplay 后又因 BUG-028 安全门禁立即退出，不能覆盖上一轮实机失败结论。 |
+| BUG-028 | **RC6 Forge 冷启动仍间歇失败（2026-08-28）** | v3 已修复 `VerifyError` 并临时保护 `glfwShowWindow`；但四次只读冷启动审计中三次观察到 Minecraft 成为前台。未观察到置顶、光标限制或测试器输入。 |
 
 ## 2026-08-26 v0.1.12 双版本实机复测
 
@@ -159,7 +189,7 @@
 ### BUG-027：NeoForge 反重力步行距离被放大并卡入树叶，最终导航超时
 
 - 严重级别：P1 / 高
-- 状态：v0.1.12 实机稳定复现；代码已修复、自动化通过，待新构建实机回归。
+- 状态：上一候选实机稳定复现；新候选代码与自动化已修复，本轮实机被测试代理崩溃阻断，仍待有效回归。
 - 前置：NeoForge 1.21.1 原始源实例、`allowCommands=0`、survival、固定反重力会话。
 - 复现：真实 T 聊天发送 `向前走5格，不要传送`。
 - 实际：反重力建立 `kind=explore,radius=8,direction=any`，不是精确 5 格 move。玩家从 `(-5.536,75,4.700)` 移到约 `(2.17,78,9.54)`，三维位移约 9.8 格；采样最大单步 0.107 格，确认没有传送。随后角色卡在树叶内部，进度固定 0.678、剩余距离 3 格，5 分钟后以 `NAVIGATION_TIMEOUT` 失败。
@@ -167,19 +197,23 @@
 - v0.1.14 新构建实测：直接提交精确水平 move，从 `(2.169968,78,9.543853)` 到 `(7.104814,78,8.739307)`，`arrivalTolerance=0.5`、`arrivalMetric=horizontal`。任务 `07e4c84a-9ee0-4d0f-8df7-af7daebb3751` 返回 `succeeded/已到达目标位置`，但权威 snapshot 稳定在 `(3.711463,78,8.831246)`：只前进约 `1.56` 格，距目标仍约 `3.394` 格。全程 survival，未观察到传送、创造或命令。
 - 新疑似原因：NeoForge 客户端本地预测位置可能短暂进入 0.5 格阈值，`TaskEngine.tickMove` 单次命中后立即提交成功并停止驱动；随后服务器位置校正把玩家拉回，但任务已不可逆地终态。Baritone 目标还把小数坐标截为整数 `(7,78,8)`，会放大客户端/服务端到达合同差异。该判断是基于任务时序和最终权威 snapshot 的推断，置信度中高。
 - 自动化缺口：现有测试验证目标规范化、水平距离和单次到达阈值，却没有要求服务端连续多个 snapshot 确认到达，也没有覆盖“客户端预测到达后服务器校正”的回退。后续修复应加入连续稳定确认或服务端 ACK，再提交成功。
+- 新候选修复：到达判定改为服务端权威位置，并要求连续 40 tick 满足到达条件；多人模式不再用单次客户端预测位置提交成功，Baritone 目标改为 `BlockPos.containing`。Forge 隔离测试已扩展到 `470` 项并通过。2026-08-27 新 EXE 已冷启动 NeoForge 源实例，但进入世界时旧临时测试代理污染 JVM temp 属性并触发 Netty selector 崩溃，未到达移动用例，不能据此判定修复通过或失败。
 - 截图证据：`.runtime/manual-safe-screenshots/v014-candidate-neoforge-move-false-success-20260827.png`。
 
-### BUG-028：后台测试仍可能让 Minecraft 捕获鼠标
+### BUG-028：后台测试仍可能让 Minecraft 捕获鼠标或抢占前台
 
 - 严重级别：P1 / 高（直接影响用户继续使用桌面）。
-- 状态：代码已修复；专项自动化通过；`0.1.14` 新 EXE 的 Forge 与 NeoForge 冷启动、世界内操作和退出实机回归通过。
+- 状态：2026-08-28 RC6 已修复窗口代理 `VerifyError`，但 Forge 四次冷启动审计中三次观察到前台化；缺陷保持打开并标记为间歇性。
 - 实际：测试工具没有移动物理鼠标，但 Minecraft 窗口重新获得 GLFW 光标捕获后，用户鼠标无法离开游戏。此前的光标坐标/前台窗口检查仍可同时通过，因此 RT-10 的观测口径不足。
 - 影响：后台世界选择、聊天、重生、截图、暂停或窗口状态切换即使不调用物理输入，也可能妨碍用户操作 Codex 和其他应用。
 - 根因：旧桌面测试链仍调用 `PostMessage`、`PrintWindow`、`ShowWindowAsync`、`SetWindowPos`、`ClipCursor` 和 `ReleaseCapture`。这些调用即使不移动物理光标，也可能改变 Minecraft 的 UI/焦点生命周期并触发 GLFW 重新限制光标。
+- 新冷启动子问题：即使测试链不再调用上述 API，Minecraft 原生窗口创建/显示阶段仍可能主动取得前台。v3 代理除 `GLFW_FOCUSED=false`、`GLFW_FOCUS_ON_SHOW=false` 外，还拦截 `glfwShowWindow` 与显式 `glfwFocusWindow`；显示时临时加 `WS_EX_NOACTIVATE`，调用后立即恢复。RC6 状态连续返回 `focusPolicyVerified=true`、`windowNoActivateStyleRestoredAfterShow=true`、`minecraftWindowPersistentMutation=false`，但真实只读审计仍有 3/4 冷启动记录到前台化，说明内部插桩成功并不等于桌面结果稳定。具体剩余调用点或 Windows 激活时序仍需修复阶段继续定位。
 - 修复：从桌面启动器移除窗口层级、最小化和光标修改；T 聊天、自动进出世界及 Save and Quit 脚本继续 fail closed 为 `MANUAL_UI_REQUIRED`；重生改为回环、显式启用、固定枚举的客户端原生夹具；截图只使用目标 Minecraft 客户区的 `GetDC + BitBlt`，不调用 `PrintWindow`、`PostMessage`、窗口层级或输入 API，并在保存前后验证前台窗口和 `GetClipCursor` 结果未变化；新增只读桌面安全审计和仅使用 GET 的人工 T 聊天观察器。
-- 自动证据：桌面安全专项与重生/截图策略测试已纳入完整脚本回归 `188/188`；发布门禁禁止启动器重新引入窗口、输入或光标写操作。
+- 自动证据：RC6 发布门禁 `19/19`、启动器 `41/41`、Forge 隔离测试 `470/470`；代理还通过 synthetic、LWJGL `3.3.1` 和 `3.3.3` 的 `java -Xverify:all`。发布门禁继续禁止启动器重新引入窗口、输入或光标写操作。
 - v0.1.14 双版本实机证据：Forge 冷启动/T 聊天/世界内流程的严格后台审计为 `77/77`、`228/228`、`274/274`；NeoForge 世界加载/移动/重生与 T 聊天为 `365/365`、`818/818`、`273/273`。全部结果均为 `WindowTopmostObserved=false`、`MinecraftForegroundObserved=false`、`BackgroundCursorConfinementObserved=false`，键鼠、窗口和光标写操作均为 0。用户在测试期间多次正常移动游戏画面和桌面鼠标，没有再次出现鼠标无法离开游戏。
-- 只读截图证据：Forge 与 NeoForge 的主菜单、世界、死亡、重生、NPC 恢复、T 聊天和失败现场均只截 Minecraft 客户区；每次返回 `ClientAreaOnly=true`、`ReadOnlyCapture=true`、`ForegroundUnchanged=true`、`CursorClipUnchanged=true`。代表性证据为 `v014-candidate-forge-native-tchat-open-history-20260827.png`、`v014-candidate-neoforge-windowed-main-menu-20260827.png`、`v014-candidate-neoforge-final-native-respawn-windowed-20260827.png`。
+- 新候选反证：`.runtime/v014-rc3-live-20260827-205741/neoforge-window-creation-audit.json` 覆盖 `5374` 个采样，记录 Minecraft 前台化一次；同目录后续稳定期 `273/273` 与世界打开阶段 `1089/1089` 均安全，且全程 `CursorConfinementObserved=false`、`TopmostObserved=false`。这说明上一轮审计从窗口已稳定后开始，漏掉了创建窗口瞬间。
+- RC6 Forge 证据：`.runtime/v014-rc6-forge-live-20260828-015123/results/window-creation-audit.json`、`attempt3-window-audit.json`、`attempt4-window-audit.json` 均记录 `MinecraftForegroundObserved=true`；`attempt2-window-creation-audit.json` 和 `attempt2-world-entry-window-audit.json` 为 `Safe=true`。五份结果均为 `CursorConfinementObserved=false`、`TopmostObserved=false`、`MouseOrKeyboardInputUsed=false`，因此当前结论是“前台化间歇失败，但未复现锁鼠标或置顶”。
+- 只读截图证据：Forge 与 NeoForge 的历史主菜单、世界、死亡、重生、NPC 恢复、T 聊天和失败现场均只截 Minecraft 客户区；每次返回 `ClientAreaOnly=true`、`ReadOnlyCapture=true`、`ForegroundUnchanged=true`、`CursorClipUnchanged=true`。RC6 新证据为 `.runtime/v014-rc6-forge-live-20260828-015123/screenshots/01-attempt2-main-menu-background.png`，精确 `854x480`，同样未使用 `PrintWindow`、剪贴板或输入。
 - 窗口化补充：NeoForge 首次启动出现全屏并非启动器置顶或抢焦点，而是 HMCL Home 既有全局设置 `fullscreen=true,width=1920` 及 `FULLSCREEN/1920` 预设。用户关闭首次启动后，已把两处改为 `fullscreen=false,width=854,height=480`，并与 `.minecraft/options.txt` 的 `fullscreen:false` 交叉验证；第二次 EXE 冷启动客户区实测为 854×480。产品仍尊重用户的 HMCL 设置，本轮只为满足明确的“不要全屏”验收要求修正本机配置。
 - 保存退出证据：测试结束先断开桥，再由忽略目录中的本机 JVM agent 在 Minecraft 客户端线程执行原生停止流程；游戏保存退出、HMCL 自行结束，不调用 `WM_CLOSE`、`PostMessage`、窗口层级或输入 API。临时 agent 不提交、不打包。
 

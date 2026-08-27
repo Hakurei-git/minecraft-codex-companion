@@ -282,6 +282,14 @@ if ($neoforgeBuildForced) {
 $nodeCommand = (Get-Command node.exe -ErrorAction Stop).Source
 
 $bridgeJar = Get-SingleFile (Join-Path $projectRoot "mods\forge-1.20.1\build\libs") "minecraft_codex_bridge-forge-1.20.1-*.jar" "Forge bridge JAR"
+$windowFocusAgentJar = Get-SingleFile `
+    (Join-Path $projectRoot "mods\forge-1.20.1\build\focus-agent") `
+    "MinecraftCodexWindowFocusAgent.jar" `
+    "Minecraft window focus agent JAR"
+$windowFocusAgentJarHash = Get-Sha256Hex -LiteralPath $windowFocusAgentJar
+if ($windowFocusAgentJarHash -notmatch '^[a-f0-9]{64}$') {
+    throw "Minecraft window focus agent JAR did not produce a valid SHA-256 digest."
+}
 $bridgeJarInfo = Get-Item -LiteralPath $bridgeJar
 if ($forgeBuildForced -and $bridgeJarInfo.LastWriteTimeUtc -lt $forgeBuildStartedAt) {
     throw "Forge bridge JAR is stale: it was not rebuilt by the current portable build."
@@ -298,7 +306,7 @@ if (-not $forgeBuildForced) {
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $PSScriptRoot "run-forge-tests-in-process.ps1"),
-        "-ExpectedTestCount", "468"
+        "-ExpectedTestCount", "470"
     ) $projectRoot
 }
 $baritoneJar = Get-SingleFile (Join-Path $projectRoot "vendor\baritone") "baritone-api-forge-1.20.1-*.jar" "Baritone JAR"
@@ -352,6 +360,12 @@ Copy-File (Join-Path $projectRoot "assets\third_party\queen-cats-dogs\README.md"
 Copy-File (Join-Path $projectRoot "portable-docs\README.md") (Join-Path $stage "README.md")
 Copy-File (Join-Path $projectRoot "portable-docs\README.zh-CN.md") (Join-Path $stage "README.zh-CN.md")
 Copy-File $nodeCommand (Join-Path $stage "runtime\node.exe")
+$packagedWindowFocusAgentJar = Join-Path $stage "runtime\MinecraftCodexWindowFocusAgent.jar"
+Copy-File $windowFocusAgentJar $packagedWindowFocusAgentJar
+$packagedWindowFocusAgentJarHash = Get-Sha256Hex -LiteralPath $packagedWindowFocusAgentJar
+if ($packagedWindowFocusAgentJarHash -ne $windowFocusAgentJarHash) {
+    throw "Packaged Minecraft window focus agent JAR hash does not match the freshly verified artifact."
+}
 
 $cscCandidates = @(
     (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
@@ -581,7 +595,7 @@ $manifest = [ordered]@{
         sha256 = $bridgeJarHash
         packagedSha256 = $packagedBridgeJarHash
         forcedRerun = $forgeBuildForced
-        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-468-tests' }
+        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-470-tests' }
     }
     neoforgeArtifact = [ordered]@{
         path = "mods/neoforge-1.21.1/build/libs/$(Split-Path -Leaf $neoforgeBridgeJar)"
@@ -592,6 +606,12 @@ $manifest = [ordered]@{
         forcedRerun = $neoforgeBuildForced
         verificationMode = if ($neoforgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256' }
     }
+    windowFocusAgentArtifact = [ordered]@{
+        path = 'runtime/MinecraftCodexWindowFocusAgent.jar'
+        sha256 = $windowFocusAgentJarHash
+        packagedSha256 = $packagedWindowFocusAgentJarHash
+        verificationMode = 'asm-synthetic-and-lwjgl-3.3.1-3.3.3-self-test-and-payload-sha256'
+    }
     signatures = @(@($launcherExe, $clientExe, $pickerExe, $hmclLauncherExe, $secretExe) | ForEach-Object {
         Get-SignatureEvidence $_ $stage
     })
@@ -601,6 +621,8 @@ $manifest = [ordered]@{
         'apps/portable-launcher/native/Bootstrap.cs',
         'apps/portable-launcher/native/Client.cs',
         'apps/portable-launcher/native/HmclLauncher.cs',
+        'apps/portable-launcher/window-focus-agent/src/main/java/cn/codex/minecraftbridge/agent/MinecraftWindowFocusAgent.java',
+        'apps/portable-launcher/window-focus-agent/src/test/java/cn/codex/minecraftbridge/agent/MinecraftWindowFocusAgentSelfTest.java',
         'apps/portable-launcher/native/Picker.cs',
         'apps/portable-launcher/native/SecretHelper.cs',
         'apps/portable-launcher/native/AssemblyInfo.cs',
@@ -669,6 +691,7 @@ $result = [PSCustomObject]@{
     ArchiveSha256 = if ($SkipArchive) { $null } else { $archiveHash }
     ForgeJarSha256 = $bridgeJarHash
     NeoForgeJarSha256 = $neoforgeBridgeJarHash
+    WindowFocusAgentJarSha256 = $windowFocusAgentJarHash
     PayloadBytes = (Get-ChildItem -LiteralPath $stage -File -Recurse | Measure-Object -Property Length -Sum).Sum
 }
 $result | Format-List

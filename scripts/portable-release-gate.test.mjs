@@ -19,6 +19,23 @@ const hmclLauncherSource = await readFile(
   path.join(projectRoot, "apps", "portable-launcher", "native", "HmclLauncher.cs"),
   "utf8",
 );
+const windowFocusAgentSource = await readFile(
+  path.join(
+    projectRoot,
+    "apps",
+    "portable-launcher",
+    "window-focus-agent",
+    "src",
+    "main",
+    "java",
+    "cn",
+    "codex",
+    "minecraftbridge",
+    "agent",
+    "MinecraftWindowFocusAgent.java",
+  ),
+  "utf8",
+);
 const portableUi = await readFile(
   path.join(projectRoot, "apps", "portable-launcher", "ui", "index.html"),
   "utf8",
@@ -130,14 +147,45 @@ test("desktop EXE always uses and precisely launches the selected HMCL source in
   assert.doesNotMatch(hmclLauncherSource, /hmcl\.Current\.NativeWindowHandle/);
   assert.match(hmclLauncherSource, /exactSelectionVerified/);
   assert.match(hmclLauncherSource, /launcherWindowMutated/);
-  assert.match(hmclLauncherSource, /minecraftWindowMutated/);
+  assert.match(hmclLauncherSource, /minecraftWindowMutated\\\":true/);
+  assert.doesNotMatch(hmclLauncherSource, /minecraftWindowMutated\\\":false/);
+  assert.match(hmclLauncherSource, /minecraftWindowMutationTemporary\\\":true/);
+  assert.match(hmclLauncherSource, /minecraftWindowMutationScope\\\":\\\"extended-style-during-native-show/);
+  assert.match(hmclLauncherSource, /minecraftWindowPersistentMutation\\\":false/);
   assert.doesNotMatch(hmclLauncherSource, /SendKeys|mouse_event|SetCursorPos/);
   assert.doesNotMatch(hmclLauncherSource, /SetWindowPos|ShowWindow|ClipCursor|ReleaseCapture/);
+  assert.match(hmclLauncherSource, /MinecraftCodexWindowFocusAgent\.jar/);
+  assert.match(hmclLauncherSource, /-Dmc\.codex\.preventWindowFocus=true/);
+  assert.match(hmclLauncherSource, /focusPolicyVerified/);
+  assert.match(hmclLauncherSource, /glfw-create-show-noactivate-and-explicit-focus-v3/);
+  assert.match(hmclLauncherSource, /windowShowFocusGuardApplied/);
+  assert.match(hmclLauncherSource, /windowNoActivateStyleGuardApplied/);
+  assert.match(hmclLauncherSource, /windowNoActivateStyleRestoredAfterShow/);
+  assert.match(hmclLauncherSource, /explicitWindowFocusSuppressed/);
+  assert.match(hmclLauncherSource, /HasVerifiedFocusInstrumentation/);
+  assert.match(hmclLauncherSource, /BuildHmclStartInfo/);
+  assert.match(hmclLauncherSource, /UseShellExecute = false/);
+
+  assert.match(windowFocusAgentSource, /glfw-create-show-noactivate-and-explicit-focus-v3/);
+  assert.match(windowFocusAgentSource, /glfwSetWindowAttrib/);
+  assert.match(windowFocusAgentSource, /GLFWNativeWin32/);
+  assert.match(windowFocusAgentSource, /WS_EX_NOACTIVATE/);
+  assert.match(windowFocusAgentSource, /GetWindowLongPtr/);
+  assert.match(windowFocusAgentSource, /SetWindowLongPtr/);
+  assert.match(windowFocusAgentSource, /"glfwFocusWindow"\.equals\(name\)/);
+  assert.match(windowFocusAgentSource, /replacement\.visitInsn\(Opcodes\.RETURN\)/);
+  assert.doesNotMatch(
+    windowFocusAgentSource,
+    /BringWindowToTop|SetForegroundWindow|SetFocus\s*\(|SetWindowPos|ClipCursor|SendInput|SetCursorPos/,
+  );
 
   assert.match(buildScript, /MinecraftCodexHmclLauncher\.exe/);
   assert.match(buildScript, /HmclLauncher\.cs/);
   assert.match(buildScript, /Exact HMCL launcher self-test/);
   assert.match(buildScript, /\$hmclLauncherExe/);
+  assert.match(buildScript, /MinecraftCodexWindowFocusAgent\.jar/);
+  assert.match(buildScript, /windowFocusAgentArtifact/);
+  assert.match(buildScript, /asm-synthetic-and-lwjgl-3\.3\.1-3\.3\.3-self-test-and-payload-sha256/);
 });
 
 test("offline pinned Forge packaging is explicit, hash-bound, and runs every Forge test", () => {
@@ -145,7 +193,7 @@ test("offline pinned Forge packaging is explicit, hash-bound, and runs every For
   assert.match(buildScript, /\^\[A-Fa-f0-9\]\{64\}\$/);
   assert.match(buildScript, /Pinned Forge bridge JAR SHA-256 does not match/);
   assert.match(buildScript, /run-forge-tests-in-process\.ps1/);
-  assert.match(buildScript, /pinned-sha256-and-468-tests/);
+  assert.match(buildScript, /pinned-sha256-and-470-tests/);
   assert.match(buildScript, /OfflineNodeModulesRoot/);
   assert.match(buildScript, /Assert-OfflineNodeModules/);
   assert.match(buildScript, /Offline node_modules contains filesystem links or reparse points/);

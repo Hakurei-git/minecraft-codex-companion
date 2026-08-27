@@ -4,6 +4,7 @@ public final class MovementTargetPolicy {
     private static final double ANY_DIRECTION_Z_RATIO = 0.6D;
     private static final double MIN_NAVIGATION_ARRIVAL_TOLERANCE = 0.5D;
     private static final double MIN_PROGRESS = 0.15D;
+    private static final int CLIENT_ONLY_ARRIVAL_CONFIRMATION_TICKS = 40;
 
     private MovementTargetPolicy() {
     }
@@ -35,6 +36,32 @@ public final class MovementTargetPolicy {
         return horizontal
             ? Math.hypot(deltaX, deltaZ)
             : Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+    }
+
+    /**
+     * Client movement is predicted before the server accepts it. A single
+     * client-side threshold hit therefore cannot finish a task: the server may
+     * still correct the player several blocks backwards. Singleplayer uses a
+     * fresh integrated-server sample; remote multiplayer requires two seconds
+     * of uninterrupted client stability after all movement controls stop.
+     */
+    static boolean arrivalConfirmed(
+        boolean authoritativeServerAvailable,
+        boolean freshAuthoritativeSample,
+        double authoritativeDistance,
+        double tolerance,
+        int consecutiveClientTicks
+    ) {
+        if (authoritativeServerAvailable) {
+            return freshAuthoritativeSample
+                && Double.isFinite(authoritativeDistance)
+                && authoritativeDistance <= tolerance;
+        }
+        return consecutiveClientTicks >= CLIENT_ONLY_ARRIVAL_CONFIRMATION_TICKS;
+    }
+
+    static int clientOnlyArrivalConfirmationTicks() {
+        return CLIENT_ONLY_ARRIVAL_CONFIRMATION_TICKS;
     }
 
     public static boolean madeProgress(double bestDistance, double currentDistance) {

@@ -4,9 +4,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
@@ -46,6 +48,8 @@ public final class TaskEngine {
     }
 
     private enum BackgroundMode { NONE, FOLLOW, GUARD }
+
+    private static final long AUTHORITATIVE_MOVE_PROBE_INTERVAL_TICKS = 5L;
 
     private final ProgressSink progressSink;
     private final ResultSink resultSink;
@@ -149,25 +153,44 @@ public final class TaskEngine {
     private void tickMove(Minecraft minecraft, ActiveTask task, Vec3 target) {
         Player player = minecraft.player;
         Vec3 delta = target.subtract(player.position());
+        boolean horizontal = "horizontal".equals(string(task.spec, "arrivalMetric", "three-dimensional"));
         double distance = MovementTargetPolicy.distance(
             delta.x,
             delta.y,
             delta.z,
-            "horizontal".equals(string(task.spec, "arrivalMetric", "three-dimensional"))
+            horizontal
         );
         double arrivalTolerance = MovementTargetPolicy.arrivalTolerance(
             number(task.spec, "arrivalTolerance", 1.6D)
         );
         if (task.startDistance < 0) task.startDistance = Math.max(1, distance);
-        if (!task.issued) {
-            task.issued = true;
-            task.usedBaritone = baritone.execute(String.format(Locale.ROOT, "goto %d %d %d", (int) target.x, (int) target.y, (int) target.z));
-        }
         if (distance <= arrivalTolerance) {
             releaseKeys(minecraft);
-            if (task.usedBaritone) baritone.cancel();
-            complete(task, "已到达目标位置");
+            if (task.usedBaritone) {
+                baritone.cancel();
+                task.usedBaritone = false;
+                task.issued = false;
+            }
+            if (confirmMoveArrival(minecraft, task, target, horizontal, arrivalTolerance)) {
+                complete(task, "已到达目标位置");
+                return;
+            }
+            if (task.ticks % 10 == 0) {
+                progress(task, Math.min(0.99D, 1 - Math.min(1, distance / task.startDistance)), "正在确认服务器位置");
+            }
             return;
+        }
+        resetMoveArrivalCandidate(task);
+        if (!task.issued) {
+            task.issued = true;
+            BlockPos baritoneTarget = BlockPos.containing(target);
+            task.usedBaritone = baritone.execute(String.format(
+                Locale.ROOT,
+                "goto %d %d %d",
+                baritoneTarget.getX(),
+                baritoneTarget.getY(),
+                baritoneTarget.getZ()
+            ));
         }
         if (!task.usedBaritone) {
             if (task.ticks % 10 == 0) {
@@ -185,6 +208,92 @@ public final class TaskEngine {
             progress(task, progress, "移动中，距离 " + Math.round(distance) + " 格");
         }
         if (task.ticks > 20 * 60 * 5) fail(task, "移动超时", "NAVIGATION_TIMEOUT");
+    }
+
+    private boolean confirmMoveArrival(
+        Minecraft minecraft,
+        ActiveTask task,
+        Vec3 target,
+        boolean horizontal,
+        double arrivalTolerance
+    ) {
+        task.moveArrivalCandidateTicks++;
+        IntegratedServer server = minecraft.getSingleplayerServer();
+        if (server == null) {
+            return MovementTargetPolicy.arrivalConfirmed(
+                false,
+                false,
+                Double.NaN,
+                arrivalTolerance,
+                task.moveArrivalCandidateTicks
+            );
+        }
+
+        long resultSequence = task.moveAuthoritativeProbeResultSequence;
+        boolean freshSample = resultSequence > task.moveAuthoritativeProbeHandledSequence
+            && task.moveAuthoritativeProbeResultEpoch == task.moveArrivalEpoch;
+        if (freshSample) task.moveAuthoritativeProbeHandledSequence = resultSequence;
+        boolean confirmed = MovementTargetPolicy.arrivalConfirmed(
+            true,
+            freshSample,
+            task.moveAuthoritativeDistance,
+            arrivalTolerance,
+            task.moveArrivalCandidateTicks
+        );
+        if (confirmed) return true;
+
+        if (!task.moveAuthoritativeProbePending
+            && task.ticks - task.moveLastAuthoritativeProbeTick >= AUTHORITATIVE_MOVE_PROBE_INTERVAL_TICKS) {
+            requestAuthoritativeMoveProbe(minecraft, server, task, target, horizontal);
+        }
+        return false;
+    }
+
+    private void requestAuthoritativeMoveProbe(
+        Minecraft minecraft,
+        IntegratedServer server,
+        ActiveTask task,
+        Vec3 target,
+        boolean horizontal
+    ) {
+        UUID playerId = minecraft.player.getUUID();
+        String dimension = minecraft.player.level().dimension().location().toString();
+        long epoch = task.moveArrivalEpoch;
+        long sequence = ++task.moveAuthoritativeProbeSequence;
+        task.moveAuthoritativeProbePending = true;
+        task.moveLastAuthoritativeProbeTick = task.ticks;
+        try {
+            server.execute(() -> {
+                try {
+                    double authoritativeDistance = Double.POSITIVE_INFINITY;
+                    ServerPlayer serverPlayer = server.getPlayerList().getPlayer(playerId);
+                    if (serverPlayer != null
+                        && dimension.equals(serverPlayer.level().dimension().location().toString())) {
+                        Vec3 authoritativeDelta = target.subtract(serverPlayer.position());
+                        authoritativeDistance = MovementTargetPolicy.distance(
+                            authoritativeDelta.x,
+                            authoritativeDelta.y,
+                            authoritativeDelta.z,
+                            horizontal
+                        );
+                    }
+                    task.moveAuthoritativeDistance = authoritativeDistance;
+                    task.moveAuthoritativeProbeResultEpoch = epoch;
+                    task.moveAuthoritativeProbeResultSequence = sequence;
+                } finally {
+                    task.moveAuthoritativeProbePending = false;
+                }
+            });
+        } catch (RuntimeException error) {
+            task.moveAuthoritativeProbePending = false;
+        }
+    }
+
+    private void resetMoveArrivalCandidate(ActiveTask task) {
+        if (task.moveArrivalCandidateTicks == 0) return;
+        task.moveArrivalCandidateTicks = 0;
+        task.moveArrivalEpoch++;
+        task.moveAuthoritativeProbeHandledSequence = task.moveAuthoritativeProbeResultSequence;
     }
 
     private void tickExplore(Minecraft minecraft, ActiveTask task) {
@@ -1429,6 +1538,15 @@ public final class TaskEngine {
         private double startDistance = -1;
         private double moveBestDistance = Double.POSITIVE_INFINITY;
         private int moveStalledSamples;
+        private int moveArrivalCandidateTicks;
+        private long moveArrivalEpoch;
+        private long moveAuthoritativeProbeSequence;
+        private volatile boolean moveAuthoritativeProbePending;
+        private volatile long moveAuthoritativeProbeResultSequence;
+        private volatile long moveAuthoritativeProbeResultEpoch = -1L;
+        private volatile double moveAuthoritativeDistance = Double.POSITIVE_INFINITY;
+        private long moveAuthoritativeProbeHandledSequence;
+        private long moveLastAuthoritativeProbeTick = Long.MIN_VALUE / 2L;
         private int initialCount = -1;
         private int clearTicks;
         private Vec3 target;

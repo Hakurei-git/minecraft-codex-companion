@@ -15,6 +15,22 @@ java {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
+sourceSets {
+    windowFocusAgent {
+        java.srcDir '../../apps/portable-launcher/window-focus-agent/src/main/java'
+    }
+    windowFocusAgentTest {
+        java.srcDir '../../apps/portable-launcher/window-focus-agent/src/test/java'
+        compileClasspath += sourceSets.windowFocusAgent.output
+        runtimeClasspath += sourceSets.windowFocusAgent.output
+    }
+}
+
+configurations {
+    windowFocusAgentLwjgl331 { transitive = false }
+    windowFocusAgentLwjgl333 { transitive = false }
+}
+
 minecraft {
     mappings channel: mapping_channel, version: mapping_version
     copyIdeResources = true
@@ -34,6 +50,10 @@ dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.3'
+    windowFocusAgentImplementation 'org.ow2.asm:asm:9.7'
+    windowFocusAgentTestImplementation 'org.ow2.asm:asm:9.7'
+    windowFocusAgentLwjgl331 'org.lwjgl:lwjgl-glfw:3.3.1'
+    windowFocusAgentLwjgl333 'org.lwjgl:lwjgl-glfw:3.3.3'
 }
 
 mixin {
@@ -43,6 +63,43 @@ mixin {
 }
 
 tasks.named('test', Test).configure { useJUnitPlatform() }
+
+tasks.register('windowFocusAgentSelfTest', JavaExec) {
+    dependsOn tasks.named(sourceSets.windowFocusAgent.classesTaskName)
+    dependsOn tasks.named(sourceSets.windowFocusAgentTest.classesTaskName)
+    classpath = sourceSets.windowFocusAgentTest.runtimeClasspath
+    mainClass = 'cn.codex.minecraftbridge.agent.MinecraftWindowFocusAgentSelfTest'
+    doFirst {
+        args configurations.windowFocusAgentLwjgl331.singleFile.absolutePath,
+            configurations.windowFocusAgentLwjgl333.singleFile.absolutePath
+    }
+}
+
+tasks.register('windowFocusAgentJar', Jar) {
+    dependsOn tasks.named(sourceSets.windowFocusAgent.classesTaskName)
+    archiveFileName = 'MinecraftCodexWindowFocusAgent.jar'
+    destinationDirectory = layout.buildDirectory.dir('focus-agent')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from sourceSets.windowFocusAgent.output
+    from {
+        configurations.windowFocusAgentRuntimeClasspath.collect { dependency ->
+            dependency.isDirectory() ? dependency : zipTree(dependency)
+        }
+    }
+    exclude 'META-INF/MANIFEST.MF', 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'module-info.class'
+    manifest {
+        attributes([
+            'Premain-Class': 'cn.codex.minecraftbridge.agent.MinecraftWindowFocusAgent',
+            'Can-Redefine-Classes': 'false',
+            'Can-Retransform-Classes': 'false',
+            'Implementation-Title': 'Minecraft Codex Window Focus Agent',
+            'Implementation-Version': '3',
+        ])
+    }
+}
+
+tasks.named('check').configure { dependsOn tasks.named('windowFocusAgentSelfTest') }
+tasks.named('build').configure { dependsOn tasks.named('windowFocusAgentJar') }
 
 tasks.named('processResources', ProcessResources).configure {
     def replaceProperties = [

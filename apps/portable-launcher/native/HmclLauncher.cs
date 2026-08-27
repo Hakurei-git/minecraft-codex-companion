@@ -12,6 +12,8 @@ using System.Windows.Automation;
 
 internal static class HmclLauncher
 {
+    private const string WindowFocusAgentFileName = "MinecraftCodexWindowFocusAgent.jar";
+    private const string WindowFocusPolicyVersion = "glfw-create-show-noactivate-and-explicit-focus-v3";
     private static readonly Regex HmclTitle = new Regex("HMCL|Hello Minecraft", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex LaunchText = new Regex("启动游戏|Launch Game", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly UTF8Encoding StrictUtf8 = new UTF8Encoding(false, true);
@@ -336,7 +338,92 @@ internal static class HmclLauncher
         if (!process.HasExited) throw new InvalidOperationException("正在运行的 HMCL 未在限定时间内正常退出");
     }
 
-    private static Process StartHmcl(string launcherPath, string[] launcherArguments)
+    private static string EncodeBase64Url(string value)
+    {
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(value))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+    }
+
+    private static string QuoteJavaToolOption(string value)
+    {
+        if (value.IndexOf('"') >= 0 || value.IndexOf('\r') >= 0 || value.IndexOf('\n') >= 0)
+        {
+            throw new InvalidDataException("Java 启动策略路径包含不支持的字符");
+        }
+        return value.IndexOfAny(new[] { ' ', '\t' }) < 0 ? value : "\"" + value + "\"";
+    }
+
+    private static string BuildFocusJavaToolOptions(string focusAgentPath, string focusAuditPath)
+    {
+        string inherited = Environment.GetEnvironmentVariable("JAVA_TOOL_OPTIONS") ?? String.Empty;
+        string required = "-Dmc.codex.preventWindowFocus=true"
+            + " -Dmc.codex.windowFocusAudit=" + EncodeBase64Url(focusAuditPath)
+            + " " + QuoteJavaToolOption("-javaagent:" + focusAgentPath);
+        return inherited.Trim().Length == 0 ? required : inherited.Trim() + " " + required;
+    }
+
+    private static bool HasVerifiedFocusInstrumentation(string auditPath, int processId)
+    {
+        if (processId <= 0 || !File.Exists(auditPath)) return false;
+        try
+        {
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            serializer.MaxJsonLength = 1024 * 1024;
+            foreach (string line in File.ReadAllLines(auditPath, StrictUtf8))
+            {
+                if (String.IsNullOrWhiteSpace(line)) continue;
+                Dictionary<string, object> entry = serializer.DeserializeObject(line) as Dictionary<string, object>;
+                if (entry == null) continue;
+                object eventValue;
+                object processValue;
+                object classValue;
+                object methodCountValue;
+                object showMethodCountValue;
+                object focusMethodCountValue;
+                object noActivateStyleGuardValue;
+                object policyVersionValue;
+                if (!entry.TryGetValue("event", out eventValue)
+                    || !String.Equals(Convert.ToString(eventValue), "instrumented", StringComparison.Ordinal)
+                    || !entry.TryGetValue("pid", out processValue)
+                    || Convert.ToInt64(processValue) != processId
+                    || !entry.TryGetValue("class", out classValue)
+                    || !String.Equals(Convert.ToString(classValue), "org/lwjgl/glfw/GLFW", StringComparison.Ordinal)
+                    || !entry.TryGetValue("methodCount", out methodCountValue)
+                    || Convert.ToInt32(methodCountValue) < 2
+                    || !entry.TryGetValue("showMethodCount", out showMethodCountValue)
+                    || Convert.ToInt32(showMethodCountValue) < 1
+                    || !entry.TryGetValue("focusMethodCount", out focusMethodCountValue)
+                    || Convert.ToInt32(focusMethodCountValue) < 1
+                    || !entry.TryGetValue("noActivateStyleGuard", out noActivateStyleGuardValue)
+                    || !Convert.ToBoolean(noActivateStyleGuardValue)
+                    || !entry.TryGetValue("policyVersion", out policyVersionValue)
+                    || !String.Equals(
+                        Convert.ToString(policyVersionValue),
+                        WindowFocusPolicyVersion,
+                        StringComparison.Ordinal
+                    ))
+                {
+                    continue;
+                }
+                return true;
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        catch (InvalidOperationException) { }
+        catch (FormatException) { }
+        catch (OverflowException) { }
+        return false;
+    }
+
+    private static ProcessStartInfo BuildHmclStartInfo(
+        string launcherPath,
+        string[] launcherArguments,
+        string focusAgentPath,
+        string focusAuditPath
+    )
     {
         ProcessStartInfo info = new ProcessStartInfo();
         if (String.Equals(Path.GetExtension(launcherPath), ".jar", StringComparison.OrdinalIgnoreCase))
@@ -354,9 +441,25 @@ internal static class HmclLauncher
             info.Arguments = String.Join(" ", new List<string>(launcherArguments).ConvertAll(Quote).ToArray());
         }
         info.WorkingDirectory = Path.GetDirectoryName(launcherPath);
-        info.UseShellExecute = true;
+        info.UseShellExecute = false;
         info.WindowStyle = ProcessWindowStyle.Normal;
-        return Process.Start(info);
+        info.EnvironmentVariables["JAVA_TOOL_OPTIONS"] = BuildFocusJavaToolOptions(focusAgentPath, focusAuditPath);
+        return info;
+    }
+
+    private static Process StartHmcl(
+        string launcherPath,
+        string[] launcherArguments,
+        string focusAgentPath,
+        string focusAuditPath
+    )
+    {
+        return Process.Start(BuildHmclStartInfo(
+            launcherPath,
+            launcherArguments,
+            focusAgentPath,
+            focusAuditPath
+        ));
     }
 
     private static void DismissUpdateDialog(AutomationElement hmcl)
@@ -484,6 +587,31 @@ internal static class HmclLauncher
             if (SelectExactInstance(launcherPath, minecraftRoot, instance, stateDirectory)) return 3;
             Dictionary<string, object> verified = ReadJsonObject(Path.Combine(configDirectory, "launcher-settings.json"));
             if (!String.Equals(StringValue(verified, "selectedGameDirectory"), "game-directory:test", StringComparison.Ordinal)) return 4;
+            string focusOptions = BuildFocusJavaToolOptions(
+                Path.Combine(fixtureRoot, "runtime with spaces", WindowFocusAgentFileName),
+                Path.Combine(stateDirectory, "window-focus-agent.jsonl")
+            );
+            if (!focusOptions.Contains("-Dmc.codex.preventWindowFocus=true")) return 5;
+            if (!focusOptions.Contains("-javaagent:")) return 6;
+            ProcessStartInfo focusStart = BuildHmclStartInfo(
+                launcherPath,
+                new[] { "--fixture" },
+                Path.Combine(fixtureRoot, "runtime with spaces", WindowFocusAgentFileName),
+                Path.Combine(stateDirectory, "window-focus-agent.jsonl")
+            );
+            if (focusStart.UseShellExecute) return 7;
+            if (!focusStart.EnvironmentVariables["JAVA_TOOL_OPTIONS"].Contains("-javaagent:")) return 8;
+            string auditPath = Path.Combine(stateDirectory, "focus-audit-fixture.jsonl");
+            File.WriteAllText(
+                auditPath,
+                "{\"event\":\"instrumented\",\"pid\":4321,\"class\":\"org/lwjgl/glfw/GLFW\","
+                    + "\"methodCount\":2,\"showMethodCount\":1,\"focusMethodCount\":1,"
+                    + "\"noActivateStyleGuard\":true,"
+                    + "\"policyVersion\":\"" + WindowFocusPolicyVersion + "\"}\n",
+                Utf8WithoutBom
+            );
+            if (!HasVerifiedFocusInstrumentation(auditPath, 4321)) return 9;
+            if (HasVerifiedFocusInstrumentation(auditPath, 4322)) return 10;
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
             File.WriteAllText(outputPath, "ok", Utf8WithoutBom);
             return 0;
@@ -517,6 +645,14 @@ internal static class HmclLauncher
             {
                 throw new ArgumentException("精确实例名无效");
             }
+            string focusAgentPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, WindowFocusAgentFileName);
+            if (!File.Exists(focusAgentPath))
+            {
+                throw new FileNotFoundException("防止 Minecraft 启动时抢占前台的本地策略代理不存在", focusAgentPath);
+            }
+            Directory.CreateDirectory(stateDirectory);
+            string focusAuditPath = Path.Combine(stateDirectory, "window-focus-agent.jsonl");
+            if (File.Exists(focusAuditPath)) File.Delete(focusAuditPath);
             IntPtr existingGameHandle;
             int existingGameProcessId;
             if (TryFindMinecraftWindowHandle(out existingGameHandle, out existingGameProcessId))
@@ -530,7 +666,7 @@ internal static class HmclLauncher
             CloseExistingHmcl();
             bool settingsChanged = SelectExactInstance(launcherPath, minecraftRoot, expectedInstance, stateDirectory);
             stage = "start-hmcl";
-            StartHmcl(launcherPath, launcherArguments);
+            StartHmcl(launcherPath, launcherArguments, focusAgentPath, focusAuditPath);
 
             stage = "find-hmcl-window";
             DateTime hmclDeadline = DateTime.UtcNow.AddSeconds(90);
@@ -579,6 +715,17 @@ internal static class HmclLauncher
             {
                 throw new TimeoutException("Minecraft 游戏窗口未在限定时间内出现");
             }
+            stage = "verify-no-focus-policy";
+            DateTime focusPolicyDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (!HasVerifiedFocusInstrumentation(focusAuditPath, gameProcessId)
+                && DateTime.UtcNow < focusPolicyDeadline)
+            {
+                Thread.Sleep(50);
+            }
+            if (!HasVerifiedFocusInstrumentation(focusAuditPath, gameProcessId))
+            {
+                throw new InvalidOperationException("Minecraft 游戏进程未验证启动防抢焦点策略，已拒绝报告成功");
+            }
             stage = "minecraft-window-ready";
             Console.WriteLine(
                 "{\"launched\":true,\"exactInstance\":\"" + EscapeJson(expectedInstance)
@@ -587,8 +734,18 @@ internal static class HmclLauncher
                 + ",\"exactSelectionVerified\":true,\"minecraftWindowReady\":true"
                 + ",\"minecraftProcessId\":" + gameProcessId
                 + ",\"minecraftWindowHandle\":" + gameHandle.ToInt64()
+                + ",\"focusPolicy\":\"" + WindowFocusPolicyVersion + "\""
+                + ",\"focusPolicyVerified\":true"
+                + ",\"windowCreationHintsApplied\":true"
+                + ",\"windowShowFocusGuardApplied\":true"
+                + ",\"windowNoActivateStyleGuardApplied\":true"
+                + ",\"windowNoActivateStyleRestoredAfterShow\":true"
+                + ",\"explicitWindowFocusSuppressed\":true"
                 + ",\"launcherWindowMutated\":false"
-                + ",\"minecraftWindowMutated\":false"
+                + ",\"minecraftWindowMutated\":true"
+                + ",\"minecraftWindowMutationTemporary\":true"
+                + ",\"minecraftWindowMutationScope\":\"extended-style-during-native-show\""
+                + ",\"minecraftWindowPersistentMutation\":false"
                 + ",\"mouseOrKeyboardInputUsed\":false}"
             );
             return 0;

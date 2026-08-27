@@ -122,6 +122,7 @@ try {
     $nativeClient = Join-Path $packageRoot "runtime\MinecraftCodexClient.exe"
     $nativePicker = Join-Path $packageRoot "runtime\MinecraftCodexPicker.exe"
     $nativeHmclLauncher = Join-Path $packageRoot "runtime\MinecraftCodexHmclLauncher.exe"
+    $windowFocusAgent = Join-Path $packageRoot "runtime\MinecraftCodexWindowFocusAgent.jar"
     $packagedLauncherPage = Get-Content `
         -LiteralPath (Join-Path $packageRoot "apps\portable-launcher\ui\index.html") `
         -Raw `
@@ -131,6 +132,7 @@ try {
     Assert-True (Test-Path -LiteralPath $nativeClient -PathType Leaf) "native desktop client is missing"
     Assert-True (Test-Path -LiteralPath $nativePicker -PathType Leaf) "native path picker is missing"
     Assert-True (Test-Path -LiteralPath $nativeHmclLauncher -PathType Leaf) "exact HMCL launcher is missing"
+    Assert-True (Test-Path -LiteralPath $windowFocusAgent -PathType Leaf) "Minecraft no-focus startup agent is missing"
     # Keep this assertion ASCII-only because Windows PowerShell 5 can decode a
     # UTF-8-without-BOM script literal using the active ANSI code page.
     Assert-True ($packagedLauncherPage.Contains('readonly aria-label=')) "packaged launcher page is missing the read-only direct-source field"
