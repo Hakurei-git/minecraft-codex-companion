@@ -39,6 +39,7 @@ dependencies {
 mixin {
     add sourceSets.main, "${mod_id}.refmap.json"
     config "${mod_id}.mixins.json"
+    config "${mod_id}.client.mixins.json"
 }
 
 tasks.named('test', Test).configure { useJUnitPlatform() }
@@ -69,7 +70,7 @@ tasks.named('jar', Jar).configure {
             'Implementation-Title': project.name,
             'Implementation-Version': project.jar.archiveVersion,
             'Implementation-Vendor': mod_authors,
-            'MixinConfigs': "${mod_id}.mixins.json",
+            'MixinConfigs': "${mod_id}.mixins.json,${mod_id}.client.mixins.json",
         ])
     }
     finalizedBy 'reobfJar'

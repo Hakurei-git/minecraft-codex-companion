@@ -3,36 +3,65 @@
 > 可直接打开的正式记录，路径：`minecraft-codex-companion/bugs.md`。
 > 原始验收证据仍保存在 `.runtime/full-acceptance-20260825-140819/`，下方原始记录未删除。
 
-## 当前结论（2026-08-27 BUG-026 Forge 实机补测后）
+## 当前结论（2026-08-27 v0.1.14 双版本实机回归后）
 
-- `0.1.12` 安装版 EXE 已分别冷启动 `Dragons_ZH_1.20.1` 与 `1.21.1-NeoForge` 原始源实例；实际进程版本/游戏目录匹配选中实例，未创建或启动新的 `-Codex` 副本。
-- 10:40 的双版本实测发现 BUG-009、BUG-019、BUG-025～BUG-027；其中 BUG-026 已在当前 Forge 实例完成正式 NPC 倒地恢复召回实测，BUG-009、BUG-019、BUG-025、BUG-027 仍待 `0.1.14` 双版本实机复测。
-- 最新自动回归：Forge 与 NeoForge 完整 clean build 通过；Forge 隔离 JUnit `465/465`；控制层 `311` 项通过、`1` 项按设计跳过；Dashboard `15/15`、worker `4/4`、启动器 `41/41`、协议 `46/46`、脚本 `183/183`；全工作区类型检查和 `git diff --check` 通过。
-- BUG-028 已定位为桌面测试工具的窗口/消息自动化可能触发 GLFW 重新捕获光标。启动器不再置顶、置底、最小化、还原或释放/限制光标；自动截图、后台 T 聊天、重生、进出世界和退出游戏均改为明确的人工步骤，只保留 GET 遥测和只读 Win32 审计。当前运行实例的严格后台审计 `91/91` 采样通过，但仍需由用户用 `0.1.14` 新 EXE 人工冷启动两种源实例并确认鼠标可自由离开，才能标为完整实机通过。
-- 临时聊天设置已恢复为 `freeChatEnabled=true`、`target=active-provider`、`actionMode=smart`、`tokenBudget=512`、`persona.mode=inherit`。未调用 Codex、OpenAI 或反重力在线提供方。
-- 已基于当前工作区生成新 `0.1.14` 安装包候选与 AgentKit，并完成完整性、隐私和本机 ClamAV 门禁；该包仍须通过不使用窗口自动化的双版本实机回归后才能标为最终验收通过。
+- 当前 `0.1.14` 安装包候选已分别冷启动 `Dragons_ZH_1.20.1` 与 `1.21.1-NeoForge` 原始源实例；实际进程 `--version`/`--gameDir` 与所选实例一致，均未使用 `-Codex` 路径。历史 `Dragons_ZH_1.20.1-Codex` 仍只有一个，创建时间 `2026-07-31T11:55:49.1256206Z`、修改时间 `2026-08-25T11:50:19.1373874Z`、文件数 `764` 均未变化。
+- Forge 已完成源世界、原生重生、正式 NPC 倒地恢复、无作弊远征和真实 Minecraft T 聊天本地回写；T 聊天遥测为 `incoming=3`、`delivered=3`、`roundTrip=3`，固定本地请求 `原地等待喵` 成功回写 `好，我在这里等你。`。
+- NeoForge 已完成源世界、窗口化冷启动、原生重生和真实 Minecraft T 聊天本地回写；T 聊天遥测为 `1/1/1`，固定本地请求 `停下喵` 成功回写 `已立即停止所有任务。`。但 5 格无作弊步行出现新的 BUG-027 表现：任务虚报 `succeeded`，服务端稳定位置实际只前进约 `1.56` 格、距目标仍约 `3.394` 格。
+- 因 BUG-027 仍是 P1 实机失败，当前候选只可作为已构建、已安装和已测试的修复候选，不能标为最终验收通过，也暂不创建正式标签或 Release。
+- BUG-028 的双版本实机专项已通过：Forge 的 `77/77`、`228/228`、`274/274` 以及 NeoForge 的 `365/365`、`818/818`、`273/273` 连续只读审计均未观察到置顶、Minecraft 前台化、后台光标限制或任何窗口/键鼠/光标写操作。截图始终只包含 Minecraft 客户区。首次 NeoForge 启动沿用了 HMCL Home 的既有全屏预设，用户关闭后已把 HMCL 全局与预设统一改为 `fullscreen=false`、`854×480`；第二次冷启动实测为 854×480 窗口。
+- 后台进世界、T 聊天、重生和保存退出均由本机受限 JVM 测试代理或回环固定夹具完成；没有调用窗口消息、输入模拟或光标 API。测试结束时先断开桥，再在 Minecraft 客户端线程调用原生停止流程保存退出，HMCL 随后自行退出。
+- 最新自动回归：Forge 与 NeoForge 完整 clean build 通过；Forge 隔离 JUnit `468/468`；控制层 `311` 项通过、`1` 项按设计跳过；Dashboard `15/15`、worker `4/4`、启动器 `41/41`、协议 `46/46`、脚本 `188/188`；全工作区 build/typecheck 与 `git diff --check` 通过。
+- 临时聊天设置为 `freeChatEnabled=true`、`target=active-provider`、`actionMode=smart`、`tokenBudget=512`、`persona.mode=inherit`；本轮只使用确定性的本地回复路径，未调用 Codex、OpenAI 或反重力在线提供方。
+- 已基于当前工作区重新生成 `0.1.14` 安装包候选与 AgentKit，并完成完整性、正式载荷安装、隐私和本机 ClamAV 门禁。测试过程中误传 `--result-file` 时，正式安装器按设计拒绝离线测试专用参数并弹出错误；改用正式 `--quiet --install-only` 后安装成功，不是载荷损坏。
 
 最新 `0.1.14` 安装包候选构建证据：
 
 - 文件：`build/single-exe/MinecraftCodexCompanion-Setup.exe`
-- SHA-256：`38fa353d1b1057b1322bb9d1119d539edf9864364383a9bc4ef4273f0ec14050`
-- Package ID：`6251c572fc1bb9f9b355ce838781863cb926e2fb4882e3137f68c2ea139cc548`
-- 大小：`195994624` bytes；内含 `5888` 个载荷文件、`562080453` bytes 未压缩载荷
-- Forge JAR SHA-256：`e20dee92cea1c97eb4230d0576bbc495cb3a62b07a7b9f30c5b6637c38d84570`
-- NeoForge JAR SHA-256：`09cc419e93d319344a2d3fe1068adb8e3be09277949ac5889135d0856f297c89`
+- SHA-256：`27555e08c4d36d0beea1724479d585387cc6c0f26fc9ea18c65ff876582b5e39`
+- Package ID：`fa1e411975020304276ed891cba94a6c4e16db945c63261f340eeb8afe60da2f`
+- 大小：`195999232` bytes；内含 `5888` 个载荷文件、`562086194` bytes 未压缩载荷
+- Forge JAR SHA-256：`952309635da91e4fab2686eefe6741da7636751596f5fa4b3abca079429c6d16`
+- NeoForge JAR SHA-256：`205be691bcd5efb4b8127162d5ef8e53ee358d6618af26613a1e84bae8618828`
 - 完整性：已验证
 - 隐私门禁：仅本机、已通过
 - 防病毒扫描：ClamAV 1.5.4，`clean`、感染文件 0；本机静态病毒库报告超过 7 天，需保留该时效警告
 - Authenticode：未签名（构建机没有代码签名证书）
 - AgentKit：`build/agent-kit/MinecraftCodexCompanion-AgentKit-v0.1.14.zip`，SHA-256 `c51b14478a084ff2ac4e4719c7ff518b7a843c01fade1c15c99530ff856ae847`，9 个预期文件，隐私校验通过
-- 安装器验证：正式 EXE 的 `--self-test --quiet` 退出码为 `0`；离线安装器套件通过 WinForms 初始化、确定性构建、校验解包、启动、幂等安装、原子更新和未知文件保留测试
+- 安装器验证：正式 EXE 的 `--self-test --quiet` 退出码为 `0`；离线安装器套件通过 WinForms 初始化、确定性构建、校验解包、启动、幂等安装、原子更新和未知文件保留测试；正式 `195 MB` 候选也在短 Temp 根下完成 `--quiet --install-only`，安装目录 Package ID 与报告一致，两个 JAR 哈希一致且均含 `ClientRecoveryLiveFixture.class`
+
+### 2026-08-27 v0.1.14 Forge 完整实测
+
+| 用例 | 结果 | 核心证据 |
+| --- | --- | --- |
+| V14-F01：新版 EXE 读取并更新源实例 | 通过 | 正式安装目录 Package ID 为 `fa1e411975020304276ed891cba94a6c4e16db945c63261f340eeb8afe60da2f`；配置为 `instanceMode=direct-source`、`sourceVersion=targetVersion=Dragons_ZH_1.20.1`；实例内 Forge JAR SHA-256 与载荷一致，均为 `952309635da91e4fab2686eefe6741da7636751596f5fa4b3abca079429c6d16`。 |
+| V14-F02：EXE → Forge 源实例精确冷启动 | 通过 | 启动结果为 `exactInstance=Dragons_ZH_1.20.1`、`instanceMode=direct-source`、`exactSelectionVerified=true`；实际进程同时包含 `--version Dragons_ZH_1.20.1` 与源实例 `--gameDir`，没有 `-Codex` 路径。 |
+| V14-F03：源世界与桥接 | 通过 | 由 Minecraft 客户端线程打开既有测试世界，Forge 桥以 `forge-1.20.1` 连接；没有使用窗口消息、键盘或鼠标输入。 |
+| V14-F04：原生死亡重生 | 通过 | 真实死亡后调用固定 `client-recovery:respawn`，`clientUiState` 从 `death` 恢复为 `gameplay`、生命恢复 `20/20`；截图为 `v014-candidate-forge-death-before-native-respawn-20260827.png`、`v014-candidate-forge-gameplay-after-safe-respawn-20260827.png`。 |
+| V14-F05：无作弊远征 | 通过 | 官方无作弊远征链在 survival 下完成；没有传送、创造模式或命令替代，移动和采集由正式任务链执行。 |
+| V14-F06：正式 NPC 倒地恢复 | 通过 | NPC 倒地后按正式产品链恢复并回到玩家附近，未使用“玩家传送到 NPC”测试夹具；截图为 `v014-candidate-forge-npc-downed-20260827.png`、`v014-candidate-forge-npc-recovered-near-player-20260827.png`。 |
+| V14-F07：Minecraft T 聊天与自然语言回写 | 通过 | 通过真实 `ChatScreen.handleChatInput` 提交固定本地短语 `原地等待喵`，请求 `succeeded`，回复 `好，我在这里等你。`；桥遥测 `3/3/3`。聊天历史截图为 `v014-candidate-forge-native-tchat-open-history-20260827.png`。 |
+| V14-F08：不抢焦点与只读截图 | 通过 | 多段严格后台审计 `77/77`、`228/228`、`274/274` 全部安全；客户区截图为 854×480，`ForegroundUnchanged=true`、`CursorClipUnchanged=true`，未使用剪贴板或 `PrintWindow`。 |
+
+### 2026-08-27 v0.1.14 NeoForge 完整实测
+
+| 用例 | 结果 | 核心证据 |
+| --- | --- | --- |
+| V14-N01：EXE → NeoForge 源实例精确冷启动 | 通过 | 实际进程为 `--version 1.21.1-NeoForge`、`--gameDir C:\\Users\\Administrator.WWW\\AppData\\Roaming\\.minecraft`，`UsesCodexClone=false`；源实例 NeoForge JAR SHA-256 与载荷一致，为 `205be691bcd5efb4b8127162d5ef8e53ee358d6618af26613a1e84bae8618828`。 |
+| V14-N02：保持窗口化 | 通过（修正既有 HMCL 设置后） | 首次启动沿用 HMCL Home 的既有 `FULLSCREEN/1920` 全局预设；用户关闭后将 HMCL 全局及预设统一为 `fullscreen=false`、`854×480`。第二次冷启动客户区实测正好为 854×480，截图 `v014-candidate-neoforge-windowed-main-menu-20260827.png`。 |
+| V14-N03：源世界与桥接 | 通过 | 客户端线程打开既有世界 `新的世界`，连接身份为 `codex-neoforge / neoforge-1.21.1 / 0.1.0`；源世界截图为 `v014-candidate-neoforge-source-world-gameplay-20260827.png`。 |
+| V14-N04：5 格无作弊步行 | **失败（BUG-027）** | 从 `(2.170,78,9.544)` 指向 `(7.105,78,8.739)` 的精确水平 move 被报告 `succeeded/已到达目标位置`，但服务端稳定终点为 `(3.711,78,8.831)`：只前进约 `1.56` 格，仍差约 `3.394` 格。没有传送、创造或命令；截图 `v014-candidate-neoforge-move-false-success-20260827.png`。 |
+| V14-N05：原生死亡重生 | 通过 | 真实死亡后新 JAR 的固定重生夹具把 `death` 恢复为 `gameplay`，不使用窗口、键鼠或光标 API；最终地表满血截图 `v014-candidate-neoforge-final-native-respawn-windowed-20260827.png`。 |
+| V14-N06：Minecraft T 聊天与自然语言回写 | 通过 | 通过真实 `ChatScreen.handleChatInput` 提交固定本地短语 `停下喵`，请求状态 `stopped`，回复 `已立即停止所有任务。`，桥遥测 `1/1/1`。 |
+| V14-N07：不抢焦点与只读截图 | 通过 | 世界加载、移动和重生/T 聊天后的严格后台审计分别为 `365/365`、`818/818`、`273/273`，均未见置顶、前台化、光标限制或桌面写操作；所有证据图只含 Minecraft 客户区。 |
+| V14-N08：保存退出 | 通过 | 先通过回环急停安全断开桥，再由本机临时 JVM agent 在 Minecraft 客户端线程调用原生停止流程；游戏保存后自行退出，HMCL 随之退出，没有窗口消息或输入模拟。临时 agent 位于忽略目录，不提交、不打包。 |
 
 ## 修复状态表
 
 | 缺陷 | 当前状态 | 本次修复摘要 |
 | --- | --- | --- |
 | BUG-001 | 代码已修复；自动化通过；待实机回归 | 反重力标题不匹配改为明确的 4xx/可公开错误，不再折叠为可重试 500。 |
-| BUG-002 | 实机回归通过（2026-08-26） | EXE 精确冷启动两个选定源实例，进程 `--version`/`--gameDir` 匹配，未新增或启动 `-Codex` 副本。 |
+| BUG-002 | v0.1.14 双版本实机回归通过（2026-08-27） | EXE 精确冷启动两个选定源实例，进程 `--version`/`--gameDir` 匹配，未新增或启动 `-Codex` 副本；历史副本时间戳与文件数未变化。 |
 | BUG-003 | 代码已修复；自动化通过；待实机回归 | NeoForge `remote-player` 不支持的 NPC 控制返回明确 422，不再虚报 202。 |
 | BUG-004 | 代码已修复；自动化通过；待实机回归 | 全局急停改为隔离各实例失败，断开的历史实例不再让在线实例急停返回 500。 |
 | BUG-005 | 代码已修复；自动化通过；待实机回归 | 桥连接加入重连代次管理，退出世界再进入可建立新连接。 |
@@ -53,12 +82,12 @@
 | BUG-020 | 代码已修复；自动化通过；待实机回归 | Saints 降落调用公开 `markLandedNow()`，仅在 `flying=false/onGround=true` 后提交成功。 |
 | BUG-021 | 代码已修复；自动化通过；待实机回归 | Book 治疗把饱食补到 85 的缓冲值，并将自然再生确认窗口延长至 160 tick。 |
 | BUG-022 | 代码已修复；自动化通过；待实机回归 | 龙照料夹具抑制自治进食/战斗，安全放置龙和 NPC，保护角色，并可强制清理恢复。 |
-| BUG-023 | 实机回归通过（2026-08-26） | Forge 与 NeoForge 的真实死亡画面均识别为 `death`，后台 `RespawnIfDead` 成功恢复 gameplay，未使用物理输入。 |
+| BUG-023 | v0.1.14 双版本实机回归通过（2026-08-27） | Forge 与 NeoForge 的真实死亡画面均识别为 `death`，新 JAR 的客户端原生重生夹具成功恢复 gameplay，全程无窗口、键鼠或光标写操作。 |
 | BUG-024 | 代码已修复；自动化通过；待实机回归 | 移动任务绑定源维度；跨维度后暂停/重新绑定，不再复用原维度坐标。 |
 | BUG-025 | 代码已修复；自动化通过；待新构建实机回归 | 常备口粮目标按配置固定，不再随饥饿上移；备粮任务达到目标时先真实进食并复核剩余库存。 |
-| BUG-026 | Forge 正式链实机回归通过（2026-08-27） | 玩家回 NPC 仅保留为受限验收夹具；正式 NPC 倒地恢复后在玩家死亡期间持久等待，玩家手动重生后安全回到玩家 5.283 格内并恢复原任务。 |
-| BUG-027 | 代码已修复；自动化通过；待新构建实机回归 | 5 格相对步行规范化为水平绝对目标，修正 explore 半径，加入 0.5 格到达阈值、Baritone 停止及树叶/碰撞脱困。 |
-| BUG-028 | 代码已修复；自动化与只读实机审计通过；待新 EXE 人工冷启动确认 | 移除所有 Minecraft 窗口、键盘、鼠标和截图自动化；启动器不再改变 Minecraft/HMCL 窗口状态；新增只读置顶、前台和光标限制审计。 |
+| BUG-026 | Forge 正式链与双版本原生重生实机通过（2026-08-27） | 玩家回 NPC 仅保留为受限验收夹具；正式 Forge NPC 倒地恢复后回到玩家身边；Forge/NeoForge 玩家死亡测试均由客户端原生重生恢复。 |
+| BUG-027 | **v0.1.14 NeoForge 实机失败；自动化漏报** | 5 格相对 move 不再被放大为 explore，也未传送，但任务在客户端预测短暂到达后提前成功；服务端校正后只走约 1.56 格、仍差约 3.394 格。 |
+| BUG-028 | v0.1.14 双版本实机回归通过（2026-08-27） | 启动、进世界、T 聊天、重生、截图和退出全程不改变 Minecraft/HMCL 窗口状态，不使用键鼠或光标写操作；多段后台审计全部安全。 |
 
 ## 2026-08-26 v0.1.12 双版本实机复测
 
@@ -89,12 +118,12 @@
 ### BUG-009 实机回归补充：树簇仍会只采一半后进入远程搜索循环
 
 - 严重级别：P1 / 高
-- 状态：v0.1.12 实机稳定复现；代码已修复、自动化通过，待新构建实机回归。
+- 状态：v0.1.12 原问题稳定复现；v0.1.14 虽修正 explore 放大与卡树叶路径，但 NeoForge 实机仍以“提前成功、服务端回退”的新表现失败，自动化未覆盖。
 - 复现：Forge 无作弊夹具建立 4 个橡木原木和钻石斧，通过真实 T 聊天发送 `去远征砍4个橡木原木给我`，目标为固定反重力会话。
 - 实际：任务 ID `c835fe97-3df9-4dcf-b321-8bba1c7a9b9b` 稳定，NPC 首先真实砍下 2 个原木；夹具终态为 `logBreaks=2`、`npcItems=2`、`remainingFixtureLogs=2`、`skippedTargets=2`、`excursions=31`。任务运行超过 648 秒仍为 25%，没有 delivery，最终按验收超时取消。
 - 安全性：`cheatsObserved=0`、`creativeObserved=0`、最大步长 0.257 格，证明失败发生在真实步行采集链，不是传送或作弊替代。
 - 疑似原因：树簇队列中的后两个目标被标为 skipped 后没有在同簇重新扫描；宏又允许最多 64 次远程恢复，导致明知夹具仍有同类原木时长时间绕行。
-- 修复后：保留首次自然树扫描得到的完整树干集合；每次破坏后重新排队剩余树干，路径跳过会先进行最多 3 轮同簇近距离重试，耗尽后以 `TREE_CLUSTER_NOT_REACHABLE` 有界失败。策略测试及 Forge `465/465` 通过。
+- 修复后：保留首次自然树扫描得到的完整树干集合；每次破坏后重新排队剩余树干，路径跳过会先进行最多 3 轮同簇近距离重试，耗尽后以 `TREE_CLUSTER_NOT_REACHABLE` 有界失败。策略测试及当前 Forge `468/468` 通过。
 
 ### BUG-019 实机回归补充：Codex 动作输出仍存在两种合同漂移
 
@@ -118,12 +147,13 @@
 ### BUG-026：测试死亡恢复与正式 NPC 倒地恢复的语义边界需要拆分
 
 - 严重级别：P1 / 高（用户明确纠正的产品规则）
-- 状态：需求边界已纠正；代码与自动化已完成；2026-08-27 Forge 正式 NPC 链实机回归通过。
-- 测试专用预期：验收过程中玩家死亡后由用户手动重生，不再通过窗口消息操作 Minecraft。若后续显式启用 Forge `in-world-npc` 的受限 live fixture，把玩家放到 NPC 附近只用于恢复测试现场；该步骤必须明确记为测试夹具传送，不计入无作弊步行结果，不得暴露为正式产品接口。NeoForge `remote-player` 没有独立 NPC，因此不执行这一步。
+- 状态：需求边界已纠正；代码与自动化已完成；2026-08-27 Forge 正式 NPC 链以及 Forge/NeoForge 新 JAR 原生重生均实机回归通过。
+- 测试专用预期：验收过程中玩家死亡后，可以由用户手动重生，也可以在显式设置 `MC_ENABLE_LIVE_FIXTURES=1` 的回环控制服务上调用固定 `client-recovery:respawn`；后者只调用 Minecraft 客户端线程的原生 `LocalPlayer.respawn()`，不得发送窗口消息或键鼠输入。若后续显式启用 Forge `in-world-npc` 的受限 live fixture，把玩家放到 NPC 附近只用于恢复测试现场；该步骤必须明确记为测试夹具传送，不计入无作弊步行结果，不得暴露为正式产品接口。NeoForge `remote-player` 没有独立 NPC，因此不执行这一步。
 - 正式游戏预期：NPC 受到致命伤进入倒地状态并恢复后，应安全回到仍在线且存活的玩家身边，再按调度规则恢复或暂停原任务；若玩家暂时死亡或离线，则保留待召回状态，等玩家可用后完成。
 - 修复后当前实现：测试脚本只在明确启用 live fixture 时衔接受限 `view-npc:npc`，已有一次本地 API 证据把玩家恢复到 NPC 约 2.74 格处；正式 `CodexNpcEntity` 每次倒地恢复后都进入持久召回状态，玩家在线存活时安全召回并恢复任务，玩家死亡或离线时等待。
 - 实机证据：玩家死亡期间，NPC 已恢复但保持“等待玩家重生后返回身边”，与玩家距离 `41.5917` 格；玩家手动重生后 `clientUiState=gameplay`，NPC 返回到 `5.2829943` 格，`npcDowned=false`、`pausedTaskCount=0`，调度器由 `downed` 恢复为 `running`，原 `provision-food` 任务继续执行。
-- 桌面安全证据：同步只读审计 27 个采样全部通过；Minecraft 未置顶、未成为前台、未观察到后台光标限制，键鼠、窗口和光标写操作均为 0。该证据只覆盖本次 BUG-026 实机步骤；新 EXE 的双版本冷启动鼠标验收仍归 BUG-028。
+- 桌面安全证据：早期正式 NPC 链同步只读审计 27 个采样全部通过；新构建双版本重生还分别包含 Forge `228/228`、`274/274` 与 NeoForge `273/273` 的严格后台审计。所有阶段均未观察到置顶、Minecraft 前台化、后台光标限制或键鼠/窗口/光标写操作。
+- 原生重生补测：旧运行 JAR 阶段曾用忽略目录 `.runtime/respawn-agent/` 验证同一客户端原生调用，该历史诊断不计作新 JAR 通过。安装当前候选后，Forge 和 NeoForge 均已通过正式 `scripts/respawn-minecraft-for-test.mjs` → `client-recovery:respawn` 路由实测：真实 `death` 恢复为 `gameplay`、生命 `20/20`，脚本报告 `mouseOrKeyboardInputUsed=false`、`windowMutationUsed=false`、`cursorMutationUsed=false`。证据图包括 `v014-candidate-forge-death-before-native-respawn-20260827.png`、`v014-candidate-forge-gameplay-after-safe-respawn-20260827.png`、`v014-candidate-neoforge-final-native-respawn-windowed-20260827.png`。
 - 产品边界：不新增公开的“玩家传送到 NPC”控制动作；`view-npc` 继续只存在于启用 live fixture 的本机验收环境。
 
 ### BUG-027：NeoForge 反重力步行距离被放大并卡入树叶，最终导航超时
@@ -134,19 +164,24 @@
 - 复现：真实 T 聊天发送 `向前走5格，不要传送`。
 - 实际：反重力建立 `kind=explore,radius=8,direction=any`，不是精确 5 格 move。玩家从 `(-5.536,75,4.700)` 移到约 `(2.17,78,9.54)`，三维位移约 9.8 格；采样最大单步 0.107 格，确认没有传送。随后角色卡在树叶内部，进度固定 0.678、剩余距离 3 格，5 分钟后以 `NAVIGATION_TIMEOUT` 失败。
 - 疑似原因：规划层把精确短距离移动退化为最小半径 8 的 explore；NeoForge remote-player 的本地 `driveToward` 缺少可靠的树叶/高差脱困，且最小化后台运行路径没有 Forge NPC 侧同等的单人世界保活兜底。
-- 修复后：精确相对请求不再接受 provider 的 `explore` 退化；移动以 X/Z 水平距离判定，普通高差不会造成假超时；本地驱动检测停滞、水平碰撞和树叶后跳跃并交替侧移，完成时释放按键并停止 Baritone。Forge 与 NeoForge 完整构建通过。
+- v0.1.14 新构建实测：直接提交精确水平 move，从 `(2.169968,78,9.543853)` 到 `(7.104814,78,8.739307)`，`arrivalTolerance=0.5`、`arrivalMetric=horizontal`。任务 `07e4c84a-9ee0-4d0f-8df7-af7daebb3751` 返回 `succeeded/已到达目标位置`，但权威 snapshot 稳定在 `(3.711463,78,8.831246)`：只前进约 `1.56` 格，距目标仍约 `3.394` 格。全程 survival，未观察到传送、创造或命令。
+- 新疑似原因：NeoForge 客户端本地预测位置可能短暂进入 0.5 格阈值，`TaskEngine.tickMove` 单次命中后立即提交成功并停止驱动；随后服务器位置校正把玩家拉回，但任务已不可逆地终态。Baritone 目标还把小数坐标截为整数 `(7,78,8)`，会放大客户端/服务端到达合同差异。该判断是基于任务时序和最终权威 snapshot 的推断，置信度中高。
+- 自动化缺口：现有测试验证目标规范化、水平距离和单次到达阈值，却没有要求服务端连续多个 snapshot 确认到达，也没有覆盖“客户端预测到达后服务器校正”的回退。后续修复应加入连续稳定确认或服务端 ACK，再提交成功。
+- 截图证据：`.runtime/manual-safe-screenshots/v014-candidate-neoforge-move-false-success-20260827.png`。
 
 ### BUG-028：后台测试仍可能让 Minecraft 捕获鼠标
 
 - 严重级别：P1 / 高（直接影响用户继续使用桌面）。
-- 状态：代码已修复；专项自动化和当前运行实例只读审计通过；待 `0.1.14` 新 EXE 双版本人工冷启动确认。
+- 状态：代码已修复；专项自动化通过；`0.1.14` 新 EXE 的 Forge 与 NeoForge 冷启动、世界内操作和退出实机回归通过。
 - 实际：测试工具没有移动物理鼠标，但 Minecraft 窗口重新获得 GLFW 光标捕获后，用户鼠标无法离开游戏。此前的光标坐标/前台窗口检查仍可同时通过，因此 RT-10 的观测口径不足。
 - 影响：后台世界选择、聊天、重生、截图、暂停或窗口状态切换即使不调用物理输入，也可能妨碍用户操作 Codex 和其他应用。
 - 根因：旧桌面测试链仍调用 `PostMessage`、`PrintWindow`、`ShowWindowAsync`、`SetWindowPos`、`ClipCursor` 和 `ReleaseCapture`。这些调用即使不移动物理光标，也可能改变 Minecraft 的 UI/焦点生命周期并触发 GLFW 重新限制光标。
-- 修复：从桌面启动器移除窗口层级、最小化和光标修改；截图、T 聊天、重生、自动进出世界及 Save and Quit 脚本全部 fail closed 为 `MANUAL_UI_REQUIRED`；新增 `audit-minecraft-desktop-safety.ps1`，只读检查 `WS_EX_TOPMOST`、前台窗口与 `GetClipCursor`；新增仅使用 GET 的人工 T 聊天观察器。
-- 自动证据：桌面安全专项 `28/28` 通过并纳入完整脚本回归 `183/183`；发布门禁禁止启动器重新引入窗口/光标写操作。
-- 当前实机证据：对 PID `50580`、HWND `10096296` 严格后台采样 `91` 次，`WindowTopmostObserved=false`、`MinecraftForegroundObserved=false`、`BackgroundCursorConfinementObserved=false`，且键鼠、窗口和光标写操作均为 0。
-- 剩余边界：该采样来自修复前已运行的 Minecraft 进程，只能证明新观察器自身无副作用；必须由用户手动关闭旧游戏、运行 `0.1.14` EXE、进入 Forge 与 NeoForge 源实例并确认鼠标可自由离开，才可把 RT-10 标为完整实机通过。
+- 修复：从桌面启动器移除窗口层级、最小化和光标修改；T 聊天、自动进出世界及 Save and Quit 脚本继续 fail closed 为 `MANUAL_UI_REQUIRED`；重生改为回环、显式启用、固定枚举的客户端原生夹具；截图只使用目标 Minecraft 客户区的 `GetDC + BitBlt`，不调用 `PrintWindow`、`PostMessage`、窗口层级或输入 API，并在保存前后验证前台窗口和 `GetClipCursor` 结果未变化；新增只读桌面安全审计和仅使用 GET 的人工 T 聊天观察器。
+- 自动证据：桌面安全专项与重生/截图策略测试已纳入完整脚本回归 `188/188`；发布门禁禁止启动器重新引入窗口、输入或光标写操作。
+- v0.1.14 双版本实机证据：Forge 冷启动/T 聊天/世界内流程的严格后台审计为 `77/77`、`228/228`、`274/274`；NeoForge 世界加载/移动/重生与 T 聊天为 `365/365`、`818/818`、`273/273`。全部结果均为 `WindowTopmostObserved=false`、`MinecraftForegroundObserved=false`、`BackgroundCursorConfinementObserved=false`，键鼠、窗口和光标写操作均为 0。用户在测试期间多次正常移动游戏画面和桌面鼠标，没有再次出现鼠标无法离开游戏。
+- 只读截图证据：Forge 与 NeoForge 的主菜单、世界、死亡、重生、NPC 恢复、T 聊天和失败现场均只截 Minecraft 客户区；每次返回 `ClientAreaOnly=true`、`ReadOnlyCapture=true`、`ForegroundUnchanged=true`、`CursorClipUnchanged=true`。代表性证据为 `v014-candidate-forge-native-tchat-open-history-20260827.png`、`v014-candidate-neoforge-windowed-main-menu-20260827.png`、`v014-candidate-neoforge-final-native-respawn-windowed-20260827.png`。
+- 窗口化补充：NeoForge 首次启动出现全屏并非启动器置顶或抢焦点，而是 HMCL Home 既有全局设置 `fullscreen=true,width=1920` 及 `FULLSCREEN/1920` 预设。用户关闭首次启动后，已把两处改为 `fullscreen=false,width=854,height=480`，并与 `.minecraft/options.txt` 的 `fullscreen:false` 交叉验证；第二次 EXE 冷启动客户区实测为 854×480。产品仍尊重用户的 HMCL 设置，本轮只为满足明确的“不要全屏”验收要求修正本机配置。
+- 保存退出证据：测试结束先断开桥，再由忽略目录中的本机 JVM agent 在 Minecraft 客户端线程执行原生停止流程；游戏保存退出、HMCL 自行结束，不调用 `WM_CLOSE`、`PostMessage`、窗口层级或输入 API。临时 agent 不提交、不打包。
 
 ## 原始验收记录（2026-08-25，修复前）
 

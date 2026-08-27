@@ -990,6 +990,10 @@ describe("protocol schemas", () => {
       suite: "npc-recovery",
       mode: "down",
     });
+    expect(liveFixtureRequestSchema.parse({ suite: "client-recovery", mode: "respawn" })).toEqual({
+      suite: "client-recovery",
+      mode: "respawn",
+    });
     expect(liveFixtureRequestSchema.parse({ suite: "build-palette", mode: "setup-mixed" })).toEqual({
       suite: "build-palette",
       mode: "setup-mixed",
@@ -1103,6 +1107,12 @@ describe("protocol schemas", () => {
     expect(() => liveFixtureRequestSchema.parse({ suite: "no-cheat-expedition", mode: "teleport" })).toThrow();
     expect(() => liveFixtureRequestSchema.parse({ suite: "food-reserve-audit", mode: "setup" })).toThrow();
     expect(() => liveFixtureRequestSchema.parse({ suite: "npc-recovery", mode: "teleport-player" })).toThrow();
+    expect(() => liveFixtureRequestSchema.parse({ suite: "client-recovery", mode: "teleport" })).toThrow();
+    expect(() => liveFixtureRequestSchema.parse({
+      suite: "client-recovery",
+      mode: "respawn",
+      command: "/kill @e",
+    })).toThrow();
     expect(() => liveFixtureRequestSchema.parse({
       suite: "no-cheat-expedition",
       mode: "setup",

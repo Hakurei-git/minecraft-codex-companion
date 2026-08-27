@@ -1419,6 +1419,10 @@ export const liveFixtureRequestSchema = z.discriminatedUnion("suite", [
     mode: z.enum(["setup", "down", "inspect", "cleanup"]),
   }).strict(),
   z.object({
+    suite: z.literal("client-recovery"),
+    mode: z.literal("respawn"),
+  }).strict(),
+  z.object({
     suite: z.literal("build-palette"),
     mode: z.union([
       z.enum(["setup-mixed", "inspect-mixed", "setup-chain", "inspect-chain", "cleanup", "catalog"]),

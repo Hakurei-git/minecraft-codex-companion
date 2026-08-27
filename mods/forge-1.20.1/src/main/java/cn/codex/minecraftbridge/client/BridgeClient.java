@@ -232,12 +232,18 @@ public final class BridgeClient {
                 );
                 case "npc-control" -> actor.control(command.get("action").getAsString());
                 case "live-fixture" -> {
-                    LOGGER.info(
-                        "Forwarding live fixture {}:{} to the integrated server",
-                        command.has("suite") ? command.get("suite").getAsString() : "unknown",
-                        command.has("mode") ? command.get("mode").getAsString() : "unknown"
-                    );
-                    actor.runLiveFixture(command);
+                    if (ClientRecoveryLiveFixture.matchesRespawn(command)) {
+                        boolean requested = ClientRecoveryLiveFixture.respawnIfDead(Minecraft.getInstance());
+                        LOGGER.info("Handled test-only client respawn fixture (requested={})", requested);
+                        sendSnapshot(Minecraft.getInstance());
+                    } else {
+                        LOGGER.info(
+                            "Forwarding live fixture {}:{} to the integrated server",
+                            command.has("suite") ? command.get("suite").getAsString() : "unknown",
+                            command.has("mode") ? command.get("mode").getAsString() : "unknown"
+                        );
+                        actor.runLiveFixture(command);
+                    }
                 }
                 case "emergency-stop" -> {
                     actor.emergencyStop();

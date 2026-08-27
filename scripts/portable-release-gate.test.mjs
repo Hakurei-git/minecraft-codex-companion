@@ -63,6 +63,10 @@ const startScript = await readFile(
   path.join(projectRoot, "scripts", "start-companion.ps1"),
   "utf8",
 );
+const forgeGradleScript = await readFile(
+  path.join(projectRoot, "scripts", "run-forge-gradle.ps1"),
+  "utf8",
+);
 
 test("default portable build forcibly rebuilds and validates the Forge bridge", () => {
   assert.match(buildScript, /run-forge-gradle\.ps1/);
@@ -78,6 +82,11 @@ test("default portable build forcibly rebuilds and validates the Forge bridge", 
   assert.match(buildScript, /forgeArtifact = \[ordered\]@\{/);
   assert.match(buildScript, /forcedRerun = \$forgeBuildForced/);
   assert.doesNotMatch(buildScript, /-NoNewWindow/);
+});
+
+test("Forge builds skip only the unbounded certificate preflight", () => {
+  assert.match(forgeGradleScript, /-Dnet\.minecraftforge\.gradle\.check\.certs=false/u);
+  assert.doesNotMatch(forgeGradleScript, /trustAll|TrustManager|disable.*TLS|verify\s*=\s*false/iu);
 });
 
 test("default portable build also rebuilds, hashes, and packages the NeoForge bridge", () => {
@@ -136,7 +145,7 @@ test("offline pinned Forge packaging is explicit, hash-bound, and runs every For
   assert.match(buildScript, /\^\[A-Fa-f0-9\]\{64\}\$/);
   assert.match(buildScript, /Pinned Forge bridge JAR SHA-256 does not match/);
   assert.match(buildScript, /run-forge-tests-in-process\.ps1/);
-  assert.match(buildScript, /pinned-sha256-and-465-tests/);
+  assert.match(buildScript, /pinned-sha256-and-468-tests/);
   assert.match(buildScript, /OfflineNodeModulesRoot/);
   assert.match(buildScript, /Assert-OfflineNodeModules/);
   assert.match(buildScript, /Offline node_modules contains filesystem links or reparse points/);

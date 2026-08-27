@@ -50,7 +50,9 @@ if (-not $GradleArguments -or $GradleArguments.Count -eq 0) { $GradleArguments =
 
 Push-Location $forgeRoot
 try {
-    & ".\gradlew.bat" "--no-daemon" @GradleArguments
+    # ForgeGradle's separate HEAD-based certificate preflight has no network
+    # timeout. Actual dependency downloads still retain normal TLS validation.
+    & ".\gradlew.bat" "--no-daemon" "-Dnet.minecraftforge.gradle.check.certs=false" @GradleArguments
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } finally {
     Pop-Location
