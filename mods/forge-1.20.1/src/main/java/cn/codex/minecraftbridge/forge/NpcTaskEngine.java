@@ -636,7 +636,7 @@ public final class NpcTaskEngine {
         suspendLifeInteraction(work);
         active = null;
         npc.cancelManagedEating();
-        npc.getNavigation().stop();
+        stopWorkNavigation(work);
         npc.setTarget(null);
         pausedWorks.push(work);
         work.pauseReason = reason;
@@ -743,7 +743,7 @@ public final class NpcTaskEngine {
         suspendedForDowned = true;
         suspendActiveLifeInteraction();
         npc.cancelManagedEating();
-        npc.getNavigation().stop();
+        stopWorkNavigation(active);
         npc.setTarget(null);
         clearAssistTarget(false);
         if (active != null) {
@@ -799,7 +799,7 @@ public final class NpcTaskEngine {
     public void onOwnerOffline() {
         suspendActiveLifeInteraction();
         npc.cancelManagedEating();
-        npc.getNavigation().stop();
+        stopWorkNavigation(active);
         npc.setTarget(null);
         clearAssistTarget(false);
         if (active != null) {
@@ -1185,7 +1185,7 @@ public final class NpcTaskEngine {
     private void cancelAllWork(String reason, String code) {
         suspendActiveLifeInteraction();
         npc.cancelManagedEating();
-        npc.getNavigation().stop();
+        stopWorkNavigation(active);
         npc.setTarget(null);
         ActiveWork current = active;
         active = null;
@@ -1467,11 +1467,12 @@ public final class NpcTaskEngine {
 
     private void tickMove(ActiveWork work, Vec3 destination) {
         Vec3 delta = destination.subtract(npc.position());
+        boolean horizontal = "horizontal".equals(string(work.spec, "arrivalMetric", "three-dimensional"));
         double distance = MovementTargetPolicy.distance(
             delta.x,
             delta.y,
             delta.z,
-            "horizontal".equals(string(work.spec, "arrivalMetric", "three-dimensional"))
+            horizontal
         );
         if (work.startDistance < 0) work.startDistance = Math.max(1, distance);
         double arrivalTolerance = MovementTargetPolicy.arrivalTolerance(
@@ -1481,11 +1482,84 @@ public final class NpcTaskEngine {
             complete(work, "已到达目标位置");
             return;
         }
-        npc.getNavigation().moveTo(destination.x, destination.y, destination.z, 1.1);
-        npc.addExhaustion(0.003F);
         trackNavigation(work, distance);
+        if (MovementTargetPolicy.exactMoveStalled(work.stalledTicks)) {
+            fail(work, "移动长时间没有进展", "NAVIGATION_STALLED");
+            return;
+        }
+        navigateToExactMoveDestination(work, destination, horizontal, distance);
+        if (MovementTargetPolicy.exactMovePathAttemptsExhausted(work.failedActions)) {
+            fail(work, "无法寻路到目标位置", "NAVIGATION_TARGET_UNREACHABLE");
+            return;
+        }
+        npc.addExhaustion(0.003F);
         if (work.ticks % 10 == 0) progress(work, 1 - Math.min(1, distance / work.startDistance), "移动中，距离 " + Math.round(distance) + " 格");
         if (work.ticks > 20 * 60 * 5) fail(work, "移动超时", "NAVIGATION_TIMEOUT");
+    }
+
+    private void navigateToExactMoveDestination(
+        ActiveWork work,
+        Vec3 destination,
+        boolean horizontal,
+        double distance
+    ) {
+        double destinationY = horizontal ? npc.getY() : destination.y;
+        Vec3 movement = new Vec3(
+            destination.x - npc.getX(),
+            destinationY - npc.getY(),
+            destination.z - npc.getZ()
+        );
+        boolean sameNavigationCell = MovementTargetPolicy.sameNavigationCell(
+            npc.getX(), npc.getY(), npc.getZ(),
+            destination.x, destination.y, destination.z,
+            horizontal
+        );
+        if (MovementTargetPolicy.shouldUseExactMoveFinalApproach(
+            npc.getNavigation().isDone(),
+            sameNavigationCell,
+            distance,
+            exactMoveFinalApproachIsSafe(movement)
+        )) {
+            work.failedActions = 0;
+            npc.getNavigation().stop();
+            npc.getMoveControl().setWantedPosition(
+                destination.x,
+                destinationY,
+                destination.z,
+                0.8D
+            );
+            return;
+        }
+
+        if (!MovementTargetPolicy.shouldAttemptExactMovePath(
+            work.ticks,
+            work.lastActionTick,
+            work.stalledTicks,
+            npc.getNavigation().isDone()
+        )) return;
+
+        work.lastActionTick = work.ticks;
+        if (work.stalledTicks > 0 || npc.getNavigation().isDone()) {
+            stopWorkNavigation(work);
+        }
+
+        Path path = npc.getNavigation().createPath(
+            BlockPos.containing(destination),
+            MovementTargetPolicy.exactMovePathReachRange()
+        );
+        if (path == null || !path.canReach() || !npc.getNavigation().moveTo(path, 1.1D)) {
+            work.failedActions++;
+            stopWorkNavigation(work);
+            return;
+        }
+        work.failedActions = 0;
+    }
+
+    private boolean exactMoveFinalApproachIsSafe(Vec3 movement) {
+        AABB destinationBox = npc.getBoundingBox().move(movement);
+        if (!npc.level().noCollision(npc, destinationBox)) return false;
+        if (!npc.level().noCollision(npc, npc.getBoundingBox().expandTowards(movement))) return false;
+        return !npc.level().noCollision(npc, destinationBox.move(0.0D, -0.125D, 0.0D));
     }
 
     private boolean pauseForWrongTaskDimension(ActiveWork work) {
@@ -1507,7 +1581,7 @@ public final class NpcTaskEngine {
         work.pauseReason = reason;
         suspendLifeInteraction(work);
         npc.cancelManagedEating();
-        npc.getNavigation().stop();
+        stopWorkNavigation(work);
         npc.setTarget(null);
         npc.setStatus(reason);
         if (changed && !work.id.startsWith("local:")) {
@@ -15657,7 +15731,7 @@ public final class NpcTaskEngine {
         TaskProgressCounts finalCounts = progressCounts(work);
         if (active == work) active = null;
         if (recoverableBuild == work) recoverableBuild = null;
-        npc.getNavigation().stop();
+        stopWorkNavigation(work);
         npc.setStatus(message);
         if (!work.id.startsWith("local:")) {
             CodexNetwork.sendResult(
@@ -15698,7 +15772,7 @@ public final class NpcTaskEngine {
         if ("eat".equals(work.kind)) {
             npc.cancelManagedEating();
         }
-        npc.getNavigation().stop();
+        stopWorkNavigation(work);
         npc.setTarget(null);
         npc.setStatus(message);
         if (!work.id.startsWith("local:")) {
@@ -15715,6 +15789,14 @@ public final class NpcTaskEngine {
         if (resumePausedWork()) return;
         Stance resume = work.resumeStance == Stance.WORK ? Stance.FOLLOW : work.resumeStance;
         setStance(resume);
+    }
+
+    private void stopWorkNavigation(ActiveWork work) {
+        npc.getNavigation().stop();
+        if (work == null || !"move".equals(work.kind)) return;
+        npc.getMoveControl().setWantedPosition(npc.getX(), npc.getY(), npc.getZ(), 0.0D);
+        Vec3 velocity = npc.getDeltaMovement();
+        npc.setDeltaMovement(0.0D, Math.min(0.0D, velocity.y), 0.0D);
     }
 
     private JsonObject observableTask(ActiveWork work, String phase, String reason) {

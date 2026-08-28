@@ -21,14 +21,16 @@ import org.objectweb.asm.Opcodes;
  * Prevents GLFW windows created by the HMCL-launched game JVM from taking
  * foreground focus. The agent applies no-focus creation hints, reasserts the
  * in-memory GLFW focus-on-show flag immediately before a window is shown,
- * temporarily applies the Win32 no-activate extended style while the native
- * show call runs, and suppresses explicit GLFW focus requests. It never calls
- * native activation, hierarchy, keyboard, mouse, or cursor APIs.
+ * applies the Win32 no-activate extended style before the native show call and
+ * leaves it in place until the launcher releases the startup guard after the
+ * native window sequence settles. It also suppresses explicit GLFW focus
+ * requests and never calls native activation, hierarchy, keyboard, mouse, or
+ * cursor APIs.
  */
 public final class MinecraftWindowFocusAgent {
     static final String ENABLE_PROPERTY = "mc.codex.preventWindowFocus";
     static final String AUDIT_PROPERTY = "mc.codex.windowFocusAudit";
-    static final String POLICY_VERSION = "glfw-create-show-noactivate-and-explicit-focus-v3";
+    static final String POLICY_VERSION = "glfw-create-show-held-noactivate-and-explicit-focus-v4";
     static final String TARGET_CLASS = "org/lwjgl/glfw/GLFW";
     static final String TARGET_INTERNAL_NAME = "org/lwjgl/glfw/GLFW";
     static final String GLFW_NATIVE_WIN32_INTERNAL_NAME = "org/lwjgl/glfw/GLFWNativeWin32";
@@ -114,13 +116,6 @@ public final class MinecraftWindowFocusAgent {
                         }
                     }
 
-                    @Override
-                    public void visitInsn(int opcode) {
-                        if (showWindow && opcode == Opcodes.RETURN) {
-                            emitWin32NoActivateRestore(this);
-                        }
-                        super.visitInsn(opcode);
-                    }
                 };
             }
         };
@@ -180,20 +175,6 @@ public final class MinecraftWindowFocusAgent {
         visitor.visitVarInsn(Opcodes.LLOAD, SHOW_GUARD_STYLE_LOCAL);
         visitor.visitLdcInsn(WS_EX_NOACTIVATE);
         visitor.visitInsn(Opcodes.LOR);
-        visitor.visitMethodInsn(
-                Opcodes.INVOKESTATIC,
-                USER32_INTERNAL_NAME,
-                "SetWindowLongPtr",
-                "(JIJ)J",
-                false
-        );
-        visitor.visitInsn(Opcodes.POP2);
-    }
-
-    private static void emitWin32NoActivateRestore(MethodVisitor visitor) {
-        visitor.visitVarInsn(Opcodes.LLOAD, SHOW_GUARD_HWND_LOCAL);
-        visitor.visitLdcInsn(GWL_EXSTYLE);
-        visitor.visitVarInsn(Opcodes.LLOAD, SHOW_GUARD_STYLE_LOCAL);
         visitor.visitMethodInsn(
                 Opcodes.INVOKESTATIC,
                 USER32_INTERNAL_NAME,
@@ -302,6 +283,7 @@ public final class MinecraftWindowFocusAgent {
                 + ",\"showMethodCount\":" + summary.showMethodCount
                 + ",\"focusMethodCount\":" + summary.focusMethodCount
                 + ",\"noActivateStyleGuard\":true"
+                + ",\"noActivateStyleHeldForLauncherRelease\":true"
                 + ",\"policyVersion\":\"" + POLICY_VERSION + "\""
                 + ",\"error\":" + (error == null ? "null" : "\"" + json(error.getClass().getSimpleName()) + "\"")
                 + "}\n";

@@ -26,7 +26,9 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Mod.EventBusSubscriber(modid = MinecraftCodexBridge.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE)
@@ -39,7 +41,9 @@ public final class NpcManager {
     private static final String NPC_UUID = "MinecraftCodexNpcUuid";
     private static final String NPC_BACKUP = "MinecraftCodexNpcBackup";
     private static final String NPC_DIMENSION = "MinecraftCodexNpcDimension";
+    private static final int RECALL_RETRY_TICKS = 40;
     private static final BridgeConfig CONFIG = BridgeConfig.load();
+    private static final Map<UUID, Integer> PENDING_RECALLS = new HashMap<>();
 
     private NpcManager() {
     }
@@ -90,6 +94,7 @@ public final class NpcManager {
     @SubscribeEvent
     public static void onLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
+            PENDING_RECALLS.remove(player.getUUID());
             CodexNpcEntity npc = find(player);
             if (npc != null) {
                 npc.tasks().onOwnerOffline();
@@ -102,8 +107,9 @@ public final class NpcManager {
     public static void onPlayerTick(TickEvent.PlayerTickEvent event) {
         if (event.phase != TickEvent.Phase.END
             || !(event.player instanceof ServerPlayer player)
-            || !shouldOwnNpc(player)
-            || player.tickCount % 20 != 0) return;
+            || !shouldOwnNpc(player)) return;
+        retryPendingRecall(player);
+        if (player.tickCount % 20 != 0) return;
         UUID canonicalUuid = remembered(player);
         if (canonicalUuid == null) return;
         CodexNpcEntity canonical = findLoadedByUuid(player, canonicalUuid);
@@ -260,6 +266,17 @@ public final class NpcManager {
         return moved;
     }
 
+    public static CodexNpcEntity recall(ServerPlayer player) {
+        CodexNpcEntity npc = find(player);
+        if (npc == null) npc = ensure(player);
+        if (npc != null) {
+            PENDING_RECALLS.remove(player.getUUID());
+            return recall(player, npc);
+        }
+        PENDING_RECALLS.put(player.getUUID(), RECALL_RETRY_TICKS);
+        return null;
+    }
+
     public static void forget(ServerPlayer player) {
         CompoundTag data = player.getPersistentData();
         data.remove(NPC_RECORD);
@@ -329,15 +346,22 @@ public final class NpcManager {
             return null;
         }
         saved.putUUID("UUID", uuid);
-        ServerLevel targetLevel = null;
         String dimension = record.getString(RECORD_DIMENSION);
-        for (ServerLevel level : player.server.getAllLevels()) {
-            if (level.dimension().location().toString().equals(dimension)) {
-                targetLevel = level;
-                break;
+        String ownerDimension = player.serverLevel().dimension().location().toString();
+        boolean restoreBesideOwner = shouldRestoreBesideOwner(dimension, ownerDimension);
+        ServerLevel targetLevel = restoreBesideOwner ? player.serverLevel() : null;
+        if (targetLevel == null) {
+            for (ServerLevel level : player.server.getAllLevels()) {
+                if (level.dimension().location().toString().equals(dimension)) {
+                    targetLevel = level;
+                    break;
+                }
             }
         }
-        if (targetLevel == null) return null;
+        if (targetLevel == null) {
+            targetLevel = player.serverLevel();
+            restoreBesideOwner = true;
+        }
 
         ListTag position = saved.getList("Pos", Tag.TAG_DOUBLE);
         if (position.size() < 3) return null;
@@ -346,8 +370,14 @@ public final class NpcManager {
             position.getDouble(1),
             position.getDouble(2)
         );
-        targetLevel.getChunkAt(savedPosition);
-        if (!targetLevel.areEntitiesLoaded(new ChunkPos(savedPosition).toLong())) return null;
+        BlockPos restoredPosition;
+        if (restoreBesideOwner) {
+            restoredPosition = safePosition(targetLevel, player.blockPosition());
+        } else {
+            targetLevel.getChunkAt(savedPosition);
+            if (!targetLevel.areEntitiesLoaded(new ChunkPos(savedPosition).toLong())) return null;
+            restoredPosition = savedPosition;
+        }
         Entity loaded = targetLevel.getEntity(uuid);
         if (loaded instanceof CodexNpcEntity npc && npc.isOwnedBy(player)) return npc;
 
@@ -357,12 +387,53 @@ public final class NpcManager {
         restored.setUUID(uuid);
         restored.setOwner(player);
         applyConfiguredName(restored);
+        if (restoreBesideOwner) {
+            Vec3 destination = recallPosition(restoredPosition);
+            restored.moveTo(destination.x, destination.y, destination.z, player.getYRot(), 0.0F);
+            restored.setNoGravity(false);
+            restored.setDeltaMovement(Vec3.ZERO);
+            restored.fallDistance = 0;
+            restored.setOnGround(player.onGround());
+        }
         if (!targetLevel.addFreshEntity(restored)) {
             Entity conflict = targetLevel.getEntity(uuid);
             return conflict instanceof CodexNpcEntity npc && npc.isOwnedBy(player) ? npc : null;
         }
         remember(player, restored);
         return restored;
+    }
+
+    static boolean shouldRestoreBesideOwner(String rememberedDimension, String ownerDimension) {
+        return rememberedDimension == null
+            || rememberedDimension.isBlank()
+            || ownerDimension == null
+            || ownerDimension.isBlank()
+            || !rememberedDimension.equals(ownerDimension);
+    }
+
+    static int nextRecallRetryTicks(int remainingTicks) {
+        return Math.max(0, remainingTicks - 1);
+    }
+
+    private static void retryPendingRecall(ServerPlayer player) {
+        Integer remainingTicks = PENDING_RECALLS.get(player.getUUID());
+        if (remainingTicks == null) return;
+        if (!player.isAlive() || player.isRemoved()) {
+            PENDING_RECALLS.remove(player.getUUID());
+            return;
+        }
+
+        CodexNpcEntity npc = find(player);
+        if (npc == null) npc = ensure(player);
+        if (npc != null) {
+            PENDING_RECALLS.remove(player.getUUID());
+            recall(player, npc);
+            return;
+        }
+
+        int next = nextRecallRetryTicks(remainingTicks);
+        if (next == 0) PENDING_RECALLS.remove(player.getUUID());
+        else PENDING_RECALLS.put(player.getUUID(), next);
     }
 
     private static CodexNpcEntity findLoadedByUuid(ServerPlayer player, UUID uuid) {

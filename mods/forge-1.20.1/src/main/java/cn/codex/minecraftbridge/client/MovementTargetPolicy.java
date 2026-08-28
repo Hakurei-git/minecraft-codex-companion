@@ -4,7 +4,13 @@ public final class MovementTargetPolicy {
     private static final double ANY_DIRECTION_Z_RATIO = 0.6D;
     private static final double MIN_NAVIGATION_ARRIVAL_TOLERANCE = 0.5D;
     private static final double MIN_PROGRESS = 0.15D;
+    private static final double MAX_EXACT_MOVE_FINAL_APPROACH_DISTANCE = 1.5D;
     private static final int CLIENT_ONLY_ARRIVAL_CONFIRMATION_TICKS = 40;
+    private static final int EXACT_MOVE_PATH_REACH_RANGE = 0;
+    private static final int EXACT_MOVE_PATH_RETRY_TICKS = 20;
+    private static final int EXACT_MOVE_STALL_REPATH_TICKS = 60;
+    private static final int EXACT_MOVE_STALL_FAILURE_TICKS = 200;
+    private static final int EXACT_MOVE_PATH_FAILURE_LIMIT = 3;
 
     private MovementTargetPolicy() {
     }
@@ -36,6 +42,56 @@ public final class MovementTargetPolicy {
         return horizontal
             ? Math.hypot(deltaX, deltaZ)
             : Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+    }
+
+    public static int exactMovePathReachRange() {
+        return EXACT_MOVE_PATH_REACH_RANGE;
+    }
+
+    public static boolean sameNavigationCell(
+        double currentX,
+        double currentY,
+        double currentZ,
+        double targetX,
+        double targetY,
+        double targetZ,
+        boolean horizontal
+    ) {
+        return blockCoordinate(currentX) == blockCoordinate(targetX)
+            && blockCoordinate(currentZ) == blockCoordinate(targetZ)
+            && (horizontal || blockCoordinate(currentY) == blockCoordinate(targetY));
+    }
+
+    public static boolean shouldUseExactMoveFinalApproach(
+        boolean navigationDone,
+        boolean sameNavigationCell,
+        double distance,
+        boolean destinationSafe
+    ) {
+        if (!destinationSafe) return false;
+        if (sameNavigationCell) return true;
+        return navigationDone
+            && Double.isFinite(distance)
+            && distance <= MAX_EXACT_MOVE_FINAL_APPROACH_DISTANCE;
+    }
+
+    public static boolean shouldAttemptExactMovePath(
+        int ticks,
+        int lastAttemptTick,
+        int stalledTicks,
+        boolean navigationDone
+    ) {
+        if (lastAttemptTick <= 0) return true;
+        if (ticks - lastAttemptTick < EXACT_MOVE_PATH_RETRY_TICKS) return false;
+        return navigationDone || stalledTicks >= EXACT_MOVE_STALL_REPATH_TICKS;
+    }
+
+    public static boolean exactMovePathAttemptsExhausted(int failedAttempts) {
+        return failedAttempts >= EXACT_MOVE_PATH_FAILURE_LIMIT;
+    }
+
+    public static boolean exactMoveStalled(int stalledTicks) {
+        return stalledTicks >= EXACT_MOVE_STALL_FAILURE_TICKS;
     }
 
     /**
@@ -74,5 +130,9 @@ public final class MovementTargetPolicy {
 
     public static boolean strafeLeft(long ticks) {
         return (ticks / 20L & 1L) == 0L;
+    }
+
+    private static int blockCoordinate(double value) {
+        return (int) Math.floor(value);
     }
 }

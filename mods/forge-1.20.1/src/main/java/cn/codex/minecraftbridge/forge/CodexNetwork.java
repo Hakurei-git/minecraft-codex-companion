@@ -238,10 +238,7 @@ public final class CodexNetwork {
                 payload.has("deliveryId") ? payload.get("deliveryId").getAsString() : null
             );
             case "live-fixture" -> runLiveFixture(player, npc, payload);
-            case "recall" -> {
-                if (npc == null) npc = NpcManager.ensure(player);
-                if (npc != null) npc = NpcManager.recall(player, npc);
-            }
+            case "recall" -> NpcManager.recall(player);
             case "follow" -> {
                 if (npc == null) npc = NpcManager.ensure(player);
                 if (npc != null) {

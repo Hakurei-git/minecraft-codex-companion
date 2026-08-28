@@ -3,7 +3,43 @@
 > 可直接打开的正式记录，路径：`minecraft-codex-companion/bugs.md`。
 > 原始验收证据仍保存在 `.runtime/full-acceptance-20260825-140819/`，下方原始记录未删除。
 
-## 当前结论（2026-08-28 v0.1.14 RC6 Forge 单版本实测）
+## 当前结论（2026-08-28 v0.1.14 最终安装版 Forge 实测）
+
+- 本轮最终实机范围只包含 `Dragons_ZH_1.20.1`；`1.21.1-NeoForge` 按用户决定明确排除，不计为通过或失败。
+- 最终安装包为 `build/single-exe/MinecraftCodexCompanion-Setup.exe`，大小 `196124160` bytes，SHA-256 `8db54c259907bbe62bcd8c2bdb28fc47eefaada90a556a0f634240598c5c255a`，Package ID `b159f2ec04a8695671931aea88580ae6d5c1197210bc5af6a3987eea125c5cbf`；含 `5888` 个载荷文件、`562146571` bytes 未压缩载荷。
+- 最终 Forge JAR SHA-256 为 `62b15a6964ac131cec5f2aefad694f2f8ed0c9b926f6e675f8dac8808fc33ce2`；最终 NeoForge JAR SHA-256 为 `4762ed6bf941a4e6ef54f931ad12a1462bdeb2df757ce84d13e47a2f1c29ac41`。完整性与隐私门禁通过；ClamAV 1.5.4 扫描为 `clean`、感染文件 0，但本机静态病毒库报告超过 7 天；安装包未签名。
+- 最终自动门禁通过：发布门禁 `19/19`、Forge 隔离测试 `474/474`、控制层 `311` 项通过且 `1` 项按设计跳过、Dashboard `15/15`、worker `4/4`、启动器 `41/41`、协议 `46/46`、脚本 `188/188`，类型检查、生产构建和便携包验证均通过。
+- 无额外环境变量的最终安装版冷启动精确使用所选源实例：`instanceMode=direct-source`、`exactSelectionVerified=true`，实际 JVM 为 `Dragons_ZH_1.20.1` 且命令行、版本和游戏目录均不含 `-Codex`。JDK 17 短临时目录隔离、ACL 限制和窗口 v6 焦点策略均生效，`3831/3831` 次全过程审计安全。
+- 最终安装版正式卸载召回通过：同一 NPC UUID 在距玩家 `16548.441` 格的卸载位置被正式召回，`874ms` 后距玩家 `7.373` 格；最终 `idle`、暂停数 0、队列为空。该链没有把玩家传送到 NPC，也没有使用测试专用键鼠或窗口操作。
+- 最终安装版 Minecraft T 聊天通过：真实客户端 `ChatScreen.handleChatInput` 提交 `原地等待喵`，请求 `succeeded`，游戏内回写 `好，我在这里等你。`；桥遥测增量为 `1/1/1`，NPC 保持 `stay/idle`。Codex 固定线程及反重力 `conversationId` 前后哈希均未变化，45 秒外连采样为 0，没有调用 provider，也没有向任何 `base_url` 发送日志、路径、配置、截图、聊天、会话或其他敏感数据。
+- T 聊天截图已人工核对，提问与回复均清楚可见；主审计 `4369/4369`、T 聊天专项审计 `822/822`、关闭聊天后审计 `273/273`、原生保存退出审计 `410/410` 均安全，stderr 均为空。Minecraft、控制服务、安装版启动器及 `127.0.0.1:8776` 监听已全部关闭。
+- 玩家真实死亡后，测试专用客户端原生重生夹具已把 `death` 恢复为 `gameplay`；随后受限 `view-npc:npc` 夹具把玩家恢复到 NPC 旁 `3.033` 格。两步均未使用窗口或键鼠输入，且不属于正式游戏行为。
+- 正式 NPC 倒地恢复通过：NPC 在距玩家 `13.342` 格处进入 `downed`，约 10 秒后恢复为 10 点生命并回到玩家旁 `0.997` 格；玩家没有被正式恢复流程传送。NPC 与玩家最终同为 `Y=111`，安全放置检查通过，未再出现 NPC 陷地数据表现。
+- BUG-029 已在无作弊世界通过实机回归：阻塞目标在 `2159ms` 内明确失败为 `NAVIGATION_TARGET_UNREACHABLE`；主动取消后的下一条五格 move 在 `1003ms` 内成功，终点经 3 个后续 snapshot 稳定在水平容差 `0.380` 格内，正式移动阶段无传送或命令。
+- 独立作弊测试副本 `Codex-Dragon-Acceptance-20260828` 完成龙照料矩阵：Book 与 Saints 的 feed、heal、tame、egg 共 `8/8` 成功；Book 的 9 个动作阶段全部成功，Saints 完整套件本轮连续 `4/4` 成功。所有夹具最终完整回滚，NPC idle、队列为空。
+- BUG-006 跨维度残留记录冷重启修复通过：修复版使用同一 NPC UUID 在玩家当前主世界安全恢复，记录同步更新，12/12 后续样本稳定。BUG-024 跨维度闭环也通过：下界 12/12 样本均 paused、水平漂移 `0`，返回主世界后同一任务恢复 `running/active`，最终清理完整。
+- BUG-001、004、005、007–010、012–019、020–026、029、030 均已有 Forge 实机通过证据；BUG-002、011 也保持既有实机通过。BUG-003 与 BUG-027 属于本轮明确排除的 NeoForge 范围；BUG-028 在最终候选的两次独立安装版冷启动及后续流程均未复现，但因历史 RC6 曾间歇触发，仍保留残余风险。因此本轮可以提交最终 Forge 候选，但不把未测的 NeoForge 范围或 BUG-028 历史风险误标为完整稳定 Release。
+
+### 最终 Forge 接续实测明细
+
+| 用例 | 结果 | 核心证据 |
+| --- | --- | --- |
+| F7-F01：最终 EXE、JAR 与安全门禁 | 通过 | EXE `8db54c…c255a`、Package ID `b159f2…5cbf`；Forge/NeoForge JAR 分别为 `62b15a…ce2`、`4762ed…c41`；完整性、隐私、ClamAV 均通过。 |
+| F7-F02：最终安装版精确冷启动源实例 | 通过 | `direct-source`、`exactSelectionVerified=true`；实际 JVM 无 `-Codex`；短 Temp、ACL、v6 焦点策略生效，审计 `3831/3831` 安全。 |
+| F7-F03：正式卸载 NPC 召回 | 通过 | UUID 不变，距离 `16548.441 -> 7.373`，耗时 `874ms`；最终 idle、暂停数 0、队列为空。 |
+| F7-F04：Minecraft T 聊天本地回写 | 通过 | `原地等待喵 -> 好，我在这里等你。`，请求 succeeded、遥测增量 `1/1/1`；固定线程与会话 ID 不漂移，外连采样 0。 |
+| F7-F05：T 聊天截图、关闭与保存退出 | 通过 | 游戏内提问/回复可见；关闭聊天和保存退出均由 Minecraft 客户端线程执行，审计分别 `273/273`、`410/410` 安全。 |
+| F7-F06：玩家测试专用原生重生 | 通过 | `death -> gameplay`；无窗口、键鼠或光标写操作，玩家回 NPC 仅为显式测试夹具。 |
+| F7-F07：正式 NPC 倒地恢复 | 通过 | `13.342` 格处倒地，恢复后生命 `10`、距玩家 `0.997` 格；正式流程未传送玩家。 |
+| F7-F08：安全路径五格无作弊步行 | 通过 | `(261.5,111,-8.5)` 到稳定终点 `(266.432,111,-8.5)`，距目标 `0.068` 格；survival、无传送/命令。 |
+| F7-F09：阻塞路径与后继导航恢复 | 通过 | 阻塞目标 `2159ms` 明确失败；取消后的下一条五格 move `1003ms` 成功并经 3 个后续 snapshot 稳定确认。 |
+| F7-F10：NPC 不陷地 | 通过（服务端数据） | 正式恢复后 NPC/玩家同为 `Y=111`，安全站位与碰撞检查通过；固定镜头没有拍到 NPC 本体。 |
+| F7-F11：龙照料、动作与回滚 | 通过 | Book/Saints 照料 `8/8`；Book 完整动作套件通过，Saints 连续 `4/4` 完整套件通过；cleanup 无残留。 |
+| F7-F12：跨维度残留 NPC 记录冷重启恢复 | 通过 | 下界残留记录在修复版冷重启后以同一 UUID 恢复到玩家主世界附近，记录同步更新；12/12 稳定样本通过。 |
+| F7-F13：跨维度 move 暂停与返回恢复 | 通过 | 下界 12/12 样本 paused、水平漂移 `0`；返回主世界后同一任务恢复 `running/active`，最终取消、idle、清理完整。 |
+| F7-N01：`1.21.1-NeoForge` | 未测试（范围排除） | 用户明确决定本轮只测 `1.20.1`。 |
+
+## 上一阶段结论（2026-08-28 v0.1.14 RC6 Forge 单版本实测）
 
 - 本轮范围按用户决定收敛为 `Dragons_ZH_1.20.1`；`1.21.1-NeoForge` 明确记为**未测试（本轮范围排除）**，不计为通过或失败。
 - 新安装包 `build/single-exe/MinecraftCodexCompanion-Setup.exe` 已完成自检和静默安装，两个退出码均为 `0`。EXE SHA-256 为 `1ea379df309906c6effe46aefe74192bd9a2146c987e9f00e58e6369d5cf4aab`，Package ID 为 `4292725eab1253d1b6b626d3403b3424db104f440c3962a096cdb52635b1e640`，载荷文件数 `5889`、未压缩载荷 `562232222` bytes，Authenticode 未签名。
@@ -90,34 +126,36 @@
 
 | 缺陷 | 当前状态 | 本次修复摘要 |
 | --- | --- | --- |
-| BUG-001 | 代码已修复；自动化通过；待实机回归 | 反重力标题不匹配改为明确的 4xx/可公开错误，不再折叠为可重试 500。 |
+| BUG-001 | Forge 实机回归通过（2026-08-28） | 错误反重力标题返回 `409 / ANTIGRAVITY_CONVERSATION_TITLE_MISMATCH`、`retryable=false`，在解析在线端点前拒绝；Forge 保持连接且未调用在线模型。 |
 | BUG-002 | v0.1.14 双版本基线通过；RC6 Forge 再次通过（2026-08-28） | RC6 四次精确冷启动 `Dragons_ZH_1.20.1` 源实例，均为 `direct-source`、`exactSelectionVerified=true`，未新增或启动 `-Codex` 副本。 |
-| BUG-003 | 代码已修复；自动化通过；待实机回归 | NeoForge `remote-player` 不支持的 NPC 控制返回明确 422，不再虚报 202。 |
-| BUG-004 | 代码已修复；自动化通过；待实机回归 | 全局急停改为隔离各实例失败，断开的历史实例不再让在线实例急停返回 500。 |
-| BUG-005 | 代码已修复；自动化通过；待实机回归 | 桥连接加入重连代次管理，退出世界再进入可建立新连接。 |
-| BUG-006 | 代码已修复；自动化通过；待实机回归 | 召回前确保/重载 NPC，并选择有支撑、无碰撞的安全召回位置。 |
-| BUG-007 | 代码已修复；自动化通过；待实机回归 | 明确“吃掉腐肉”等指令固定走本地 `eat`，不再被 AI 改写为备粮。 |
-| BUG-008 | 代码已修复；自动化通过；待实机回归 | 父任务取消会同步取消本地补粮子任务和暂停队列。 |
-| BUG-009 | 代码已修复；自动化通过；待新构建实机回归 | 到达已验证自然树后优先重试同簇剩余树干，最多 3 轮；仍不可达则明确失败，不再进入 64 区远程循环。 |
-| BUG-010 | 代码已修复；自动化通过；待实机回归 | 自然“找些食物”固定为验收约定的 8 份，并在智能模式保留该确定性合同。 |
+| BUG-003 | 代码与自动化通过；本轮未实测（NeoForge 范围排除） | NeoForge `remote-player` 不支持的 NPC 控制应返回明确 422，不再虚报 202；不能用 Forge 实测替代该后端验证。 |
+| BUG-004 | Forge 实机回归通过（2026-08-28） | 存在断开的历史实例时，全局急停仍返回 202；在线 Forge 进入 idle、队列为空，历史实例保持断开。 |
+| BUG-005 | Forge 实机回归通过（2026-08-28） | 同一 Minecraft JVM 退出世界后桥断开，重进后建立新连接；序列和时间继续增长、NPC UUID 不变，稳定样本均 gameplay/idle。 |
+| BUG-006 | Forge 实机回归通过（2026-08-28） | 同维度仍按旧记录加载；跨维度残留记录直接以同一 UUID 在玩家当前维度安全恢复。冷重启后记录、实体与 12/12 快照一致。 |
+| BUG-007 | Forge 实机回归通过（2026-08-28） | 真实 T 聊天“吃掉腐肉”建立本地 `eat` 任务并成功消费目标食物，没有改写为备粮或调用在线模型；最终 cleanup 完整。 |
+| BUG-008 | Forge 实机回归通过（2026-08-28） | 父采集任务取消后，本地补粮子任务、暂停队列和 active 状态同步清空；最终 idle 且夹具完整恢复。 |
+| BUG-009 | Forge 无作弊实机回归通过（2026-08-28） | 正式生存链真实砍伐并交付 `4/4` 原木，剩余夹具原木、排队目标和跳过目标均为 0；无作弊、创造或传送。 |
+| BUG-010 | Forge 实机回归通过（2026-08-28） | 真实 T 聊天“给我找些食物”稳定创建 `provision-food count=8`，智能模式仍保留确定性合同；未调用在线模型。 |
 | BUG-011 | 实机回归通过（会话门禁） | Forge 与 NeoForge 两轮前后固定 conversationId 始终不变，`busy=false`、`queuedTurns=0`，后续 T 聊天可继续进入同一会话。 |
-| BUG-012 | 代码已修复；自动化通过；待实机回归 | 存储夹具按真实高度图寻找干燥、有支撑、箱盖可开的独立箱位。 |
-| BUG-013 | 代码已修复；自动化通过；待实机回归 | 以世界中真实床脚/床头配对确认放置，不再仅凭背包缺床判失败。 |
-| BUG-014 | 代码已修复；自动化通过；待实机回归 | 玩家死亡时原地暂停活动任务，重生后恢复，不再无限保持伪 `running`。 |
-| BUG-015 | 代码已修复；自动化通过；待实机回归 | 去重指纹排除自动漂移锚点，同义建造提示不会重复创建任务。 |
-| BUG-016 | 代码已修复；自动化通过；待实机回归 | 聊天显示 ACK 超时不再回写矛盾失败，迟到 ACK 作为遥测处理。 |
-| BUG-017 | 代码已修复；自动化通过；待实机回归 | 深挖夹具矿点加入专属深板岩密封层，避免天然洞穴导致检查点前提前完成。 |
-| BUG-018 | 代码已修复；自动化通过；待实机回归 | 夹具按 Y=-54 的实际策略要求使用 0 梯子，提示与验收条件均动态计算。 |
-| BUG-019 | 代码已修复；自动化通过；待新构建实机回归 | 兼容 provider 的 `parameters`、`task`、`action`、`input` 别名；精确相对步行在严格校验前转换为绝对 `move`。 |
-| BUG-020 | 代码已修复；自动化通过；待实机回归 | Saints 降落调用公开 `markLandedNow()`，仅在 `flying=false/onGround=true` 后提交成功。 |
-| BUG-021 | 代码已修复；自动化通过；待实机回归 | Book 治疗把饱食补到 85 的缓冲值，并将自然再生确认窗口延长至 160 tick。 |
-| BUG-022 | 代码已修复；自动化通过；待实机回归 | 龙照料夹具抑制自治进食/战斗，安全放置龙和 NPC，保护角色，并可强制清理恢复。 |
-| BUG-023 | v0.1.14 双版本实机回归通过（2026-08-27） | Forge 与 NeoForge 的真实死亡画面均识别为 `death`，新 JAR 的客户端原生重生夹具成功恢复 gameplay，全程无窗口、键鼠或光标写操作。 |
-| BUG-024 | 代码已修复；自动化通过；待实机回归 | 移动任务绑定源维度；跨维度后暂停/重新绑定，不再复用原维度坐标。 |
-| BUG-025 | 代码已修复；自动化通过；待新构建实机回归 | 常备口粮目标按配置固定，不再随饥饿上移；备粮任务达到目标时先真实进食并复核剩余库存。 |
-| BUG-026 | Forge 正式链与双版本原生重生实机通过（2026-08-27） | 玩家回 NPC 仅保留为受限验收夹具；正式 Forge NPC 倒地恢复后回到玩家身边；Forge/NeoForge 玩家死亡测试均由客户端原生重生恢复。 |
-| BUG-027 | **上一候选 NeoForge 实机失败；RC6 未覆盖** | 服务端权威位置与连续 40 tick 到达确认的自动化通过；本轮按用户决定不测 NeoForge，Forge 进入 gameplay 后又因 BUG-028 安全门禁立即退出，不能覆盖上一轮实机失败结论。 |
-| BUG-028 | **RC6 Forge 冷启动仍间歇失败（2026-08-28）** | v3 已修复 `VerifyError` 并临时保护 `glfwShowWindow`；但四次只读冷启动审计中三次观察到 Minecraft 成为前台。未观察到置顶、光标限制或测试器输入。 |
+| BUG-012 | Forge 实机回归通过（2026-08-28） | 真实 T 聊天从两个可用容器中取出并交付 8 个圆石；实体箱内 `8 -> 0`、玩家 `0 -> 8`，任务 succeeded 且 cleanup 完整。 |
+| BUG-013 | Forge 产品链实机回归通过（2026-08-28） | 床宏成功、真实床脚/床头配对可见，sleep 成功并观察到入睡/起床；调度器 idle、队列为空。严格夹具 NBT 对比只识别到易变玩家字段，不否定产品断言。 |
+| BUG-014 | Forge 实机回归通过（2026-08-28） | 同一 gather 任务在玩家死亡时进入 paused 并稳定零漂移，原生重生后同一任务 ID 恢复 active；最终取消、idle 和保护恢复完整。 |
+| BUG-015 | Forge 实机回归通过（2026-08-28） | 两条同义建造提示只生成 1 个 goal 和 1 个 build task，第二次复用同一 goal；取消前无建造事务，背包前后完全一致。 |
+| BUG-016 | Forge 实机回归通过（2026-08-28） | 客户端线程阻塞约 15 秒制造迟到 ACK；请求仍 succeeded，迟到 ACK 只增加遥测，未生成任何矛盾聊天或失败回写。 |
+| BUG-017 | Forge 冷重启实机回归通过（2026-08-28） | 深挖任务在 `preflight` 检查点原生保存退出，重启后继续并最终制作/交付钻石镐；inspect `ok=1`，cleanup 后 idle、队列为空。 |
+| BUG-018 | Forge 实机回归通过（2026-08-28） | Y=-54 深挖夹具按实际策略使用 `l=0`，检查与验收均通过，不再把 0 梯子误报为“32 梯子已备齐”。 |
+| BUG-019 | Forge 实机回归通过（2026-08-28） | `parameters/task/action/input` 四种别名均接受；“向前走5格，不要传送”规范化为精确水平 move，最终距目标 `0.453` 格并经 3 个快照稳定，无传送或 provider 调用。 |
+| BUG-020 | Forge 实机回归通过（2026-08-28） | Saints 本轮连续 4 套完整动作矩阵均安全落地；叠加前一轮独立复测，修复后已有 5 次连续成功。 |
+| BUG-021 | Forge 实机回归通过（2026-08-28） | Book heal 消耗 2 份食物、生命增加 `1.320`、饱食增加 `20.400`，同一目标确认成功。 |
+| BUG-022 | Forge 实机回归通过（2026-08-28） | Book/Saints 照料共 8 项成功，完整 cleanup 后无残留夹具，NPC idle、任务队列为空，玩家保持 gameplay。 |
+| BUG-023 | Forge 再次实机回归通过（2026-08-28） | 当前 Forge 真实死亡画面报告 `death`，客户端原生重生恢复 gameplay；全程无窗口、键鼠或光标写操作。 |
+| BUG-024 | Forge 实机回归通过（2026-08-28） | 移动任务绑定源维度；下界 12/12 paused 且漂移 `0`，返回主世界后同一任务恢复 `running/active`，清理完整。 |
+| BUG-025 | Forge 实机回归通过（2026-08-28） | 饥饿从 16 降到 5 时常备目标持续固定为 8；managed eating 启动，分批交付后完成 3 次真实进食，最终饱食 20、保留 8 份安全食物并精确恢复夹具。 |
+| BUG-026 | Forge 正式链再次实机通过（2026-08-28） | 玩家回 NPC 仅保留为受限验收夹具；最新 Forge 正式倒地恢复从 `13.342` 格外回到玩家旁 `0.997` 格，玩家未被正式流程传送。 |
+| BUG-027 | **上一候选 NeoForge 实机失败；本轮未实测（范围排除）** | 服务端权威位置与连续 40 tick 到达确认的代码和自动化通过；Forge 精确五格 move 已通过，但不能替代 NeoForge `remote-player` 实测。 |
+| BUG-028 | 最终安装版连续实测通过；保留历史间歇风险 | 两次独立最终安装版冷启动及后续聊天、关闭和退出审计均未前台化、置顶或限制光标；历史 RC6 四次冷启动曾有三次前台化，仍需更多跨机器重复后再永久关闭。 |
+| BUG-029 | Forge 实机回归通过（2026-08-28） | 阻塞目标快速明确失败，取消后导航/MoveControl 完整复位，下一条五格 move 成功并经稳定 snapshot 确认。 |
+| BUG-030 | 最终安装版实机回归通过（2026-08-28） | HMCL 与后继 JVM 使用长度安全、ACL 受限的独立短 Temp；最终源世界冷启动成功，避免 JDK 17 Unix socket 临时路径过长导致 Netty selector 崩溃。 |
 
 ## 2026-08-26 v0.1.12 双版本实机复测
 
@@ -148,48 +186,52 @@
 ### BUG-009 实机回归补充：树簇仍会只采一半后进入远程搜索循环
 
 - 严重级别：P1 / 高
-- 状态：v0.1.12 原问题稳定复现；v0.1.14 虽修正 explore 放大与卡树叶路径，但 NeoForge 实机仍以“提前成功、服务端回退”的新表现失败，自动化未覆盖。
+- 状态：v0.1.12 原问题稳定复现；代码与自动化已修复，2026-08-28 Forge 无作弊实机回归通过。NeoForge 的“提前成功、服务端回退”属于独立 BUG-027，本轮范围排除。
 - 复现：Forge 无作弊夹具建立 4 个橡木原木和钻石斧，通过真实 T 聊天发送 `去远征砍4个橡木原木给我`，目标为固定反重力会话。
 - 实际：任务 ID `c835fe97-3df9-4dcf-b321-8bba1c7a9b9b` 稳定，NPC 首先真实砍下 2 个原木；夹具终态为 `logBreaks=2`、`npcItems=2`、`remainingFixtureLogs=2`、`skippedTargets=2`、`excursions=31`。任务运行超过 648 秒仍为 25%，没有 delivery，最终按验收超时取消。
 - 安全性：`cheatsObserved=0`、`creativeObserved=0`、最大步长 0.257 格，证明失败发生在真实步行采集链，不是传送或作弊替代。
 - 疑似原因：树簇队列中的后两个目标被标为 skipped 后没有在同簇重新扫描；宏又允许最多 64 次远程恢复，导致明知夹具仍有同类原木时长时间绕行。
-- 修复后：保留首次自然树扫描得到的完整树干集合；每次破坏后重新排队剩余树干，路径跳过会先进行最多 3 轮同簇近距离重试，耗尽后以 `TREE_CLUSTER_NOT_REACHABLE` 有界失败。策略测试及当前 Forge `468/468` 通过。
+- 修复后：保留首次自然树扫描得到的完整树干集合；每次破坏后重新排队剩余树干，路径跳过会先进行最多 3 轮同簇近距离重试，耗尽后以 `TREE_CLUSTER_NOT_REACHABLE` 有界失败。最终 Forge 隔离测试 `474/474` 通过。
+- 修复复测：正式无作弊生存链成功砍伐并交付 `4/4` 个原木；`logBreaks=4`、`deliveryItems=4`、玩家获得 4、NPC/世界残留 0，`remainingFixtureLogs=0`、`queuedTargets=0`、`skippedTargets=0`。最大单步 `0.257` 格，`cheatsObserved=0`、`creativeObserved=0`。证据：`.runtime/v014-dragon-care-forge-live-20260828-065711/results/bug009-v18e-no-cheat-live.json`。
 
 ### BUG-019 实机回归补充：Codex 动作输出仍存在两种合同漂移
 
 - 严重级别：P1 / 高
-- 状态：v0.1.12 在 Forge 和 NeoForge 各稳定复现一次；代码已修复、自动化通过，待新构建实机回归。
+- 状态：v0.1.12 在 Forge 和 NeoForge 各稳定复现一次；代码与自动化已修复，2026-08-28 Forge 实机回归通过；NeoForge 后端仍由 BUG-027 单独跟踪。
 - Forge 实际：请求 `264385ed-e9a2-4ffd-982f-2d1e5d176940` 约 130 秒后失败，顶层 `parameters` 被 strict parser 判为 `unrecognized_keys`；没有新增 goal 或任务。
 - NeoForge 实际：`向前走5格，不要传送` 约两分钟后回写 `Invalid input: expected object, received undefined`，错误路径为 `spec.target`；玩家位置完全不变。
 - 影响：Codex T 聊天往返和错误回写本身均正常，但任何自然语言动作仍无法进入执行器；自动化所覆盖的顶层 `task` → `spec` 规范化没有覆盖这两种真实输出。
 - 修复后：统一规范化 `parameters`、`task`、`action`、`input`；`向前走5格，不要传送` 等精确相对请求强制转换为带绝对目标、`arrivalTolerance=0.5` 和 `arrivalMetric=horizontal` 的 `move`。控制层与协议测试通过。
+- 修复复测：四种别名合同均被接受；精确五格请求从服务端起点执行为水平 move，任务 succeeded，最终距目标 `0.4529` 格并经 3 个终态后快照稳定。全程 survival、无传送，外连请求 0，未读取或调用 provider `base_url`。证据：`.runtime/v014-dragon-care-forge-live-20260828-065711/results/bug019-v18h-local-contract-flat-fixture.json`。
 
 ### BUG-025：自动备粮任务会阻止已有食物的自动进食，并形成越饿目标越高的循环
 
 - 严重级别：P1 / 高
-- 状态：v0.1.12 实机稳定复现；代码已修复、自动化通过，待新构建实机回归。
+- 状态：v0.1.12 实机稳定复现；代码、自动化与 2026-08-28 Forge 实机回归均通过。
 - 前置：Forge survival，默认 `npcFoodReserveCount=8`，恢复世界中存在自动备粮任务。
 - 实际：NPC 饱食 9 时备粮目标为 14，已持有 6 份猪肉仍不吃；随后饱食降至 5，已持有 11 份安全食物，目标动态升至 16，任务仍继续远征。NPC 一度生命 3、距离玩家约 300 格；无人看护的玩家被蜘蛛杀死两次。
 - 交叉验证：仅为隔离后续 provider 测试，临时把 reserve 设为 0 并重启；急停旧任务后 NPC 立即真实消耗食物，饱食恢复 20、生命开始恢复。临时字段已在本轮结束前删除并恢复默认。
 - 疑似原因：备粮任务持有调度器期间 managed eating 被抑制；同时目标库存包含随当前饥饿增加的进食缓冲，导致饥饿下降时完成线不断后移。
-- 修复后：常备口粮任务创建时冻结配置目标，旧动态目标只迁移一次；`provision-food` 非烹饪阶段允许自动进食，达到目标后先吃到安全状态并再次核对库存。新增口粮审计夹具与策略测试，待实机观察真实消耗和任务终态。
+- 修复后：常备口粮任务创建时冻结配置目标，旧动态目标只迁移一次；`provision-food` 非烹饪阶段允许自动进食，达到目标后先吃到安全状态并再次核对库存。
+- 修复复测：饱食从 16 降到 5 时任务目标仍固定为 8，managed eating 启动；先交付 3 份仍不够安全，再交付 6 份后完成 3 次真实进食，最终饱食 20、保留 8 份安全食物、调度器 idle。cleanup 后 NPC 快照精确恢复，未调用 provider 或上传敏感数据。证据：`.runtime/v014-dragon-care-forge-live-20260828-065711/results/bug025-v18g-low-hunger-fixed-target.json`、`bug025-v18g-batched-delivery.json`、`bug025-v18g-final-cleanup.json`。
 
 ### BUG-026：测试死亡恢复与正式 NPC 倒地恢复的语义边界需要拆分
 
 - 严重级别：P1 / 高（用户明确纠正的产品规则）
-- 状态：需求边界已纠正；代码与自动化已完成；2026-08-27 Forge 正式 NPC 链以及 Forge/NeoForge 新 JAR 原生重生均实机回归通过。
+- 状态：需求边界已纠正；代码与自动化已完成；2026-08-28 最终 Forge 正式 NPC 链再次实机回归通过。2026-08-27 Forge/NeoForge 原生重生基线仍保留。
 - 测试专用预期：验收过程中玩家死亡后，可以由用户手动重生，也可以在显式设置 `MC_ENABLE_LIVE_FIXTURES=1` 的回环控制服务上调用固定 `client-recovery:respawn`；后者只调用 Minecraft 客户端线程的原生 `LocalPlayer.respawn()`，不得发送窗口消息或键鼠输入。若后续显式启用 Forge `in-world-npc` 的受限 live fixture，把玩家放到 NPC 附近只用于恢复测试现场；该步骤必须明确记为测试夹具传送，不计入无作弊步行结果，不得暴露为正式产品接口。NeoForge `remote-player` 没有独立 NPC，因此不执行这一步。
 - 正式游戏预期：NPC 受到致命伤进入倒地状态并恢复后，应安全回到仍在线且存活的玩家身边，再按调度规则恢复或暂停原任务；若玩家暂时死亡或离线，则保留待召回状态，等玩家可用后完成。
 - 修复后当前实现：测试脚本只在明确启用 live fixture 时衔接受限 `view-npc:npc`，已有一次本地 API 证据把玩家恢复到 NPC 约 2.74 格处；正式 `CodexNpcEntity` 每次倒地恢复后都进入持久召回状态，玩家在线存活时安全召回并恢复任务，玩家死亡或离线时等待。
 - 实机证据：玩家死亡期间，NPC 已恢复但保持“等待玩家重生后返回身边”，与玩家距离 `41.5917` 格；玩家手动重生后 `clientUiState=gameplay`，NPC 返回到 `5.2829943` 格，`npcDowned=false`、`pausedTaskCount=0`，调度器由 `downed` 恢复为 `running`，原 `provision-food` 任务继续执行。
 - 桌面安全证据：早期正式 NPC 链同步只读审计 27 个采样全部通过；新构建双版本重生还分别包含 Forge `228/228`、`274/274` 与 NeoForge `273/273` 的严格后台审计。所有阶段均未观察到置顶、Minecraft 前台化、后台光标限制或键鼠/窗口/光标写操作。
 - 原生重生补测：旧运行 JAR 阶段曾用忽略目录 `.runtime/respawn-agent/` 验证同一客户端原生调用，该历史诊断不计作新 JAR 通过。安装当前候选后，Forge 和 NeoForge 均已通过正式 `scripts/respawn-minecraft-for-test.mjs` → `client-recovery:respawn` 路由实测：真实 `death` 恢复为 `gameplay`、生命 `20/20`，脚本报告 `mouseOrKeyboardInputUsed=false`、`windowMutationUsed=false`、`cursorMutationUsed=false`。证据图包括 `v014-candidate-forge-death-before-native-respawn-20260827.png`、`v014-candidate-forge-gameplay-after-safe-respawn-20260827.png`、`v014-candidate-neoforge-final-native-respawn-windowed-20260827.png`。
+- 最终 Forge 补测：正式卸载召回以同一 NPC UUID 在 `874ms` 内把距离从 `16548.441` 降到 `7.373`，最终 idle、暂停数 0、队列为空；另一轮正式倒地恢复从 `13.342` 格外回到玩家旁 `0.997` 格。两条正式链均未传送玩家。
 - 产品边界：不新增公开的“玩家传送到 NPC”控制动作；`view-npc` 继续只存在于启用 live fixture 的本机验收环境。
 
 ### BUG-027：NeoForge 反重力步行距离被放大并卡入树叶，最终导航超时
 
 - 严重级别：P1 / 高
-- 状态：上一候选实机稳定复现；新候选代码与自动化已修复，本轮实机被测试代理崩溃阻断，仍待有效回归。
+- 状态：上一候选 NeoForge 实机稳定复现；新候选代码与自动化已修复。本轮按用户决定排除 `1.21.1-NeoForge`，仍待该后端有效实机回归。
 - 前置：NeoForge 1.21.1 原始源实例、`allowCommands=0`、survival、固定反重力会话。
 - 复现：真实 T 聊天发送 `向前走5格，不要传送`。
 - 实际：反重力建立 `kind=explore,radius=8,direction=any`，不是精确 5 格 move。玩家从 `(-5.536,75,4.700)` 移到约 `(2.17,78,9.54)`，三维位移约 9.8 格；采样最大单步 0.107 格，确认没有传送。随后角色卡在树叶内部，进度固定 0.678、剩余距离 3 格，5 分钟后以 `NAVIGATION_TIMEOUT` 失败。
@@ -197,13 +239,26 @@
 - v0.1.14 新构建实测：直接提交精确水平 move，从 `(2.169968,78,9.543853)` 到 `(7.104814,78,8.739307)`，`arrivalTolerance=0.5`、`arrivalMetric=horizontal`。任务 `07e4c84a-9ee0-4d0f-8df7-af7daebb3751` 返回 `succeeded/已到达目标位置`，但权威 snapshot 稳定在 `(3.711463,78,8.831246)`：只前进约 `1.56` 格，距目标仍约 `3.394` 格。全程 survival，未观察到传送、创造或命令。
 - 新疑似原因：NeoForge 客户端本地预测位置可能短暂进入 0.5 格阈值，`TaskEngine.tickMove` 单次命中后立即提交成功并停止驱动；随后服务器位置校正把玩家拉回，但任务已不可逆地终态。Baritone 目标还把小数坐标截为整数 `(7,78,8)`，会放大客户端/服务端到达合同差异。该判断是基于任务时序和最终权威 snapshot 的推断，置信度中高。
 - 自动化缺口：现有测试验证目标规范化、水平距离和单次到达阈值，却没有要求服务端连续多个 snapshot 确认到达，也没有覆盖“客户端预测到达后服务器校正”的回退。后续修复应加入连续稳定确认或服务端 ACK，再提交成功。
-- 新候选修复：到达判定改为服务端权威位置，并要求连续 40 tick 满足到达条件；多人模式不再用单次客户端预测位置提交成功，Baritone 目标改为 `BlockPos.containing`。Forge 隔离测试已扩展到 `470` 项并通过。2026-08-27 新 EXE 已冷启动 NeoForge 源实例，但进入世界时旧临时测试代理污染 JVM temp 属性并触发 Netty selector 崩溃，未到达移动用例，不能据此判定修复通过或失败。
+- 新候选修复：到达判定改为服务端权威位置，并要求连续 40 tick 满足到达条件；多人模式不再用单次客户端预测位置提交成功，Baritone 目标改为 `BlockPos.containing`。最终 Forge 隔离测试 `474/474` 通过，Forge 对应精确移动合同也已实机通过；但这些证据不能替代 NeoForge `remote-player` 实测，故本条不标记通过。
 - 截图证据：`.runtime/manual-safe-screenshots/v014-candidate-neoforge-move-false-success-20260827.png`。
+
+### BUG-029：Forge 遇到阻塞目标后任务不终止，并使后继移动零位移
+
+- 严重级别：P1 / 高。
+- 状态：代码、自动化与 2026-08-28 `Dragons_ZH_1.20.1` 无作弊实机回归均通过。
+- 对照通过：测试夹具先把 NPC 放到完整碰撞和地面支撑校验通过的起点 `(261.5,111,-8.5)`，正式 move 目标为 `(266.5,111,-8.5)`。NPC 最终稳定在 `(266.432,111,-8.5)`，水平剩余 `0.0676` 格，调度器回到 `idle`；全程 survival，正式移动阶段未使用传送、命令或键鼠输入。该结果说明最新 Forge 最后一段 `MoveControl` 在安全路径上有效。
+- 首次失败：从 `(277.524,111,-11.259)` 朝右侧建筑方向移动 5 格，NPC 只走到 `(279.832,111,-11.497)` 后停止；60 秒内任务持续 `running/移动中`，水平剩余 `2.702` 格，最终只能由验收脚本取消。
+- 后继失败：不改变 NPC 位置，再向另一个方向提交 5 格 move；连续 60 秒、294 次采样均为零位移，任务仍保持 `running/移动中，距离 5 格`，再次只能取消。取消后调度器表面恢复 `idle`、队列为空，但新任务不能重新取得有效导航。
+- 影响：普通地形或目标点阻塞会把一次可解释的不可达问题放大为持久导航失效；玩家看到任务长期假运行，后续自然语言移动也无法恢复，容易误以为只能靠传送脱困。
+- 疑似原因：寻路进入无进展状态时没有在有界窗口内重规划或以明确的 `NAVIGATION_*` 错误终止；取消路径虽清理任务记录，但没有完全重置底层 navigation / move control 状态。该判断来自任务时序和安全起点对照，仍需修复阶段用服务端导航状态进一步确认。
+- 建议修复验收：阻塞目标必须在有界时间内成功绕行或明确失败；取消后立即从安全起点提交第二条 move 必须可执行；成功只能在稳定服务端位置进入 `arrivalTolerance` 后对外终态。测试器需要在任务终态后等待至少两个新 snapshot，避免把桥接快照延迟误判为虚报成功。
+- 证据：`.runtime/v014-move-fix-forge-live-20260828-050000/results/five-block-move-final-approach.json`、`five-block-move-open-direction-zplus.json`、`five-block-move-safe-staged-post-terminal-stability.json`；截图为同目录 `screenshots/04-five-block-move-blocked.png`、`09-second-five-block-move-zero-displacement.png`、`10-safe-path-five-block-arrival.png`。
+- 修复复测：新路径 reach range 收紧为 0，停滞时有界重规划并在 3 次不可达后失败；所有 move 终止路径同时复位 navigation、MoveControl 和水平速度。实机阻塞目标 `2159ms` 返回 `NAVIGATION_TARGET_UNREACHABLE`，取消后的下一条五格 move `1003ms` 成功，终点水平剩余 `0.380` 格并经 3 个后续 snapshot 保持稳定。证据：`.runtime/v014-bug029-fix-forge-live-20260828-063500/results/bug029-live-acceptance.json`。
 
 ### BUG-028：后台测试仍可能让 Minecraft 捕获鼠标或抢占前台
 
 - 严重级别：P1 / 高（直接影响用户继续使用桌面）。
-- 状态：2026-08-28 RC6 已修复窗口代理 `VerifyError`，但 Forge 四次冷启动审计中三次观察到前台化；缺陷保持打开并标记为间歇性。
+- 状态：最终安装版两次独立冷启动及后续完整流程均通过；因 RC6 和一个中间短 Temp 候选仍有间歇前台化证据，缺陷保留残余风险，不永久关闭。
 - 实际：测试工具没有移动物理鼠标，但 Minecraft 窗口重新获得 GLFW 光标捕获后，用户鼠标无法离开游戏。此前的光标坐标/前台窗口检查仍可同时通过，因此 RT-10 的观测口径不足。
 - 影响：后台世界选择、聊天、重生、截图、暂停或窗口状态切换即使不调用物理输入，也可能妨碍用户操作 Codex 和其他应用。
 - 根因：旧桌面测试链仍调用 `PostMessage`、`PrintWindow`、`ShowWindowAsync`、`SetWindowPos`、`ClipCursor` 和 `ReleaseCapture`。这些调用即使不移动物理光标，也可能改变 Minecraft 的 UI/焦点生命周期并触发 GLFW 重新限制光标。
@@ -213,9 +268,24 @@
 - v0.1.14 双版本实机证据：Forge 冷启动/T 聊天/世界内流程的严格后台审计为 `77/77`、`228/228`、`274/274`；NeoForge 世界加载/移动/重生与 T 聊天为 `365/365`、`818/818`、`273/273`。全部结果均为 `WindowTopmostObserved=false`、`MinecraftForegroundObserved=false`、`BackgroundCursorConfinementObserved=false`，键鼠、窗口和光标写操作均为 0。用户在测试期间多次正常移动游戏画面和桌面鼠标，没有再次出现鼠标无法离开游戏。
 - 新候选反证：`.runtime/v014-rc3-live-20260827-205741/neoforge-window-creation-audit.json` 覆盖 `5374` 个采样，记录 Minecraft 前台化一次；同目录后续稳定期 `273/273` 与世界打开阶段 `1089/1089` 均安全，且全程 `CursorConfinementObserved=false`、`TopmostObserved=false`。这说明上一轮审计从窗口已稳定后开始，漏掉了创建窗口瞬间。
 - RC6 Forge 证据：`.runtime/v014-rc6-forge-live-20260828-015123/results/window-creation-audit.json`、`attempt3-window-audit.json`、`attempt4-window-audit.json` 均记录 `MinecraftForegroundObserved=true`；`attempt2-window-creation-audit.json` 和 `attempt2-world-entry-window-audit.json` 为 `Safe=true`。五份结果均为 `CursorConfinementObserved=false`、`TopmostObserved=false`、`MouseOrKeyboardInputUsed=false`，因此当前结论是“前台化间歇失败，但未复现锁鼠标或置顶”。
+- 最终修复候选：HMCL 改为通过 `CreateProcessW + SW_SHOWNOACTIVATE` 启动；窗口代理 v4 在窗口创建后持续保留 `WS_EX_NOACTIVATE`，直到启动器确认 Forge 运行时标题稳定 8 秒，再由启动器移除临时样式并执行 2 秒释放后审计。整个过程验证窗口所属 PID、前台进程和样式状态，最终 `minecraftWindowPersistentMutation=false`，不通过抢回焦点来掩盖失败。
+- 中间候选反证：`.runtime/hmcl-short-temp-live-20260828-203151/window-audit.json` 的 `3829` 个采样仍记录一次前台化，尽管内部 v6 策略字段均为 true。该证据保留，说明内部插桩成功仍不能单独证明桌面安全，也是本条不永久关闭的原因。
+- 最终安装版证据：后续重新构建的最终 EXE 两次独立冷启动均安全。第一次 `.runtime/final-installed-cold-start-20260828-215612/window-audit.json` 为 `3831/3831`；第二次 `.runtime/final-installed-tchat-20260828-221623/window-audit.json` 为 `4369/4369`，其 T 聊天专项、关闭聊天后和保存退出审计又分别为 `822/822`、`273/273`、`410/410`。所有结果均未观察到前台化、置顶或光标限制，也没有键鼠、窗口或光标写操作。
 - 只读截图证据：Forge 与 NeoForge 的历史主菜单、世界、死亡、重生、NPC 恢复、T 聊天和失败现场均只截 Minecraft 客户区；每次返回 `ClientAreaOnly=true`、`ReadOnlyCapture=true`、`ForegroundUnchanged=true`、`CursorClipUnchanged=true`。RC6 新证据为 `.runtime/v014-rc6-forge-live-20260828-015123/screenshots/01-attempt2-main-menu-background.png`，精确 `854x480`，同样未使用 `PrintWindow`、剪贴板或输入。
 - 窗口化补充：NeoForge 首次启动出现全屏并非启动器置顶或抢焦点，而是 HMCL Home 既有全局设置 `fullscreen=true,width=1920` 及 `FULLSCREEN/1920` 预设。用户关闭首次启动后，已把两处改为 `fullscreen=false,width=854,height=480`，并与 `.minecraft/options.txt` 的 `fullscreen:false` 交叉验证；第二次 EXE 冷启动客户区实测为 854×480。产品仍尊重用户的 HMCL 设置，本轮只为满足明确的“不要全屏”验收要求修正本机配置。
 - 保存退出证据：测试结束先断开桥，再由忽略目录中的本机 JVM agent 在 Minecraft 客户端线程执行原生停止流程；游戏保存退出、HMCL 自行结束，不调用 `WM_CLOSE`、`PostMessage`、窗口层级或输入 API。临时 agent 不提交、不打包。
+
+### BUG-030：JDK 17 Unix socket 临时路径过长导致进入世界时 Netty selector 崩溃
+
+- 严重级别：P1 / 高。
+- 状态：代码、自动化和 2026-08-28 最终安装版 Forge 实机回归均通过。
+- 复现：RC6 的前三次世界打开请求均在客户端线程触发 `java.io.IOException: Unable to establish loopback connection`，根异常为 `java.net.SocketException: Invalid argument: connect`；Minecraft 随后生成崩溃报告并退出，无法进入固定无作弊世界。
+- 环境证据：用户 Temp 中当时已有 `261` 个 `socket_*` 条目。Java 17 的最小 `Selector.open()` 在原 Temp 下失败；仅把该测试进程的 `TEMP`、`TMP`、`java.io.tmpdir` 和 `jdk.net.unixdomain.tmpdir` 指向全新短目录后立即通过。没有修改系统或用户级环境变量。
+- 根因：Windows 上 JDK 17 的 selector 初始化会建立 Unix-domain 临时 socket；过长或被大量残留 socket 污染的临时路径会让底层 connect 返回 `EINVAL`，最终表现为 Netty loopback selector 初始化失败。该问题发生在进入世界时创建集成服务端线程，并非世界存档或桥接 JAR 损坏。
+- 修复：桌面启动器为每次 HMCL 及其后继 Java 进程创建长度不超过 40 个字符的独立短 Temp，ACL 仅授权当前用户、SYSTEM 和 Administrators；子进程环境同时设置 `TEMP/TMP`，`JAVA_TOOL_OPTIONS` 同时固定 `java.io.tmpdir` 与 `jdk.net.unixdomain.tmpdir`。隔离只作用于本次启动树，不污染全局环境，也不复用用户原 Temp 的 `socket_*`。
+- 自动证据：启动器与发布门禁覆盖短路径上限、ACL 限制、进程级环境继承、JVM 属性注入和失败即拒绝启动；最终发布门禁 `19/19`、启动器 `41/41`、Forge 隔离测试 `474/474` 均通过。
+- 最终实机证据：无额外调用方环境变量的最终安装版直接冷启动 `Dragons_ZH_1.20.1` 并成功进入源世界；启动状态为 `isolatedRuntimeTempApplied=true`、`isolatedRuntimeTempScope=hmcl-and-descendant-java-processes`、`runtimeTempPathLengthSafe=true`、`runtimeTempAccessRestricted=true`。随后另一轮最终安装版又成功进入同一世界并完成 T 聊天，全程没有 selector、Unix socket 或 loopback 崩溃。
+- 安全边界：短 Temp 路径只保存在本机启动状态中，不写入安装载荷、不提交、不上传；本轮没有向任何 `base_url` 发送该路径、崩溃日志或其他本机环境数据。
 
 ## 原始验收记录（2026-08-25，修复前）
 
@@ -300,7 +370,7 @@
 
 - 严重级别：P1 / 高
 - 关联用例：S03
-- 状态：稳定复现，未修复（本轮只测试、不改代码）
+- 状态：Forge 修复版实机回归通过（2026-08-28）
 - 前置条件：本地自动备粮任务已把 NPC 带到距玩家约 255–357 格外，随后执行全局急停。
 - 复现步骤：等待远处 NPC 所在区块卸载，再调用 live fixture cleanup 或 `recall`。
 - 预期：NPC 应留在可管理状态；至少 recall 应能重新加载或安全重建唯一 NPC，并返回明确结果。
@@ -311,6 +381,7 @@
 - 清理结果：在沙盒中临时传送玩家加载 NPC 区块，成功 recall 后用实体类型选择器把 NPC 与玩家一起恢复到 `(115.5,70,99.5)`；最终 survival、idle、距离 0。
 - 疑似原因：急停释放了任务区块票，但运行时仍只持有远处 NPC 的内存引用/旧快照；`NpcManager.find` 与 recall 只扫描已加载实体，且恢复/重载没有正确消解同 UUID 的持久实体。
 - 原因置信度：高。
+- 修复复测：冷重启前玩家持久化记录指向 `minecraft:the_nether` 的未加载区块 `(2000,2001)`；修复版不再为跨维度残留记录强制加载旧区块，而是保留 UUID/备份状态，在玩家当前主世界安全恢复。实机恢复 UUID 为 `99a257ba-99b9-4f26-ac36-ee7bf2521e38`，初始距玩家 `4.957` 格，随后记录维度更新为 `minecraft:overworld`、记录区块实体已加载；12/12 个稳定样本同 UUID、同维度、idle 且无活动任务。证据：`.runtime/v014-dragon-care-forge-live-20260828-065711/results/bug006-fixed-restart-acceptance.json`、`bug006-fixed-npc-record-diagnostic.json` 与 `screenshots/14-bug006-fixed-restored-overworld.png`。
 
 ## BUG-007：明确“吃掉腐肉”被错误规划为外出备粮
 
@@ -524,7 +595,7 @@
 
 - 严重级别：P1 / 高
 - 关联用例：S25
-- 状态：首轮稳定记录到失败，紧接着的独立同套件复测通过；未修复（本轮只测试、不改代码）
+- 状态：代码与自动化已修复；2026-08-28 Forge 本轮连续 4 套完整矩阵通过，叠加前一轮独立复测后共 5 次连续成功。
 - 前置条件：Saints Dragons 临时驯服龙，玩家与 NPC 共骑，龙已完成越障飞行并被夹具抬升，随后执行 `dragon/land`。
 - 复现步骤：执行 `live-dragon-action-smoke.mjs --suite --apply --mods=saintsdragons`，观察 land 阶段直到终态。
 - 预期：龙移动到安全落点，公开状态稳定为 `flying=0/onGround=1` 至少 5 tick，任务成功，并继续召回与协战阶段。
@@ -535,12 +606,13 @@
 - 清理结果：首轮与复测均返回 `dragon-fixture:cleanup restored=1,entities=0,blocks=0`；调度器空闲。验收器仅调用回环 HTTP，无键鼠 API；复测安全监视器未观察到窗口恢复或聚焦事件。
 - 疑似原因：距离小于 0.75 格后 `forceDragonGrounded` 需要 `supportedLandingPosition` 和下方真实碰撞同时成立；首轮的 0.4 格小数高度未形成可提交支撑，Saints 的公开 flying 状态又没有自行转为 grounded。目的地重选/停滞恢复仍未能在 90 秒总超时前找到可落位置，而不同落点复测成功。
 - 原因置信度：中高。
+- 修复复测：本轮每次 land 均完成上方接近、垂直下降和落地确认，公开状态稳定为 `flying=0/onGround=1`；随后 recall、assist-combat 和 cleanup 均成功。主结果为 `.runtime/v014-dragon-care-forge-live-20260828-065711/results/dragon-action-saints.json`，重复结果为同目录 `dragon-action-saints-repeat-1.json` 至 `-3.json`。
 
 ## BUG-021：Book of Dragons 治疗夹具选中偏爱食物，但真实互动不被确认
 
 - 严重级别：P1 / 高
 - 关联用例：S26
-- 状态：首轮稳定复现；诊断复测再次通过 feed，但在建立第二次 heal 夹具前被 BUG-022 的空闲竞态阻断；未修复（本轮只测试、不改代码）
+- 状态：代码与自动化已修复；2026-08-28 Forge 完整照料矩阵实机回归通过。
 - 前置条件：dragon-care Book 夹具已建立；feed 子项已成功；heal 子项把同一条龙置为低生命并给 NPC 准备治疗食物。
 - 复现步骤：执行 `live-dragon-care-smoke.mjs --apply --wait-seconds=180`，等待 Book 的 heal 子任务终态。
 - 预期：NPC 使用真实可接受的龙食，物品数量减少，并观察到同一条龙生命值上升；heal 任务和 inspection 均通过。
@@ -551,12 +623,13 @@
 - 清理结果：首轮任务队列为空、NPC idle、玩法状态正常，夹具确认 `dragon-care:cleanup|none`；诊断复测的最终恢复另见 BUG-022。本轮未生成物理键鼠输入。
 - 疑似原因：`findDragonFoodSlot` 把 `isFavoriteFood=true` 当作足够的选择条件，但 Book 实体同时返回 `isFood=false` 且 `isTame=false`，代理互动没有形成验收要求的消费与生命恢复。饱食达到 78 后 `shouldRefillForHealing` 停止补喂，而 100 tick 确认窗口内也未触发生命再生，选择合同、驯服状态和确认窗口三者不一致。
 - 原因置信度：中高。
+- 修复复测：Book heal 任务成功，消耗 2 份食物、生命增加 `1.320`、饱食增加 `20.400`，同一龙 UUID、归属和目标存在性均通过。证据：`.runtime/v014-dragon-care-forge-live-20260828-065711/results/dragon-care-smoke.json`。
 
 ## BUG-022：Dragon care 空闲竞态留下卡地夹具龙/NPC，并导致玩家死亡与清理自阻塞
 
 - 严重级别：P1 / 高
 - 关联用例：S26
-- 状态：诊断复测稳定触发一次；未修复（本轮只测试、不改代码）
+- 状态：代码与自动化已修复；2026-08-28 Forge 完整照料矩阵、强制清理与后续动作矩阵实机回归通过。
 - 前置条件：Book of Dragons `dragon-care` 夹具已建立，feed 子任务成功，NPC 的食物/生命状态允许自动进食或自动协战启动。
 - 复现步骤：再次执行 `live-dragon-care-smoke.mjs --apply --wait-seconds=180`；等待 feed 成功及 stage-heal/最终 cleanup；保持游戏现场不做测试器输入并观察残留实体。
 - 预期：stage-heal 应在受控空闲点建立，或等待短暂自动进食结束；无论动作阶段是否失败，最终 cleanup 都必须恢复玩家、NPC、背包和实体，且不留下可攻击玩家的夹具龙。
@@ -567,12 +640,13 @@
 - 恢复结果：玩家恢复后，通过无物理输入的后台 T 聊天传至 NPC 附近；cleanup 序列 174 最终返回 `dragon-care:cleanup|restored|dim=1|gm=1|ability=1|inv=1|npc=1`，调度器 idle、队列 0、`dragonState=null`、生存模式恢复。
 - 疑似原因：`fixtureWhenIdle` 的空闲检查和服务端实际执行之间存在竞态；feed 后自动进食可在检查后启动，而 cleanup 的 `requireIdle` 又拒绝 managed eating。残留龙攻击玩家后，自动 `local:combat-assist` 使用同一调度器，再次让 cleanup 被自身安全任务挡住。最终恢复缺少“强制撤销夹具实体并回滚快照”的兜底通道。
 - 原因置信度：中高。
+- 修复复测：Book/Saints feed、heal、tame、egg 共 8 项全部成功；最终夹具恢复后 `taskSchedulerLifecycle=idle`、队列为空、玩家为 gameplay，随后 Book 及 Saints 动作矩阵可继续运行且每轮 cleanup 成功，没有残留龙、战斗任务或清理自阻塞。证据：`.runtime/v014-dragon-care-forge-live-20260828-065711/results/dragon-care-smoke.json`。
 
 ## BUG-023：真实死亡画面被控制接口报告为 gameplay，后台重生辅助流程会跳过重生
 
 - 严重级别：P1 / 高
 - 关联用例：S26、S27
-- 状态：本轮复现一次；未修复（本轮只测试、不改代码）
+- 状态：代码与自动化已修复；2026-08-28 当前 Forge 再次实机回归通过。
 - 前置条件：Minecraft 客户端处于死亡界面，本地 Companion 控制服务仍在线。
 - 复现步骤：在 Crow 被残留致命纳德射杀后，同时使用被动 `PrintWindow` 留图并读取 Companion snapshot；随后运行标准后台辅助脚本的 `-NormalizeOnly -RespawnIfDead` 路径。
 - 预期：`clientUiState=death`，辅助脚本发送仅限目标窗口的后台重生消息，并等待恢复到 gameplay。
@@ -582,12 +656,13 @@
 - 截图证据：`screenshots/S26-book-dragon-underground-residual.png` 为死亡界面；`screenshots/S26-player-respawned-at-spawn.png` 为后续出生点存活状态。
 - 疑似原因：服务端 snapshot 的 `clientUiState` 没有同步客户端死亡 Screen，或死亡事件与 UI telemetry 使用了不同状态源/更新周期；辅助脚本完全信任该字段而没有额外视觉/窗口状态兜底。
 - 原因置信度：高（状态不一致已直接交叉取证）；具体更新链路为中等。
+- 修复复测：进入独立龙测试世界时玩家真实处于死亡画面，桥同步报告 `clientUiState=death`；测试专用客户端原生重生成功恢复 `gameplay`，随后 NPC 召回及龙矩阵均可继续执行。证据：`.runtime/v014-dragon-care-forge-live-20260828-065711/results/player-respawn.json` 与 `screenshots/03-player-dead-on-dragon-world-entry.png`。
 
 ## BUG-024：跨维度召回后把原维度 move 坐标直接当作新维度坐标继续执行
 
 - 严重级别：P1 / 高
 - 关联用例：S27
-- 状态：本轮稳定复现一次；未修复（本轮只测试、不改代码）
+- 状态：Forge 修复版实机回归通过（2026-08-28）
 - 前置条件：NPC 在主世界执行未完成的 `move` 任务，目标为仅含 XYZ 的主世界坐标；玩家跨入下界。
 - 复现步骤：在主世界创建移动任务 `df0655b5-…`，目标 `(379.046,63,204.827)`；任务进入 `running/work` 后，将玩家传至下界临时安全台 `(32004.5,91,32004.5)`，观察同一 NPC UUID 和同一任务 ID。
 - 预期：NPC 跨维度召回后保留任务和姿态，但应暂停原维度导航；返回主世界后才从原检查点继续，或任务目标必须显式携带并校验维度。
@@ -598,3 +673,4 @@
 - 清理结果：玩家与 NPC 均返回主世界；任务终态后调度器 idle、队列 0、姿态 follow、玩家距离 1.15 格、生存模式；下界专用测试区已发送精确范围清空命令。
 - 疑似原因：`TaskSpec.move.target` 和持久化 `ActiveWork.destination` 只有 `Vec3`，没有维度；`NpcManager.recall` 跨维度重建实体后无条件调用 `onRecalled()`，而该方法对任何 active work 都直接继续，`tickMove` 又只按当前 `npc.level()` 解释目标坐标。
 - 原因置信度：高。
+- 修复复测：在主世界创建 64 格 move 后，用服务端正确的 `ServerPlayer.teleportTo(ServerLevel,DDD,Set,FF)` 进入封闭下界测试室。同一 NPC UUID 和同一任务 ID 连续 12 个样本均保持 `paused`/队列 `phase=paused`，水平漂移 `0`、生命不变；返回主世界后任务恢复 `running`/队列 `phase=active`，随后取消并恢复 idle、队列 0，下界测试室已清理。证据：`.runtime/v014-dragon-care-forge-live-20260828-065711/results/bug024-cross-dimension-v6.json`、`screenshots/15-bug024-nether-paused-v6.png`、`screenshots/16-bug024-overworld-resumed-v6.png` 与 `screenshots/17-bug024-cleanup-idle-v6.png`。

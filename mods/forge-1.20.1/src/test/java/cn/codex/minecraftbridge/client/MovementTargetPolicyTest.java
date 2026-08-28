@@ -42,6 +42,56 @@ final class MovementTargetPolicyTest {
     }
 
     @Test
+    void exactMoveNavigationCannotStopInAnAdjacentBlock() {
+        assertEquals(0, MovementTargetPolicy.exactMovePathReachRange());
+        assertFalse(MovementTargetPolicy.sameNavigationCell(
+            262.816D, 111.0D, -5.499D,
+            263.596D, 111.0D, -5.596D,
+            true
+        ));
+        assertTrue(MovementTargetPolicy.sameNavigationCell(
+            263.051D, 112.0D, -5.949D,
+            263.596D, 111.0D, -5.596D,
+            true
+        ));
+        assertFalse(MovementTargetPolicy.sameNavigationCell(
+            263.051D, 112.0D, -5.949D,
+            263.596D, 111.0D, -5.596D,
+            false
+        ));
+
+        assertTrue(MovementTargetPolicy.shouldUseExactMoveFinalApproach(
+            true, false, 1.008D, true
+        ));
+        assertTrue(MovementTargetPolicy.shouldUseExactMoveFinalApproach(
+            false, true, 0.8D, true
+        ));
+        assertFalse(MovementTargetPolicy.shouldUseExactMoveFinalApproach(
+            false, false, 1.008D, true
+        ));
+        assertFalse(MovementTargetPolicy.shouldUseExactMoveFinalApproach(
+            true, false, 1.501D, true
+        ));
+        assertFalse(MovementTargetPolicy.shouldUseExactMoveFinalApproach(
+            true, false, 1.008D, false
+        ));
+    }
+
+    @Test
+    void exactMoveReplansAndFailsWithinABoundedStallWindow() {
+        assertTrue(MovementTargetPolicy.shouldAttemptExactMovePath(1, 0, 0, true));
+        assertFalse(MovementTargetPolicy.shouldAttemptExactMovePath(10, 1, 0, true));
+        assertTrue(MovementTargetPolicy.shouldAttemptExactMovePath(21, 1, 0, true));
+        assertFalse(MovementTargetPolicy.shouldAttemptExactMovePath(80, 40, 40, false));
+        assertTrue(MovementTargetPolicy.shouldAttemptExactMovePath(80, 40, 60, false));
+
+        assertFalse(MovementTargetPolicy.exactMovePathAttemptsExhausted(2));
+        assertTrue(MovementTargetPolicy.exactMovePathAttemptsExhausted(3));
+        assertFalse(MovementTargetPolicy.exactMoveStalled(199));
+        assertTrue(MovementTargetPolicy.exactMoveStalled(200));
+    }
+
+    @Test
     void predictedClientArrivalRequiresFreshAuthoritativeConfirmation() {
         assertFalse(MovementTargetPolicy.arrivalConfirmed(true, false, 0.1D, 0.5D, 200));
         assertFalse(MovementTargetPolicy.arrivalConfirmed(true, true, 3.394D, 0.5D, 200));

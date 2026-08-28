@@ -139,11 +139,11 @@ public final class MinecraftWindowFocusAgentSelfTest {
         assertEquals(1, showGuardCalls[0], label + ": show must reassert the in-memory no-focus flag");
         assertEquals(1, nativeWindowCalls[0], label + ": show must resolve the native Win32 window once");
         assertEquals(1, getWindowStyleCalls[0], label + ": show must preserve the original extended style");
-        assertEquals(2, setWindowStyleCalls[0], label + ": show must apply and restore the no-activate style");
+        assertEquals(1, setWindowStyleCalls[0], label + ": show must apply the held no-activate style once");
         assertEquals(2, focusedConstants[0], label + ": GLFW_FOCUSED must be disabled for both overloads");
         assertEquals(3, focusOnShowConstants[0], label + ": create and show must disable GLFW_FOCUS_ON_SHOW");
         assertEquals(1, noActivateConstants[0], label + ": show must apply WS_EX_NOACTIVATE");
-        assertEquals(3, extendedStyleConstants[0], label + ": show must read, update, and restore GWL_EXSTYLE");
+        assertEquals(2, extendedStyleConstants[0], label + ": show must read and update GWL_EXSTYLE");
         assertEquals(1, styleOrOperations[0], label + ": no-activate must preserve all existing style bits");
         assertEquals(0, focusMethodCalls[0], label + ": explicit focus must not invoke native code");
         assertEquals(1, focusMethodReturns[0], label + ": explicit focus must return immediately");
