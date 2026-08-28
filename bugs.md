@@ -9,7 +9,7 @@
 - 最终安装包为 `build/single-exe/MinecraftCodexCompanion-Setup.exe`，大小 `196124160` bytes，SHA-256 `8db54c259907bbe62bcd8c2bdb28fc47eefaada90a556a0f634240598c5c255a`，Package ID `b159f2ec04a8695671931aea88580ae6d5c1197210bc5af6a3987eea125c5cbf`；含 `5888` 个载荷文件、`562146571` bytes 未压缩载荷。
 - 最终 Forge JAR SHA-256 为 `62b15a6964ac131cec5f2aefad694f2f8ed0c9b926f6e675f8dac8808fc33ce2`；最终 NeoForge JAR SHA-256 为 `4762ed6bf941a4e6ef54f931ad12a1462bdeb2df757ce84d13e47a2f1c29ac41`。完整性与隐私门禁通过；ClamAV 1.5.4 扫描为 `clean`、感染文件 0，但本机静态病毒库报告超过 7 天；安装包未签名。
 - 最终自动门禁通过：发布门禁 `19/19`、Forge 隔离测试 `474/474`、控制层 `311` 项通过且 `1` 项按设计跳过、Dashboard `15/15`、worker `4/4`、启动器 `41/41`、协议 `46/46`、脚本 `188/188`，类型检查、生产构建和便携包验证均通过。
-- 无额外环境变量的最终安装版冷启动精确使用所选源实例：`instanceMode=direct-source`、`exactSelectionVerified=true`，实际 JVM 为 `Dragons_ZH_1.20.1` 且命令行、版本和游戏目录均不含 `-Codex`。JDK 17 短临时目录隔离、ACL 限制和窗口 v6 焦点策略均生效，`3831/3831` 次全过程审计安全。
+- 无额外环境变量的最终安装版冷启动精确使用所选源实例：`instanceMode=direct-source`、`exactSelectionVerified=true`，实际 JVM 为 `Dragons_ZH_1.20.1` 且命令行、版本和游戏目录均不含 `-Codex`。JDK 17 短临时目录隔离、ACL 限制和窗口 v6 焦点策略均生效。最终安装版现已累计 5 次独立安全冷启动：原两轮全过程审计分别为 `3831/3831`、`4369/4369`；RC3 新增三轮合计 `3303` 个桌面样本、`2463` 个游戏窗口样本，均未观察到前台化、置顶或光标限制。
 - 最终安装版正式卸载召回通过：同一 NPC UUID 在距玩家 `16548.441` 格的卸载位置被正式召回，`874ms` 后距玩家 `7.373` 格；最终 `idle`、暂停数 0、队列为空。该链没有把玩家传送到 NPC，也没有使用测试专用键鼠或窗口操作。
 - 最终安装版 Minecraft T 聊天通过：真实客户端 `ChatScreen.handleChatInput` 提交 `原地等待喵`，请求 `succeeded`，游戏内回写 `好，我在这里等你。`；桥遥测增量为 `1/1/1`，NPC 保持 `stay/idle`。Codex 固定线程及反重力 `conversationId` 前后哈希均未变化，45 秒外连采样为 0，没有调用 provider，也没有向任何 `base_url` 发送日志、路径、配置、截图、聊天、会话或其他敏感数据。
 - T 聊天截图已人工核对，提问与回复均清楚可见；主审计 `4369/4369`、T 聊天专项审计 `822/822`、关闭聊天后审计 `273/273`、原生保存退出审计 `410/410` 均安全，stderr 均为空。Minecraft、控制服务、安装版启动器及 `127.0.0.1:8776` 监听已全部关闭。
@@ -18,14 +18,14 @@
 - BUG-029 已在无作弊世界通过实机回归：阻塞目标在 `2159ms` 内明确失败为 `NAVIGATION_TARGET_UNREACHABLE`；主动取消后的下一条五格 move 在 `1003ms` 内成功，终点经 3 个后续 snapshot 稳定在水平容差 `0.380` 格内，正式移动阶段无传送或命令。
 - 独立作弊测试副本 `Codex-Dragon-Acceptance-20260828` 完成龙照料矩阵：Book 与 Saints 的 feed、heal、tame、egg 共 `8/8` 成功；Book 的 9 个动作阶段全部成功，Saints 完整套件本轮连续 `4/4` 成功。所有夹具最终完整回滚，NPC idle、队列为空。
 - BUG-006 跨维度残留记录冷重启修复通过：修复版使用同一 NPC UUID 在玩家当前主世界安全恢复，记录同步更新，12/12 后续样本稳定。BUG-024 跨维度闭环也通过：下界 12/12 样本均 paused、水平漂移 `0`，返回主世界后同一任务恢复 `running/active`，最终清理完整。
-- BUG-001、004、005、007–010、012–019、020–026、029、030 均已有 Forge 实机通过证据；BUG-002、011 也保持既有实机通过。BUG-003 与 BUG-027 属于本轮明确排除的 NeoForge 范围；BUG-028 在最终候选的两次独立安装版冷启动及后续流程均未复现，但因历史 RC6 曾间歇触发，仍保留残余风险。因此本轮可以提交最终 Forge 候选，但不把未测的 NeoForge 范围或 BUG-028 历史风险误标为完整稳定 Release。
+- BUG-001、002、004–026、028–030 均已有 Forge 实机通过证据；BUG-003 与 BUG-027 属于本轮明确排除的 NeoForge 范围。BUG-028 的最终安装版在本机累计 5 次独立冷启动均安全，当前 Forge 1.20.1 本机验收范围内关闭；历史 RC6 反证继续保留，且同机连续通过不能替代跨机器泛化验证，因此发布仍保持候选级别，不误标为完整稳定 Release。
 
 ### 最终 Forge 接续实测明细
 
 | 用例 | 结果 | 核心证据 |
 | --- | --- | --- |
 | F7-F01：最终 EXE、JAR 与安全门禁 | 通过 | EXE `8db54c…c255a`、Package ID `b159f2…5cbf`；Forge/NeoForge JAR 分别为 `62b15a…ce2`、`4762ed…c41`；完整性、隐私、ClamAV 均通过。 |
-| F7-F02：最终安装版精确冷启动源实例 | 通过 | `direct-source`、`exactSelectionVerified=true`；实际 JVM 无 `-Codex`；短 Temp、ACL、v6 焦点策略生效，审计 `3831/3831` 安全。 |
+| F7-F02：最终安装版精确冷启动源实例 | 通过（本机累计 5 次） | `direct-source`、`exactSelectionVerified=true`；实际 JVM 无 `-Codex`；短 Temp、ACL、v6 焦点策略生效。原两轮 `3831/3831`、`4369/4369`，RC3 新增三轮合计 `3303` 个桌面样本、`2463` 个游戏窗口样本，全部安全。 |
 | F7-F03：正式卸载 NPC 召回 | 通过 | UUID 不变，距离 `16548.441 -> 7.373`，耗时 `874ms`；最终 idle、暂停数 0、队列为空。 |
 | F7-F04：Minecraft T 聊天本地回写 | 通过 | `原地等待喵 -> 好，我在这里等你。`，请求 succeeded、遥测增量 `1/1/1`；固定线程与会话 ID 不漂移，外连采样 0。 |
 | F7-F05：T 聊天截图、关闭与保存退出 | 通过 | 游戏内提问/回复可见；关闭聊天和保存退出均由 Minecraft 客户端线程执行，审计分别 `273/273`、`410/410` 安全。 |
@@ -153,7 +153,7 @@
 | BUG-025 | Forge 实机回归通过（2026-08-28） | 饥饿从 16 降到 5 时常备目标持续固定为 8；managed eating 启动，分批交付后完成 3 次真实进食，最终饱食 20、保留 8 份安全食物并精确恢复夹具。 |
 | BUG-026 | Forge 正式链再次实机通过（2026-08-28） | 玩家回 NPC 仅保留为受限验收夹具；最新 Forge 正式倒地恢复从 `13.342` 格外回到玩家旁 `0.997` 格，玩家未被正式流程传送。 |
 | BUG-027 | **上一候选 NeoForge 实机失败；本轮未实测（范围排除）** | 服务端权威位置与连续 40 tick 到达确认的代码和自动化通过；Forge 精确五格 move 已通过，但不能替代 NeoForge `remote-player` 实测。 |
-| BUG-028 | 最终安装版连续实测通过；保留历史间歇风险 | 两次独立最终安装版冷启动及后续聊天、关闭和退出审计均未前台化、置顶或限制光标；历史 RC6 四次冷启动曾有三次前台化，仍需更多跨机器重复后再永久关闭。 |
+| BUG-028 | Forge 1.20.1 本机验收关闭；跨机器风险保留 | 最终安装版累计 5 次独立冷启动及后续聊天、关闭和退出审计均未前台化、置顶或限制光标；RC3 新增三轮 `3303` 个桌面样本、`2463` 个窗口样本和 3 张只读截图全部安全。历史 RC6 反证继续保留，不据此宣称跨机器永久关闭。 |
 | BUG-029 | Forge 实机回归通过（2026-08-28） | 阻塞目标快速明确失败，取消后导航/MoveControl 完整复位，下一条五格 move 成功并经稳定 snapshot 确认。 |
 | BUG-030 | 最终安装版实机回归通过（2026-08-28） | HMCL 与后继 JVM 使用长度安全、ACL 受限的独立短 Temp；最终源世界冷启动成功，避免 JDK 17 Unix socket 临时路径过长导致 Netty selector 崩溃。 |
 
@@ -258,7 +258,7 @@
 ### BUG-028：后台测试仍可能让 Minecraft 捕获鼠标或抢占前台
 
 - 严重级别：P1 / 高（直接影响用户继续使用桌面）。
-- 状态：最终安装版两次独立冷启动及后续完整流程均通过；因 RC6 和一个中间短 Temp 候选仍有间歇前台化证据，缺陷保留残余风险，不永久关闭。
+- 状态：最终安装版在本机累计 5 次独立冷启动及后续完整流程均通过；当前 Forge 1.20.1 本机验收范围内关闭。RC6 和一个中间短 Temp 候选的间歇前台化反证继续保留，同机连续通过不作为跨机器永久关闭的证明。
 - 实际：测试工具没有移动物理鼠标，但 Minecraft 窗口重新获得 GLFW 光标捕获后，用户鼠标无法离开游戏。此前的光标坐标/前台窗口检查仍可同时通过，因此 RT-10 的观测口径不足。
 - 影响：后台世界选择、聊天、重生、截图、暂停或窗口状态切换即使不调用物理输入，也可能妨碍用户操作 Codex 和其他应用。
 - 根因：旧桌面测试链仍调用 `PostMessage`、`PrintWindow`、`ShowWindowAsync`、`SetWindowPos`、`ClipCursor` 和 `ReleaseCapture`。这些调用即使不移动物理光标，也可能改变 Minecraft 的 UI/焦点生命周期并触发 GLFW 重新限制光标。
@@ -270,8 +270,8 @@
 - RC6 Forge 证据：`.runtime/v014-rc6-forge-live-20260828-015123/results/window-creation-audit.json`、`attempt3-window-audit.json`、`attempt4-window-audit.json` 均记录 `MinecraftForegroundObserved=true`；`attempt2-window-creation-audit.json` 和 `attempt2-world-entry-window-audit.json` 为 `Safe=true`。五份结果均为 `CursorConfinementObserved=false`、`TopmostObserved=false`、`MouseOrKeyboardInputUsed=false`，因此当前结论是“前台化间歇失败，但未复现锁鼠标或置顶”。
 - 最终修复候选：HMCL 改为通过 `CreateProcessW + SW_SHOWNOACTIVATE` 启动；窗口代理 v4 在窗口创建后持续保留 `WS_EX_NOACTIVATE`，直到启动器确认 Forge 运行时标题稳定 8 秒，再由启动器移除临时样式并执行 2 秒释放后审计。整个过程验证窗口所属 PID、前台进程和样式状态，最终 `minecraftWindowPersistentMutation=false`，不通过抢回焦点来掩盖失败。
 - 中间候选反证：`.runtime/hmcl-short-temp-live-20260828-203151/window-audit.json` 的 `3829` 个采样仍记录一次前台化，尽管内部 v6 策略字段均为 true。该证据保留，说明内部插桩成功仍不能单独证明桌面安全，也是本条不永久关闭的原因。
-- 最终安装版证据：后续重新构建的最终 EXE 两次独立冷启动均安全。第一次 `.runtime/final-installed-cold-start-20260828-215612/window-audit.json` 为 `3831/3831`；第二次 `.runtime/final-installed-tchat-20260828-221623/window-audit.json` 为 `4369/4369`，其 T 聊天专项、关闭聊天后和保存退出审计又分别为 `822/822`、`273/273`、`410/410`。所有结果均未观察到前台化、置顶或光标限制，也没有键鼠、窗口或光标写操作。
-- 只读截图证据：Forge 与 NeoForge 的历史主菜单、世界、死亡、重生、NPC 恢复、T 聊天和失败现场均只截 Minecraft 客户区；每次返回 `ClientAreaOnly=true`、`ReadOnlyCapture=true`、`ForegroundUnchanged=true`、`CursorClipUnchanged=true`。RC6 新证据为 `.runtime/v014-rc6-forge-live-20260828-015123/screenshots/01-attempt2-main-menu-background.png`，精确 `854x480`，同样未使用 `PrintWindow`、剪贴板或输入。
+- 最终安装版证据：后续重新构建的最终 EXE 前两次独立冷启动均安全。第一次 `.runtime/final-installed-cold-start-20260828-215612/window-audit.json` 为 `3831/3831`；第二次 `.runtime/final-installed-tchat-20260828-221623/window-audit.json` 为 `4369/4369`，其 T 聊天专项、关闭聊天后和保存退出审计又分别为 `822/822`、`273/273`、`410/410`。RC3 发布后又执行三次完全独立的无输入冷启动，证据为 `.runtime/rc3-bug028-repeat-20260828-232139-attempt1/window-creation-audit.json`、`.runtime/rc3-bug028-repeat-20260828-232545-attempt2/window-creation-audit.json`、`.runtime/rc3-bug028-repeat-20260828-232925-attempt3/window-creation-audit.json`；三轮分别记录 `1224/853`、`1038/798`、`1041/812` 个桌面/游戏窗口样本，合计 `3303/2463`，stderr 均为空。五次最终安装版冷启动均未观察到前台化、置顶或光标限制，也没有键鼠、窗口或光标写操作。
+- 只读截图证据：Forge 与 NeoForge 的历史主菜单、世界、死亡、重生、NPC 恢复、T 聊天和失败现场均只截 Minecraft 客户区；每次返回 `ClientAreaOnly=true`、`ReadOnlyCapture=true`、`ForegroundUnchanged=true`、`CursorClipUnchanged=true`。RC3 新增三张 `854x480` 主菜单截图分别位于上述三轮目录的 `screenshots/attempt1-main-menu.png`、`screenshots/attempt2-main-menu.png`、`screenshots/attempt3-main-menu.png`，已逐张人工核对为 `Minecraft* Forge 1.20.1`；同样未使用 `PrintWindow`、剪贴板或输入。
 - 窗口化补充：NeoForge 首次启动出现全屏并非启动器置顶或抢焦点，而是 HMCL Home 既有全局设置 `fullscreen=true,width=1920` 及 `FULLSCREEN/1920` 预设。用户关闭首次启动后，已把两处改为 `fullscreen=false,width=854,height=480`，并与 `.minecraft/options.txt` 的 `fullscreen:false` 交叉验证；第二次 EXE 冷启动客户区实测为 854×480。产品仍尊重用户的 HMCL 设置，本轮只为满足明确的“不要全屏”验收要求修正本机配置。
 - 保存退出证据：测试结束先断开桥，再由忽略目录中的本机 JVM agent 在 Minecraft 客户端线程执行原生停止流程；游戏保存退出、HMCL 自行结束，不调用 `WM_CLOSE`、`PostMessage`、窗口层级或输入 API。临时 agent 不提交、不打包。
 
