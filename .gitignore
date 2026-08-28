@@ -19,3 +19,4 @@ mods/**/.gradle/
 mods/**/build/
 .DS_Store
 Thumbs.db
+bugs.md
