@@ -131,6 +131,18 @@ const BUILTIN_DRAFTS: unknown[] = [
     ],
   },
   {
+    id: "dragon.dismount-and-follow",
+    name: "下龙后步行跟随",
+    description: "先让 NPC 从当前坐骑安全下来，确认解除骑乘后再步行跟随玩家。",
+    parameters: [
+      { name: "player", description: "需要跟随的玩家名", type: "string" },
+    ],
+    steps: [
+      { label: "安全下龙", task: { kind: "dragon", action: "dismount" } },
+      { label: "步行跟随玩家", task: { kind: "follow", player: "${player}", distance: 3 } },
+    ],
+  },
+  {
     id: "dragon.shared-ride",
     name: "玩家与 NPC 共骑",
     description: "把玩家放在前座、NPC 放在后座，同骑兼容的 Book of Dragons 或 Saints Dragons 龙；下龙前优先安全降落。",

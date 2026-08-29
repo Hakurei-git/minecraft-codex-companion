@@ -1318,12 +1318,14 @@ export class CodexDriver {
     // spend a token or wait for a provider persona to answer.
     if (!action) return null;
     if (["control", "home-memory", "resume-build", "resume-goal"].includes(action.operation)) return action;
-    // Explicit eating and food-provisioning phrases already have a complete,
-    // bounded local contract (exact action/item/count/destination). Preserve
-    // that contract in Smart mode instead of letting a provider rewrite
-    // "eat rotten flesh" into a hunting expedition or change default 8 to 16.
-    return action.operation === "task"
-      && action.context === "explicit-food"
+    // Explicit eating, food provisioning, and dragon controls already have a
+    // complete bounded contract. Preserve it in Smart mode instead of letting
+    // a provider rewrite an exact dismount into mount-and-follow (or omit the
+    // dismount half of "下来跟着我").
+    if (action.operation !== "task") return null;
+    if (action.context === "explicit-food") return action;
+    if (action.spec.kind === "dragon") return action;
+    return action.spec.kind === "macro" && action.spec.skillId.startsWith("dragon.")
       ? action
       : null;
   }

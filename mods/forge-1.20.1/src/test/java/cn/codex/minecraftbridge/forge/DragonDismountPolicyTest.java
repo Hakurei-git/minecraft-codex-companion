@@ -22,4 +22,31 @@ final class DragonDismountPolicyTest {
         assertEquals(-3.0D, left.x(), 0.0001D);
         assertEquals(0.0D, left.z(), 0.0001D);
     }
+
+    @Test
+    void completesOnlyAfterThreeStableUnmountedTicks() {
+        assertEquals(
+            DragonDismountPolicy.Decision.CONTINUE,
+            DragonDismountPolicy.verify(false, 2, 2)
+        );
+        assertEquals(
+            DragonDismountPolicy.Decision.COMPLETE,
+            DragonDismountPolicy.verify(false, 3, 3)
+        );
+        assertEquals(
+            DragonDismountPolicy.Decision.CONTINUE,
+            DragonDismountPolicy.verify(true, 0, 39)
+        );
+        assertEquals(
+            DragonDismountPolicy.Decision.TIMED_OUT,
+            DragonDismountPolicy.verify(true, 0, 40)
+        );
+    }
+
+    @Test
+    void retriesARejectedDismountAtAShortBoundedInterval() {
+        assertEquals(true, DragonDismountPolicy.shouldAttempt(false, 1, 0));
+        assertEquals(false, DragonDismountPolicy.shouldAttempt(true, 4, 1));
+        assertEquals(true, DragonDismountPolicy.shouldAttempt(true, 6, 1));
+    }
 }

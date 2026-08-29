@@ -33,7 +33,7 @@ const FOLLOW_COMMAND = /^\s*(?:你\s*)?(?:(?:先|快|赶紧|继续|一直)\s*)?(
 const BOAT_FOLLOW_COMMAND = /^\s*(?:你\s*)?(?:快|现在|先)?\s*(?:上船|坐船)(?:\s*(?:跟着我|跟我走|跟随我|一起走))?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const FOLLOW_COMPLAINT = /^\s*(?:怎么|为什么)\s*(?:还是|还|又)?\s*(?:不|没在?)\s*(?:跟着我|跟紧我|跟上我)(?:了)?\s*(?:吧|呀|啊|喵)?\s*[？?！!。.]?\s*$/iu;
 const STAY_COMMAND = /^\s*(?:(?:请|麻烦)\s*)?(?:你\s*)?(?:先\s*)?(?:在这(?:里)?待着|原地(?:等|等待|待命)|别跟了|停在这(?:里)?|stay)(?:\s*[,，]\s*(?:不要|别)(?:再)?(?:开始|执行|做)(?:任何|其他|别的)?任务)?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/iu;
-const RECALL_COMMAND = /^\s*(?:你\s*)?(?:快\s*)?(?:回来|回到我身边|到我身边来|召回|recall)\s*[！!。.]?\s*$/iu;
+const RECALL_COMMAND = /^\s*(?:你\s*)?(?:快\s*)?(?:回来|过来|回到我身边|到我身边来|召回|recall)\s*[！!。.]?\s*$/iu;
 const HOME_CORNER_ONE_COMMAND = /^\s*(?:(?:记录|设置|标记)(?:一下)?(?:房屋|屋子|家)(?:范围|边界)?(?:的)?|(?:把|将)(?:这里|当前位置)\s*(?:设为|记录为|记为)(?:房屋|屋子|家)(?:范围|边界)?(?:的)?)(?:第一个角|第一角|角一|起点)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const HOME_CORNER_TWO_COMMAND = /^\s*(?:(?:记录|设置|标记)(?:一下)?(?:房屋|屋子|家)(?:范围|边界)?(?:的)?|(?:把|将)(?:这里|当前位置)\s*(?:设为|记录为|记为)(?:房屋|屋子|家)(?:范围|边界)?(?:的)?)(?:第二个角|第二角|角二|终点|对角)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const HOME_RESCAN_COMMAND = /^\s*(?:重新|再次)?(?:扫描|识别|记录)(?:一下)?(?:我的)?(?:房屋|屋子|家)(?:范围|边界)?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
@@ -44,7 +44,7 @@ const ACTIVITY_QUESTION = /^\s*(?:(?:你|npc|ai|同伴)\s*)?(?:(?:现在|当前|
 const ITEM_HISTORY_QUESTION = /(?:去哪(?:里|儿)?了?|哪去了|去了哪(?:里|儿)?|为什么(?:没有|没|不见)|怎么(?:没有|没了|不见|变成|又?合成)|不见了?|没有了?|没了|还在吗|还有吗|是不是(?:被)?(?:扔|丢|用|消耗)|是否(?:被)?(?:扔|丢|用|消耗)|被(?:扔|丢|用|消耗)|扔(?:掉|了|了吗)|丢(?:掉|了|了吗)|用(?:掉|了|了吗)|消耗(?:掉|了|了吗)|变成|又?合成)/u;
 const MOUNT_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:快|现在|先)?\s*(?:上龙|骑上龙|骑龙)(?:\s*(?:跟着我|跟我走|跟随我))?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const SHARE_RIDE_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:快|现在|先)?\s*(?:和我|跟我|一起|一同)?\s*(?:同骑|共骑|一起骑|一同骑|共享座位|双人骑乘|同乘)(?:\s*(?:龙|这只龙))?(?:\s*(?:跟着我|跟我走|跟随我))?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
-const DISMOUNT_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:从龙上)?\s*(?:下来|下龙|别骑了)(?:\s*(?:跟着我|跟我走))?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
+const DISMOUNT_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:从龙上)?\s*(?:下来|下龙|别骑了)(?:\s*(?<follow>跟着我|跟我走))?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const RECALL_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:快|现在)?\s*(?:召回|叫回|喊回)(?:你)?(?:的)?龙\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const LAND_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:让龙|骑龙)?\s*(?:降落|落地)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const DRAGON_ASSIST_COMMAND = /^\s*(?:你\s*)?(?:让龙|骑龙)?\s*(?:协战|帮我打|保护我|攻击目标)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
@@ -338,7 +338,8 @@ function escapeRegExp(value: string): string {
 }
 
 function normalizeAddressedMessage(message: string, companionName = ""): string {
-  const names = [companionName.trim(), "codex", "claude", "克劳德", "反重力", "antigravity"]
+  const explicitName = companionName.trim();
+  const names = [explicitName ? explicitName.repeat(2) : "", explicitName, "codex", "claude", "克劳德", "反重力", "antigravity"]
     .filter((name, index, values) => name && values.indexOf(name) === index)
     .map(escapeRegExp);
   const address = names.join("|");
@@ -472,7 +473,21 @@ export function parseDeterministicChatAction(message: string, sender: string, co
       reply: "好，我会让你坐前座、我坐后座，一起骑龙；下龙前会先确认安全落地。",
     };
   }
-  if (DISMOUNT_DRAGON_COMMAND.test(normalized)) {
+  const dragonDismount = normalized.match(DISMOUNT_DRAGON_COMMAND);
+  if (dragonDismount) {
+    if (dragonDismount.groups?.follow) {
+      return {
+        operation: "task",
+        spec: {
+          kind: "macro",
+          skillId: "dragon.dismount-and-follow",
+          arguments: { player: sender.trim() || "player" },
+          requestedBy: sender.trim() || "player",
+          note: message.slice(0, 500),
+        },
+        reply: "好，我先下龙，再步行跟着你。",
+      };
+    }
     return { operation: "task", spec: { kind: "dragon", action: "dismount", requestedBy: sender.trim() || "player", note: message.slice(0, 500) }, reply: "好，我现在下龙。" };
   }
   if (RECALL_DRAGON_COMMAND.test(normalized)) {

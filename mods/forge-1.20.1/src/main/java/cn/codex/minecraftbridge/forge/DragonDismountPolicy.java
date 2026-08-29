@@ -4,6 +4,11 @@ package cn.codex.minecraftbridge.forge;
 final class DragonDismountPolicy {
     private static final int MIN_RADIUS = 3;
     private static final int MAX_RADIUS = 12;
+    private static final int STABLE_TICKS = 3;
+    private static final int RETRY_INTERVAL_TICKS = 5;
+    private static final int TIMEOUT_TICKS = 40;
+
+    enum Decision { COMPLETE, CONTINUE, TIMED_OUT }
 
     private DragonDismountPolicy() {
     }
@@ -18,6 +23,16 @@ final class DragonDismountPolicy {
         double radians = Math.toRadians(yawDegrees);
         double radius = standRadius(dragonWidth);
         return new Offset(Math.cos(radians) * radius * direction, Math.sin(radians) * radius * direction);
+    }
+
+    static Decision verify(boolean passenger, int stableTicks, int elapsedTicks) {
+        if (!passenger && stableTicks >= STABLE_TICKS) return Decision.COMPLETE;
+        if (elapsedTicks >= TIMEOUT_TICKS) return Decision.TIMED_OUT;
+        return Decision.CONTINUE;
+    }
+
+    static boolean shouldAttempt(boolean initialized, int ticks, int lastAttemptTick) {
+        return !initialized || ticks - lastAttemptTick >= RETRY_INTERVAL_TICKS;
     }
 
     record Offset(double x, double z) {

@@ -117,7 +117,7 @@ function fillConfig(config) {
 
 function fillInstances(instances, selected) {
   const select = element("sourceVersion");
-  const sources = instances.filter((item) => !item.isCompanionClone);
+  const sources = Array.isArray(instances) ? instances : [];
   select.replaceChildren(new Option("请选择", ""));
   for (const item of sources) select.add(new Option(item.name, item.name));
   if (sources.some((item) => item.name === selected)) select.value = selected;

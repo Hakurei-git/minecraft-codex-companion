@@ -34,6 +34,10 @@ describe("parseDeterministicChatAction", () => {
       operation: "control",
       action: "recall",
     });
+    expect(parseDeterministicChatAction("过来唯唯", "PlayerOne", "唯")).toMatchObject({
+      operation: "control",
+      action: "recall",
+    });
     expect(parseDeterministicChatAction("Luna，快跟着我", "PlayerOne", "Luna")).toMatchObject({
       operation: "control",
       action: "follow",
@@ -579,6 +583,14 @@ describe("parseDeterministicChatAction", () => {
       spec: { kind: "macro", skillId: "dragon.shared-ride" },
     });
     expect(parseDeterministicChatAction("下来跟我走", "PlayerOne")).toMatchObject({
+      operation: "task",
+      spec: {
+        kind: "macro",
+        skillId: "dragon.dismount-and-follow",
+        arguments: { player: "PlayerOne" },
+      },
+    });
+    expect(parseDeterministicChatAction("从龙上下来唯唯", "PlayerOne", "唯")).toMatchObject({
       operation: "task",
       spec: { kind: "dragon", action: "dismount" },
     });

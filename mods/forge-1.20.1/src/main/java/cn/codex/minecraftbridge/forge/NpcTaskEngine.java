@@ -9234,12 +9234,8 @@ public final class NpcTaskEngine {
 
     private void tickDragon(ActiveWork work) {
         String action = string(work.spec, "action", "observe");
-        if (action.equals("dismount") && npc.isPassenger()) {
-            Entity vehicle = npc.getVehicle();
-            DragonAdapter mountedAdapter = vehicle == null ? null : DragonAdapters.forEntity(vehicle);
-            if (mountedAdapter != null) mountedAdapter.dismount(npc);
-            else npc.stopRiding();
-            complete(work, "Codex 已下龙");
+        if (action.equals("dismount")) {
+            tickDragonDismount(work);
             return;
         }
         if (action.equals("care-for-egg")) {
@@ -13060,6 +13056,46 @@ public final class NpcTaskEngine {
             if (matchesGatherBlock(neighbor, selector, ItemStack.EMPTY)) {
                 enqueueConnectedResources(work, neighbor, selector);
             }
+        }
+    }
+
+    private void tickDragonDismount(ActiveWork work) {
+        boolean passenger = npc.isPassenger();
+        work.stableTicks = passenger ? 0 : work.stableTicks + 1;
+        DragonDismountPolicy.Decision decision = DragonDismountPolicy.verify(
+            passenger,
+            work.stableTicks,
+            dragonActionElapsedTicks(work)
+        );
+        if (decision == DragonDismountPolicy.Decision.COMPLETE) {
+            npc.getNavigation().stop();
+            npc.setNoGravity(false);
+            npc.setDeltaMovement(Vec3.ZERO);
+            npc.fallDistance = 0.0F;
+            complete(work, "Codex 已下龙并稳定落地");
+            return;
+        }
+        if (decision == DragonDismountPolicy.Decision.TIMED_OUT) {
+            fail(work, "下龙后仍检测到骑乘状态", "DRAGON_DISMOUNT_TIMEOUT");
+            return;
+        }
+        if (passenger && DragonDismountPolicy.shouldAttempt(work.initialized, work.ticks, work.lastActionTick)) {
+            work.initialized = true;
+            work.lastActionTick = work.ticks;
+            Entity vehicle = npc.getVehicle();
+            DragonAdapter mountedAdapter = vehicle == null ? null : DragonAdapters.forEntity(vehicle);
+            if (mountedAdapter != null) mountedAdapter.dismount(npc);
+            else DragonDismountSafety.dismountCompanion(npc);
+        }
+        if (!npc.isPassenger()) {
+            npc.getNavigation().stop();
+            npc.setNoGravity(false);
+            npc.setDeltaMovement(Vec3.ZERO);
+            npc.fallDistance = 0.0F;
+        }
+        if (work.ticks % 5 == 0) {
+            progress(work, npc.isPassenger() ? 0.4D : 0.9D,
+                npc.isPassenger() ? "正在解除骑乘状态" : "已下龙，正在确认稳定落地");
         }
     }
 

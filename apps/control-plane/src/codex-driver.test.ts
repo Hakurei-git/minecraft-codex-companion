@@ -495,6 +495,38 @@ describe("CodexDriver", () => {
     expect(fake.started.coordinatorTokenBudgets).toEqual([320]);
   });
 
+  it("keeps an explicitly addressed dragon dismount local in Smart Antigravity mode", async () => {
+    const stateDirectory = await mkdtemp(path.join(os.tmpdir(), "mc-codex-smart-dragon-dismount-"));
+    const service = new ControlService();
+    service.registerBackend(new SimulatorBackend("codex-sim", "唯"));
+    const fake = new FakeCodex();
+    const driver = new CodexDriver({
+      control: service,
+      events: service.events,
+      codex: fake,
+      projectRoot: process.cwd(),
+      stateDirectory,
+    });
+    await configureChat(service, {
+      companionName: "唯",
+      target: "antigravity-mcp",
+      actionMode: "smart",
+    });
+
+    const routed = await driver.handleImmediateInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "从龙上下来唯唯",
+    });
+
+    expect(routed).toMatchObject({ handled: true, request: { status: "succeeded" } });
+    expect(service.listTasks()).toContainEqual(expect.objectContaining({
+      spec: expect.objectContaining({ kind: "dragon", action: "dismount" }),
+    }));
+    expect(fake.started.plannerPrompts).toHaveLength(0);
+    expect(fake.started.prompts).toHaveLength(0);
+  });
+
   it("records a player-built house locally even when Smart AI is enabled", async () => {
     const { service, fake, driver } = await createHarness("mc-codex-smart-home-memory-");
     await configureChat(service, { actionMode: "smart", target: "antigravity-mcp" });

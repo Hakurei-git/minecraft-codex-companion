@@ -40,6 +40,10 @@ const portableUi = await readFile(
   path.join(projectRoot, "apps", "portable-launcher", "ui", "index.html"),
   "utf8",
 );
+const portableUiScript = await readFile(
+  path.join(projectRoot, "apps", "portable-launcher", "ui", "app.js"),
+  "utf8",
+);
 const forgeTestScript = await readFile(
   path.join(projectRoot, "scripts", "run-forge-tests-in-process.ps1"),
   "utf8",
@@ -129,6 +133,8 @@ test("desktop EXE always uses and precisely launches the selected HMCL source in
   assert.match(portableClientSource, /直接使用所选实例（不创建副本）/);
   assert.doesNotMatch(portableUi, /id="targetVersion"/);
   assert.match(portableUi, /直接使用所选实例（不创建副本）/);
+  assert.match(portableUiScript, /const sources = Array\.isArray\(instances\) \? instances : \[\]/);
+  assert.doesNotMatch(portableUiScript, /filter\([^\r\n]*isCompanionClone/);
 
   assert.match(hmclLauncherSource, /selectedGameDirectory/);
   assert.match(hmclLauncherSource, /selectedInstance/);
@@ -219,7 +225,7 @@ test("offline pinned Forge packaging is explicit, hash-bound, and runs every For
   assert.match(buildScript, /\^\[A-Fa-f0-9\]\{64\}\$/);
   assert.match(buildScript, /Pinned Forge bridge JAR SHA-256 does not match/);
   assert.match(buildScript, /run-forge-tests-in-process\.ps1/);
-  assert.match(buildScript, /pinned-sha256-and-474-tests/);
+  assert.match(buildScript, /pinned-sha256-and-476-tests/);
   assert.match(buildScript, /OfflineNodeModulesRoot/);
   assert.match(buildScript, /Assert-OfflineNodeModules/);
   assert.match(buildScript, /Offline node_modules contains filesystem links or reparse points/);
