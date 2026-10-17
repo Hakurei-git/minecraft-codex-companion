@@ -651,7 +651,7 @@ namespace MinecraftCodexCompanion
             panel.Controls.Add(defaultSkin);
 
             freeChatEnabled = new CheckBox();
-            freeChatEnabled.Text = "启用自由聊天";
+            freeChatEnabled.Text = "启用自由聊天与事件回应";
             freeChatEnabled.AutoSize = true;
             freeChatEnabled.Location = new Point(470, 28);
             freeChatEnabled.CheckedChanged += delegate { MarkDirty(); };

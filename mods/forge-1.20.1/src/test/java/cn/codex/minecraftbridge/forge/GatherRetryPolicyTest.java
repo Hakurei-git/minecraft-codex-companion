@@ -2,6 +2,11 @@ package cn.codex.minecraftbridge.forge;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayDeque;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -235,6 +240,48 @@ final class GatherRetryPolicyTest {
             GatherRetryPolicy.MAX_NATURAL_TREE_RETRY_PASSES
         ));
         assertFalse(GatherRetryPolicy.shouldRetryVerifiedNaturalTree(0, 0));
+    }
+
+    @Test
+    void exhaustedTreeLeavesTheQueueAndRemainsExcludedWhileAnotherTreeIsRetried() {
+        List<String> upperLogs = List.of("oak-upper", "oak-top");
+        var queued = new ArrayDeque<String>();
+        var skipped = new HashSet<>(upperLogs);
+        for (int pass = 0; pass < GatherRetryPolicy.MAX_NATURAL_TREE_RETRY_PASSES; pass++) {
+            assertTrue(GatherRetryPolicy.requeueVerifiedNaturalTree(upperLogs, pass, queued, skipped));
+            assertEquals(upperLogs, List.copyOf(queued));
+            // Every remaining log is attempted, but none is reachable.
+            while (!queued.isEmpty()) skipped.add(queued.removeFirst());
+        }
+        assertFalse(GatherRetryPolicy.requeueVerifiedNaturalTree(
+            upperLogs, GatherRetryPolicy.MAX_NATURAL_TREE_RETRY_PASSES, queued, skipped
+        ));
+        assertTrue(queued.isEmpty());
+        assertTrue(skipped.containsAll(upperLogs));
+
+        List<String> otherTree = List.of("birch-base", "birch-upper");
+        assertTrue(GatherRetryPolicy.requeueVerifiedNaturalTree(otherTree, 0, queued, skipped));
+        assertEquals(otherTree, List.copyOf(queued));
+        assertEquals(Set.copyOf(upperLogs), skipped);
+    }
+
+    @Test
+    void retryAfterBreakingALowerLogPreservesOtherTreesSkipsAndTargetOrder() {
+        var queued = new ArrayDeque<>(List.of("already-broken"));
+        var skipped = new HashSet<>(List.of("lower", "upper", "other-tree"));
+        List<String> remaining = List.of("lower", "upper");
+        assertTrue(GatherRetryPolicy.requeueVerifiedNaturalTree(remaining, 0, queued, skipped));
+        assertEquals(remaining, List.copyOf(queued));
+        assertEquals(Set.of("other-tree"), skipped);
+    }
+
+    @Test
+    void externallyRemovedTreeDoesNotLeaveStaleTargetsOrEraseOtherSkips() {
+        var queued = new ArrayDeque<>(List.of("removed-log"));
+        var skipped = new HashSet<>(List.of("other-tree"));
+        assertFalse(GatherRetryPolicy.requeueVerifiedNaturalTree(List.of(), 0, queued, skipped));
+        assertTrue(queued.isEmpty());
+        assertEquals(Set.of("other-tree"), skipped);
     }
 
     @Test

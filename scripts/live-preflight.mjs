@@ -120,7 +120,8 @@ function localBaseUrl(raw) {
 }
 
 async function requestJson(baseUrl, pathname) {
-  const response = await fetch(new URL(pathname, baseUrl), { signal: AbortSignal.timeout(3_000) });
+  const timeout = pathname === "/api/antigravity/status" ? 15_000 : 10_000;
+  const response = await fetch(new URL(pathname, baseUrl), { signal: AbortSignal.timeout(timeout) });
   if (!response.ok) throw new Error(`${pathname} returned HTTP ${response.status}`);
   return response.json();
 }

@@ -8,18 +8,25 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
+import net.minecraft.world.CompoundContainer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.FenceGateBlock;
 import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.level.block.state.properties.ChestType;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
@@ -42,16 +49,26 @@ final class NpcHomeStorage {
         boolean temporary,
         Bounds bounds,
         String boundarySource,
-        double confidence
+        double confidence,
+        Set<BlockPos> interiorCells
     ) {
+        Home { interiorCells = Set.copyOf(interiorCells); }
         Home(ResourceKey<Level> dimension, BlockPos position, boolean temporary) {
-            this(dimension, position, temporary, null, "radius-fallback", 0.0D);
+            this(dimension, position, temporary, null, "radius-fallback", 0.0D, Set.of());
         }
     }
     record BedPlacement(BlockPos foot, Direction facing) {}
+    record StorageTarget(BlockPos position, List<BlockPos> blocks, Container container) {}
+    record StoragePlacement(BlockPos position, BlockPos mergeTarget, Direction facing) {}
     private record CachedHome(ResourceKey<Level> dimension, BlockPos anchor, long gameTime, Home home) {}
 
     private NpcHomeStorage() {}
+
+    /** Re-scan immediately before a storage mutation, including after moving the owner's bed. */
+    static Home refresh(ServerPlayer owner) {
+        HOME_CACHE.remove(owner.getUUID());
+        return resolve(owner);
+    }
 
     static Home resolve(ServerPlayer owner) {
         BlockPos respawn = owner.getRespawnPosition();
@@ -88,8 +105,8 @@ final class NpcHomeStorage {
     }
 
     private static Home homeWithBoundary(ResourceKey<Level> dimension, BlockPos anchor, boolean temporary, HouseBoundary boundary) {
-        if (boundary != null) return new Home(dimension, anchor, temporary, boundary.bounds(), "enclosed-scan", boundary.confidence());
-        return new Home(dimension, anchor, temporary, radiusFallback(anchor), "radius-fallback", 0.15D);
+        if (boundary != null) return new Home(dimension, anchor, temporary, boundary.bounds(), "enclosed-scan", boundary.confidence(), boundary.cells());
+        return new Home(dimension, anchor, temporary, radiusFallback(anchor), "radius-fallback", 0.15D, Set.of());
     }
 
     private static Bounds radiusFallback(BlockPos anchor) {
@@ -119,7 +136,7 @@ final class NpcHomeStorage {
         return candidate;
     }
 
-    private record HouseBoundary(Bounds bounds, double confidence, int cells) {}
+    private record HouseBoundary(Bounds bounds, double confidence, Set<BlockPos> cells) {}
 
     /** Bounded indoor-space scan for player-built houses. Never scans an open world indefinitely. */
     private static HouseBoundary scanHouseBoundary(ServerLevel level, BlockPos anchor) {
@@ -170,7 +187,151 @@ final class NpcHomeStorage {
         return new HouseBoundary(new Bounds(
             new BlockPos(minX - 1, minY - 1, minZ - 1),
             new BlockPos(maxX + 1, Math.max(maxY + 1, maximumRoofY), maxZ + 1)
-        ), confidence, visited.size());
+        ), confidence, Set.copyOf(visited));
+    }
+
+    static boolean hasStorageBoundary(Home home) {
+        return home.bounds() != null && "enclosed-scan".equals(home.boundarySource()) && !home.interiorCells().isEmpty();
+    }
+
+    static boolean isIndoorStorage(ServerLevel level, Home home, BlockPos position) {
+        if (!hasStorageBoundary(home) || !home.dimension().equals(level.dimension()) || !level.hasChunkAt(position)) return false;
+        if (level.canSeeSky(position) || roofDistance(level, position) < 1 || !level.getFluidState(position).isEmpty()) return false;
+        if (home.interiorCells().contains(position)) return true;
+        // Existing containers occupy a cell excluded by the walkable-space scan.
+        if (!isStorageContainer(level, position, level.getBlockEntity(position))) return false;
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            if (home.interiorCells().contains(position.relative(direction))) return true;
+        }
+        return false;
+    }
+
+    static boolean allowsStorage(ServerLevel level, Home home, BlockPos position, boolean allowOutside) {
+        if (position == null || !level.hasChunkAt(position) || !level.getWorldBorder().isWithinBounds(position)) return false;
+        Bounds bounds = home.bounds();
+        HomeStorageAreaPolicy.Area area = bounds == null ? null : new HomeStorageAreaPolicy.Area(
+            cell(bounds.min()), cell(bounds.max()), home.position().getY());
+        return HomeStorageAreaPolicy.allows(area, cell(position), hasStorageBoundary(home),
+            home.dimension().equals(level.dimension()), isIndoorStorage(level, home, position), allowOutside);
+    }
+
+    private static HomeStorageAreaPolicy.Cell cell(BlockPos position) {
+        return new HomeStorageAreaPolicy.Cell(position.getX(), position.getY(), position.getZ());
+    }
+
+    /** Returns each double chest once; both halves must be inside the permitted storage area. */
+    static List<StorageTarget> storageTargets(ServerLevel level, Home home, boolean allowOutside) {
+        if (!hasStorageBoundary(home) || !home.dimension().equals(level.dimension())) return List.of();
+        Bounds bounds = home.bounds();
+        int margin = allowOutside ? HomeStorageAreaPolicy.OUTSIDE_MARGIN : 0;
+        List<StorageTarget> result = new ArrayList<>();
+        Set<BlockPos> seen = new HashSet<>();
+        for (BlockPos mutable : BlockPos.betweenClosed(
+            bounds.min().offset(-margin, 0, -margin), bounds.max().offset(margin, 0, margin))) {
+            BlockPos position = mutable.immutable();
+            if (seen.contains(position) || !level.hasChunkAt(position)
+                || !isStorageContainer(level, position, level.getBlockEntity(position))) continue;
+            StorageTarget target = storageTarget(level, home, position, allowOutside);
+            if (target == null) continue;
+            seen.addAll(target.blocks());
+            result.add(target);
+        }
+        result.sort(Comparator
+            .comparingInt((StorageTarget target) -> target.blocks().stream().allMatch(p -> isIndoorStorage(level, home, p)) ? 0 : 1)
+            .thenComparingDouble(target -> target.position().distSqr(home.position())));
+        return List.copyOf(result);
+    }
+
+    static StorageTarget storageTarget(ServerLevel level, Home home, BlockPos position, boolean allowOutside) {
+        if (!allowsStorage(level, home, position, allowOutside)) return null;
+        BlockEntity entity = level.getBlockEntity(position);
+        if (!isStorageContainer(level, position, entity)) return null;
+        Container container = (Container) entity;
+        BlockState state = level.getBlockState(position);
+        if (state.getBlock() instanceof ChestBlock && state.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
+            BlockPos other = position.relative(ChestBlock.getConnectedDirection(state));
+            if (!allowsStorage(level, home, other, allowOutside)) return null;
+            BlockState otherState = level.getBlockState(other);
+            if (otherState.getBlock() != state.getBlock()
+                || otherState.getValue(ChestBlock.TYPE) == ChestType.SINGLE
+                || !other.relative(ChestBlock.getConnectedDirection(otherState)).equals(position)
+                || !(level.getBlockEntity(other) instanceof Container partner)) return null;
+            return new StorageTarget(position, List.of(position, other), new CompoundContainer(container, partner));
+        }
+        return new StorageTarget(position, List.of(position), container);
+    }
+
+    static StoragePlacement findStoragePlacement(ServerLevel level, Home home, boolean allowOutside,
+                                                  Predicate<BlockPos> mayMerge, Predicate<BlockPos> clearOfEntities) {
+        if (!hasStorageBoundary(home) || !home.dimension().equals(level.dimension())) return null;
+        if (allowOutside) {
+            StoragePlacement indoor = findStoragePlacement(level, home, false, mayMerge, clearOfEntities);
+            if (indoor != null) return indoor;
+        }
+        List<StoragePlacement> candidates = new ArrayList<>();
+        for (StorageTarget target : storageTargets(level, home, allowOutside)) {
+            BlockPos existing = target.position();
+            BlockState state = level.getBlockState(existing);
+            if (!state.is(Blocks.CHEST) || state.getValue(ChestBlock.TYPE) != ChestType.SINGLE || !mayMerge.test(existing)) continue;
+            Direction facing = state.getValue(ChestBlock.FACING);
+            for (Direction side : List.of(facing.getClockWise(), facing.getCounterClockWise())) {
+                BlockPos position = existing.relative(side);
+                if (safeStorageCell(level, home, position, allowOutside, clearOfEntities)
+                    && adjacentChests(level, position).equals(Set.of(existing))) {
+                    candidates.add(new StoragePlacement(position, existing, facing));
+                }
+            }
+        }
+        Bounds bounds = home.bounds();
+        int margin = allowOutside ? HomeStorageAreaPolicy.OUTSIDE_MARGIN : 0;
+        for (BlockPos mutable : BlockPos.betweenClosed(bounds.min().offset(-margin, 0, -margin), bounds.max().offset(margin, 0, margin))) {
+            BlockPos position = mutable.immutable();
+            if (safeStorageCell(level, home, position, allowOutside, clearOfEntities) && adjacentChests(level, position).isEmpty()) {
+                candidates.add(new StoragePlacement(position, null, Direction.NORTH));
+            }
+        }
+        candidates.sort(Comparator
+            .comparingInt((StoragePlacement placement) -> isIndoorStorage(level, home, placement.position()) ? 0 : 1)
+            .thenComparingInt(placement -> placement.mergeTarget() == null ? 1 : 0)
+            .thenComparingDouble(placement -> placement.position().distSqr(home.position())));
+        return candidates.isEmpty() ? null : candidates.get(0);
+    }
+
+    private static boolean safeStorageCell(ServerLevel level, Home home, BlockPos position, boolean allowOutside,
+                                           Predicate<BlockPos> clearOfEntities) {
+        if (!level.hasChunkAt(position) || position.distManhattan(home.position()) <= 1) return false;
+        // Air only: do not replace walls, fences, crops, torches, water or any other existing block.
+        if (!level.getBlockState(position).isAir() || !level.getFluidState(position).isEmpty()
+            || !level.getBlockState(position.above()).getCollisionShape(level, position.above()).isEmpty()
+            || !level.getFluidState(position.above()).isEmpty()) return false;
+        if (!allowsStorage(level, home, position, allowOutside)) return false;
+        BlockPos support = position.below();
+        if (!level.getBlockState(support).isFaceSturdy(level, support, Direction.UP)
+            || level.getBlockState(support).getBlock() instanceof ChestBlock || !clearOfEntities.test(position)) return false;
+        Set<Direction> exits = new HashSet<>();
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            BlockPos side = position.relative(direction);
+            for (int y = 0; y <= 1; y++) {
+                BlockState adjacent = level.getBlockState(side.above(y));
+                if (adjacent.getBlock() instanceof DoorBlock || adjacent.getBlock() instanceof FenceGateBlock
+                    || adjacent.getBlock() instanceof BedBlock) return false;
+            }
+            if (level.getBlockState(side).getCollisionShape(level, side).isEmpty()
+                && level.getBlockState(side.above()).getCollisionShape(level, side.above()).isEmpty()
+                && level.getBlockState(side.below()).isFaceSturdy(level, side.below(), Direction.UP)) exits.add(direction);
+        }
+        // Keep at least two adjacent standing cells; never fill a one-cell doorway/passage end.
+        if (exits.size() < 2) return false;
+        return exits.size() > 2 || exits.stream().noneMatch(direction -> exits.contains(direction.getOpposite()));
+    }
+
+    private static Set<BlockPos> adjacentChests(ServerLevel level, BlockPos position) {
+        Set<BlockPos> result = new HashSet<>();
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            BlockPos side = position.relative(direction);
+            if (level.getBlockState(side).getBlock() instanceof ChestBlock) result.add(side);
+        }
+        return result;
     }
 
     private static boolean isIndoorCell(ServerLevel level, BlockPos position) {

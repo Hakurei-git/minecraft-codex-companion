@@ -315,7 +315,7 @@ export function AiProviderDialog({ open, onClose }: Props): ReactElement | null 
           <div className="free-chat-band-primary">
             <div className="free-chat-heading">
               <span className="free-chat-icon"><MessageCircle size={17} /></span>
-              <span><strong>自由聊天</strong><small>{chatSettings.freeChatEnabled ? "普通聊天自动响应" : "仅指令聊天响应"}</small></span>
+              <span><strong>自由聊天</strong><small>{chatSettings.freeChatEnabled ? "聊天、死亡和成就自动回应" : "仅指令聊天响应"}</small></span>
             </div>
 
             <label className="free-chat-switch">

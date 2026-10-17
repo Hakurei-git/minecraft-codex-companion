@@ -1,5 +1,9 @@
 package cn.codex.minecraftbridge.forge;
 
+import java.util.Deque;
+import java.util.List;
+import java.util.Set;
+
 final class GatherRetryPolicy {
     static final int MAX_SKIPPED_TARGETS = 24;
     static final int MAX_PATH_FAILURES = 4;
@@ -164,6 +168,24 @@ final class GatherRetryPolicy {
         return remainingTargets > 0
             && completedRetryPasses >= 0
             && completedRetryPasses < MAX_NATURAL_TREE_RETRY_PASSES;
+    }
+
+    static <T> boolean requeueVerifiedNaturalTree(
+        List<T> remaining,
+        int completedRetryPasses,
+        Deque<T> queuedTargets,
+        Set<T> skippedTargets
+    ) {
+        queuedTargets.clear();
+        if (!shouldRetryVerifiedNaturalTree(remaining.size(), completedRetryPasses)) {
+            // Exhausting one tree is not exhaustion of the gather task. Keep
+            // its leftovers excluded from seed scans while looking elsewhere.
+            skippedTargets.addAll(remaining);
+            return false;
+        }
+        skippedTargets.removeAll(remaining);
+        queuedTargets.addAll(remaining);
+        return true;
     }
 
     /**

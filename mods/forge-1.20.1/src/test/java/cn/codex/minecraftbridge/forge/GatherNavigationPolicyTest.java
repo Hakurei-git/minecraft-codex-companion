@@ -42,4 +42,40 @@ final class GatherNavigationPolicyTest {
         assertFalse(GatherNavigationPolicy.canInteractWithTarget(true, false, false, true));
         assertFalse(GatherNavigationPolicy.canInteractWithTarget(false, true, true, true));
     }
+
+    @Test
+    void includesGroundUnderUpperTrunksWithoutExtendingInteractionReach() {
+        double reach = 4.5;
+        double eyeHeight = 1.62;
+        int minY = GatherNavigationPolicy.minimumStandOffset(reach, eyeHeight);
+        assertEquals(-6, minY);
+        assertTrue(GatherNavigationPolicy.blockTouchDistance(0.5, minY + eyeHeight, 0.5, 0, 0, 0) <= reach);
+        assertTrue(GatherNavigationPolicy.blockTouchDistance(0.5, minY - 1 + eyeHeight, 0.5, 0, 0, 0) > reach);
+        assertFalse(GatherNavigationPolicy.canInteractWithTarget(false, true, true, true));
+    }
+
+    @Test
+    void includesStandsAboveTheTargetOnlyWithinSurfaceReach() {
+        double reach = 4.5;
+        double eyeHeight = 1.62;
+        int maxY = GatherNavigationPolicy.maximumStandOffset(reach, eyeHeight);
+        assertEquals(3, maxY);
+        assertTrue(GatherNavigationPolicy.blockTouchDistance(0.5, maxY + eyeHeight, 0.5, 0, 0, 0) <= reach);
+        assertTrue(GatherNavigationPolicy.blockTouchDistance(0.5, maxY + 1 + eyeHeight, 0.5, 0, 0, 0) > reach);
+    }
+
+    @Test
+    void verticalSearchCoversExactlyTheReachableOffsetsForDifferentEyeHeights() {
+        for (double eyeHeight : new double[] { 0, 0.5, 1.62, 2.0 }) {
+            for (double reach : new double[] { 2.8, 4.5, 5.0 }) {
+                int minY = GatherNavigationPolicy.minimumStandOffset(reach, eyeHeight);
+                int maxY = GatherNavigationPolicy.maximumStandOffset(reach, eyeHeight);
+                for (int dy = -10; dy <= 10; dy++) {
+                    double distance = GatherNavigationPolicy.blockTouchDistance(0.5, dy + eyeHeight, 0.5, 0, 0, 0);
+                    assertEquals(distance <= reach, dy >= minY && dy <= maxY,
+                        "stand offset " + dy + ", eye height " + eyeHeight + ", reach " + reach);
+                }
+            }
+        }
+    }
 }

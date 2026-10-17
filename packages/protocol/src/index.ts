@@ -1245,6 +1245,18 @@ export const chatMessageSchema = z.object({
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 
+export const gameEventSchema = z.object({
+  type: z.literal("game-event"),
+  companionId: z.string().min(1).max(128),
+  messageId: z.string().uuid(),
+  kind: z.enum(["death", "advancement", "respawn"]),
+  playerName: z.string().trim().min(1).max(64),
+  message: z.string().trim().min(1).max(512),
+  translationKey: z.string().max(160).optional(),
+  at: z.string().datetime(),
+});
+export type GameEvent = z.infer<typeof gameEventSchema>;
+
 export const bridgeHelloSchema = z.object({
   type: z.literal("hello"),
   protocolVersion: z.literal(PROTOCOL_VERSION),
@@ -1254,6 +1266,7 @@ export const bridgeHelloSchema = z.object({
 
 export const bridgeMessageSchema = z.discriminatedUnion("type", [
   bridgeHelloSchema,
+  gameEventSchema,
   z.object({ type: z.literal("snapshot"), companionId: z.string(), snapshot: worldSnapshotSchema }),
   z.object({
     type: z.literal("chat-delivered"),

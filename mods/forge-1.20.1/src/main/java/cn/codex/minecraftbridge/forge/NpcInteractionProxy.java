@@ -40,6 +40,11 @@ final class NpcInteractionProxy {
     }
 
     InteractionResult useItemOn(BlockPos support, Direction face, ItemStack stack, int sourceSlot) {
+        return useItemOn(support, face, stack, sourceSlot, null);
+    }
+
+    /** A chest must face the same way as its neighbor for vanilla double-chest joining. */
+    InteractionResult useItemOn(BlockPos support, Direction face, ItemStack stack, int sourceSlot, Direction placedFacing) {
         FakePlayer player = prepare(stack.copy());
         Vec3 hit = supportHitLocation(player.level(), support, face);
         // LookControl updates the visible NPC at the end of the entity tick.
@@ -47,6 +52,10 @@ final class NpcInteractionProxy {
         // now; otherwise a valid seed/hoe use can be rejected when the prior
         // navigation yaw still faces away from the selected farm cell.
         aimAt(player, hit);
+        if (placedFacing != null) {
+            player.setYRot(placedFacing.getOpposite().toYRot());
+            player.setShiftKeyDown(false);
+        }
         InteractionResult result = player.gameMode.useItemOn(
             player,
             player.level(),

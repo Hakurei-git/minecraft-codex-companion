@@ -23,6 +23,7 @@ public final class ClientBridgeEvents {
     private static final BridgeClient CLIENT = new BridgeClient(CONFIG, ForgeNpcActor::new);
     private static final BridgeConfigWatcher CONFIG_WATCHER = new BridgeConfigWatcher(BridgeConfig.path());
     private static final BackgroundPauseLease BACKGROUND_PAUSE_LEASE = new BackgroundPauseLease();
+    private static final PlayerGameEventCapture GAME_EVENTS = new PlayerGameEventCapture();
     private static int configReloadTicks;
 
     private ClientBridgeEvents() {
@@ -30,12 +31,14 @@ public final class ClientBridgeEvents {
 
     @SubscribeEvent
     public static void onLogin(ClientPlayerNetworkEvent.LoggingIn event) {
+        GAME_EVENTS.reset();
         BACKGROUND_PAUSE_LEASE.clear();
         CLIENT.onLogin();
     }
 
     @SubscribeEvent
     public static void onLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+        GAME_EVENTS.reset();
         BACKGROUND_PAUSE_LEASE.clear();
         CLIENT.onLogout();
     }
@@ -49,6 +52,7 @@ public final class ClientBridgeEvents {
             }
             keepSingleplayerTasksRunning();
             CLIENT.tick();
+            GAME_EVENTS.tick(CLIENT);
         }
     }
 
@@ -64,6 +68,10 @@ public final class ClientBridgeEvents {
 
     @SubscribeEvent
     public static void onRemoteChat(ClientChatReceivedEvent event) {
+        if (event instanceof ClientChatReceivedEvent.System system) {
+            if (!system.isOverlay()) GAME_EVENTS.onSystemMessage(event.getMessage(), CLIENT);
+            return;
+        }
         // Only signed player messages belong here. Local T chat is captured by
         // ClientChatEvent, so its server echo must not create a second AI turn.
         if (!(event instanceof ClientChatReceivedEvent.Player) || event.isSystem()) return;

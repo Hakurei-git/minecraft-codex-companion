@@ -2761,6 +2761,10 @@ public final class NpcTaskEngine {
         if (!isCurrentGatherTargetValid(work, selector)) {
             work.gatherAccessTarget = false;
             work.targetBlock = pollGatherTarget(work, selector);
+            if (work.targetBlock == null && requeueVerifiedNaturalTree(work, selector)) {
+                work.targetBlock = pollGatherTarget(work, selector);
+                if (work.targetBlock == null) return true;
+            }
             if (work.targetBlock == null && work.ticks - work.lastSearchTick >= 10) {
                 work.lastSearchTick = work.ticks;
                 BlockPos seed = DeepMiningPolicy.supports(itemId)
@@ -2818,6 +2822,7 @@ public final class NpcTaskEngine {
             work.noWorkTicks = 0;
         }
         if (!approachGatherTarget(work, work.targetBlock, 2.8, 1.15)) return true;
+        if (work.gatherTreeCluster) work.gatherClusterReached = true;
         if (work.ticks - work.lastActionTick < 8) return true;
         work.lastActionTick = work.ticks;
         BlockPos brokenTarget = work.targetBlock.immutable();
@@ -2841,7 +2846,7 @@ public final class NpcTaskEngine {
         }
         npc.absorbNearbyItemsAt(Vec3.atCenterOf(brokenTarget), 3.0);
         recordInventoryAction(work, "gather-pickup");
-        refreshConnectedResourcesAfterBreak(work, brokenTarget, selector, targetState.is(BlockTags.LOGS));
+        refreshConnectedResourcesAfterBreak(work, brokenTarget, selector, work.gatherTreeCluster);
         npc.addExhaustion(0.08F);
         work.targetBlock = null;
         work.gatherAccessTarget = false;
@@ -4125,7 +4130,7 @@ public final class NpcTaskEngine {
             ? work.spec.get("itemId").getAsString()
             : null;
         int radius = integer(work.spec, "radius", HomeStoragePolicy.DEFAULT_RADIUS);
-        if (!work.initialized || work.recipe == null) {
+        if (!work.initialized) {
             work.initialized = true;
             int available = requestedId == null ? organizableInventoryCount() : inventoryCount(requestedId);
             work.requestedCount = work.spec.has("count") && !work.spec.get("count").isJsonNull()
@@ -4137,6 +4142,10 @@ public final class NpcTaskEngine {
             }
             work.workstation = findHomeStorage(null, false, work, radius);
         }
+        if (work.storageExpansionPending) {
+            work.workstation = createHomeStorageIfPossible(work, radius);
+            if (work.workstation == null) return;
+        }
         if (work.workstation == null) {
             work.workstation = findHomeStorage(null, false, work, radius);
         }
@@ -4145,8 +4154,8 @@ public final class NpcTaskEngine {
             if (work.workstation == null) return;
         }
         if (!approachStorageTarget(work, work.workstation, 3.5, 1.05)) return;
-        BlockEntity blockEntity = npc.level().getBlockEntity(work.workstation);
-        if (!(blockEntity instanceof Container container) || blockEntity instanceof AbstractFurnaceBlockEntity) {
+        Container container = validatedStorageDestination(work);
+        if (container == null) {
             work.skippedStorageTargets.add(work.workstation);
             work.workstation = findHomeStorage(null, false, work, radius);
             if (work.workstation == null) work.workstation = createHomeStorageIfPossible(work, radius);
@@ -4280,11 +4289,15 @@ public final class NpcTaskEngine {
         if (!work.initialized) {
             work.initialized = true;
             work.requestedCount = organizableInventoryCount();
-            if (work.requestedCount <= 0) {
-                complete(work, "背包中没有需要自动入库的物品");
+            work.workstation = findHomeStorage(null, false, work, radius);
+            if (work.requestedCount <= 0 && work.workstation == null) {
+                complete(work, "没有可整理的家中箱子或背包物品");
                 return;
             }
-            work.workstation = findHomeStorage(null, false, work, radius);
+        }
+        if (work.storageExpansionPending) {
+            work.workstation = createHomeStorageIfPossible(work, radius);
+            if (work.workstation == null) return;
         }
         if (work.workstation == null) {
             work.workstation = findHomeStorage(null, false, work, radius);
@@ -4301,7 +4314,7 @@ public final class NpcTaskEngine {
             if (work.workstation == null) work.workstation = createHomeStorageIfPossible(work, radius);
             return;
         }
-        StorageSortResult sorted = organizeHomeStorageTransactional(radius);
+        StorageSortResult sorted = organizeHomeStorageTransactional(work, radius);
         if (sorted == StorageSortResult.SUCCEEDED) {
             work.completed = work.requestedCount;
             complete(work, "已把 " + work.completed + " 个多余物品按类别整理回家中仓库");
@@ -4313,7 +4326,9 @@ public final class NpcTaskEngine {
         }
         if (npc.level() instanceof ServerLevel level && npc.owner() != null) {
             NpcHomeStorage.Home home = NpcHomeStorage.resolve(npc.owner());
-            work.skippedStorageTargets.addAll(NpcHomeStorage.findContainers(level, home, radius));
+            for (NpcHomeStorage.StorageTarget target : NpcHomeStorage.storageTargets(level, home, true)) {
+                work.skippedStorageTargets.addAll(target.blocks());
+            }
         }
         work.workstation = createHomeStorageIfPossible(work, radius);
     }
@@ -5659,6 +5674,10 @@ public final class NpcTaskEngine {
     }
 
     private void tickProvisionFoodStorageDestination(ActiveWork work, int remaining) {
+        if (work.storageExpansionPending) {
+            work.workstation = createHomeStorageIfPossible(work, HomeStoragePolicy.DEFAULT_RADIUS);
+            if (work.workstation == null) return;
+        }
         if (work.workstation == null) {
             work.workstation = findHomeStorage(null, false, work, HomeStoragePolicy.DEFAULT_RADIUS);
             if (work.workstation == null) {
@@ -5667,8 +5686,8 @@ public final class NpcTaskEngine {
             }
         }
         if (!approachStorageTarget(work, work.workstation, 3.5D, 1.08D)) return;
-        BlockEntity blockEntity = npc.level().getBlockEntity(work.workstation);
-        if (!(blockEntity instanceof Container container) || blockEntity instanceof AbstractFurnaceBlockEntity) {
+        Container container = validatedStorageDestination(work);
+        if (container == null) {
             work.skippedStorageTargets.add(work.workstation);
             work.workstation = null;
             return;
@@ -10455,7 +10474,9 @@ public final class NpcTaskEngine {
         List<BlockPos> candidates = new ArrayList<>();
         double effectiveReach = GatherNavigationPolicy.effectiveReach(reach, GATHER_INTERACTION_REACH);
         int horizontalRadius = GatherNavigationPolicy.horizontalCandidateRadius(effectiveReach);
-        for (int dy = GatherNavigationPolicy.MIN_VERTICAL_OFFSET; dy <= GatherNavigationPolicy.MAX_VERTICAL_OFFSET; dy++) {
+        int minY = GatherNavigationPolicy.minimumStandOffset(effectiveReach, npcEyeHeight());
+        int maxY = GatherNavigationPolicy.maximumStandOffset(effectiveReach, npcEyeHeight());
+        for (int dy = minY; dy <= maxY; dy++) {
             for (int dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
                 for (int dz = -horizontalRadius; dz <= horizontalRadius; dz++) {
                     if (!GatherNavigationPolicy.allowsStandOffset(dx, dy, dz)) continue;
@@ -10604,7 +10625,9 @@ public final class NpcTaskEngine {
     private boolean hasSafeGatherStand(BlockPos target, double reach) {
         double effectiveReach = GatherNavigationPolicy.effectiveReach(reach, GATHER_INTERACTION_REACH);
         int horizontalRadius = GatherNavigationPolicy.horizontalCandidateRadius(effectiveReach);
-        for (int dy = GatherNavigationPolicy.MIN_VERTICAL_OFFSET; dy <= GatherNavigationPolicy.MAX_VERTICAL_OFFSET; dy++) {
+        int minY = GatherNavigationPolicy.minimumStandOffset(effectiveReach, npcEyeHeight());
+        int maxY = GatherNavigationPolicy.maximumStandOffset(effectiveReach, npcEyeHeight());
+        for (int dy = minY; dy <= maxY; dy++) {
             for (int dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
                 for (int dz = -horizontalRadius; dz <= horizontalRadius; dz++) {
                     if (!GatherNavigationPolicy.allowsStandOffset(dx, dy, dz)) continue;
@@ -13117,24 +13140,32 @@ public final class NpcTaskEngine {
             work.gatherTreeRetryPasses = 0;
             return false;
         }
-        if (!GatherRetryPolicy.shouldRetryVerifiedNaturalTree(
-            remaining.size(),
-            work.gatherTreeRetryPasses
+        if (!GatherRetryPolicy.requeueVerifiedNaturalTree(
+            remaining,
+            work.gatherTreeRetryPasses,
+            work.gatherTargets,
+            work.skippedGatherTargets
         )) {
-            fail(work, "已到达自然树，但剩余树干在多次近距离重试后仍不可达", "TREE_CLUSTER_NOT_REACHABLE");
-            return true;
+            work.gatherTreeTargets.clear();
+            work.gatherTreeCluster = false;
+            work.gatherClusterReached = false;
+            work.gatherTreeRetryPasses = 0;
+            work.lastTeleportTarget = null;
+            work.lastSearchTick = -10;
+            work.noWorkTicks = 0;
+            progress(work, activeProgress(work),
+                "本棵树剩余 " + remaining.size() + " 个树干暂不可达，保留已采集木材，继续寻找其他自然树");
+            return false;
         }
         work.gatherTreeRetryPasses++;
-        work.gatherTargets.clear();
-        work.skippedGatherTargets.removeAll(remaining);
-        work.gatherTargets.addAll(remaining);
         work.gatherPathFailures = 0;
         work.gatherStandPathCursor = 0;
         work.lastGatherPathAttemptTick = -1;
         work.stalledTicks = 0;
         work.lastDistance = -1;
         resetGatherTargetProgress(work);
-        npc.setStatus("树干被下层方块遮挡后已打开，正在重试同一自然树剩余 " + remaining.size() + " 个目标");
+        npc.setStatus("正在重新检查同一自然树剩余 " + remaining.size() + " 个树干的安全站位（"
+            + work.gatherTreeRetryPasses + "/" + GatherRetryPolicy.MAX_NATURAL_TREE_RETRY_PASSES + "）");
         return true;
     }
 
@@ -14233,18 +14264,27 @@ public final class NpcTaskEngine {
         return moved;
     }
 
-    private StorageSortResult organizeHomeStorageTransactional(int radius) {
+    private StorageSortResult organizeHomeStorageTransactional(ActiveWork work, int radius) {
         ServerPlayer owner = npc.owner();
         if (owner == null || !(npc.level() instanceof ServerLevel level)) return StorageSortResult.UNAVAILABLE;
-        NpcHomeStorage.Home home = NpcHomeStorage.resolve(owner);
-        List<BlockPos> positions = NpcHomeStorage.findContainers(level, home, radius);
-        if (positions.isEmpty()) return StorageSortResult.UNAVAILABLE;
+        NpcHomeStorage.Home home = NpcHomeStorage.refresh(owner);
+        if (!NpcHomeStorage.hasStorageBoundary(home)) return StorageSortResult.UNAVAILABLE;
+        List<NpcHomeStorage.StorageTarget> sources = NpcHomeStorage.storageTargets(level, home, true);
+        List<NpcHomeStorage.StorageTarget> targets = NpcHomeStorage.storageTargets(level, home, false);
+        StorageSortResult indoor = organizeStorageTargets(work, targets, sources);
+        if (indoor != StorageSortResult.FULL) return indoor;
+        if (NpcHomeStorage.findStoragePlacement(level, home, false, work.storageMergeTargets::contains,
+            position -> isStoragePlacementCellClear(level, position)) != null) return StorageSortResult.FULL;
+        // Outdoor storage is considered only after safe indoor expansion is exhausted.
+        return organizeStorageTargets(work, sources, sources);
+    }
 
+    private StorageSortResult organizeStorageTargets(ActiveWork work, List<NpcHomeStorage.StorageTarget> targets,
+                                                    List<NpcHomeStorage.StorageTarget> sources) {
         List<StorageSnapshot> snapshots = new ArrayList<>();
         List<ItemStack> pool = new ArrayList<>();
-        for (BlockPos position : positions) {
-            BlockEntity blockEntity = level.getBlockEntity(position);
-            if (!(blockEntity instanceof Container container) || blockEntity instanceof AbstractFurnaceBlockEntity) continue;
+        for (NpcHomeStorage.StorageTarget target : sources) {
+            Container container = target.container();
             List<ItemStack> contents = new ArrayList<>(container.getContainerSize());
             for (int slot = 0; slot < container.getContainerSize(); slot++) {
                 ItemStack copy = container.getItem(slot).copy();
@@ -14253,7 +14293,6 @@ public final class NpcTaskEngine {
             }
             snapshots.add(new StorageSnapshot(container, contents));
         }
-        if (snapshots.isEmpty()) return StorageSortResult.UNAVAILABLE;
 
         List<Integer> npcSlots = new ArrayList<>();
         for (int slot = 0; slot < CodexNpcEntity.BACKPACK_SIZE; slot++) {
@@ -14267,48 +14306,52 @@ public final class NpcTaskEngine {
             .thenComparing(this::itemId)
             .thenComparing(stack -> stack.getHoverName().getString()));
 
-        for (StorageSnapshot snapshot : snapshots) {
-            for (int slot = 0; slot < snapshot.container().getContainerSize(); slot++) {
-                snapshot.container().setItem(slot, ItemStack.EMPTY);
+        int containerLimit = snapshots.stream().mapToInt(s -> s.container().getMaxStackSize()).min().orElse(64);
+        List<StorageLayoutPlanner.Stack<ItemStack>> stacks = pool.stream().map(stack ->
+            new StorageLayoutPlanner.Stack<>(stack, stack.getCount(), Math.min(containerLimit, stack.getMaxStackSize()), storageCategory(stack))).toList();
+        List<Integer> capacities = targets.stream().map(t -> t.container().getContainerSize()).toList();
+        StorageLayoutPlanner.Plan<ItemStack> plan = StorageLayoutPlanner.plan(stacks, capacities, ItemStack::isSameItemSameTags);
+        work.storageMergeTargets.clear();
+        if (!plan.fits()) {
+            // Merge only when the extra 27 slots reduce the shortage. A new category needs a separate box.
+            for (int i = 0; i < targets.size(); i++) {
+                if (targets.get(i).blocks().size() != 1 || capacities.get(i) != 27) continue;
+                List<Integer> expanded = new ArrayList<>(capacities);
+                expanded.set(i, 54);
+                if (StorageLayoutPlanner.plan(stacks, expanded, ItemStack::isSameItemSameTags).missingSingleChests() < plan.missingSingleChests()) {
+                    work.storageMergeTargets.add(targets.get(i).position());
+                }
+            }
+            return StorageSortResult.FULL;
+        }
+        // Validate every slot before changing either the NPC backpack or an existing chest.
+        for (int i = 0; i < targets.size(); i++) {
+            Container container = targets.get(i).container();
+            List<StorageLayoutPlanner.Stack<ItemStack>> contents = plan.containers().get(i);
+            for (int slot = 0; slot < contents.size(); slot++) {
+                if (!container.canPlaceItem(slot, contents.get(slot).item())) return StorageSortResult.UNAVAILABLE;
             }
         }
-        for (ItemStack pooled : pool) {
-            ItemStack remainder = pooled.copy();
+        try {
             for (StorageSnapshot snapshot : snapshots) {
-                remainder = insertIntoContainer(snapshot.container(), remainder);
-                if (remainder.isEmpty()) break;
+                for (int slot = 0; slot < snapshot.container().getContainerSize(); slot++) snapshot.container().setItem(slot, ItemStack.EMPTY);
             }
-            if (!remainder.isEmpty()) {
-                restoreStorageSnapshots(snapshots);
-                return StorageSortResult.FULL;
+            for (int i = 0; i < targets.size(); i++) {
+                Container container = targets.get(i).container();
+                List<StorageLayoutPlanner.Stack<ItemStack>> contents = plan.containers().get(i);
+                for (int slot = 0; slot < container.getContainerSize(); slot++) {
+                    ItemStack value = slot < contents.size() ? contents.get(slot).item().copyWithCount(contents.get(slot).count()) : ItemStack.EMPTY;
+                    container.setItem(slot, value);
+                }
             }
+        } catch (RuntimeException failure) {
+            restoreStorageSnapshots(snapshots);
+            return StorageSortResult.UNAVAILABLE;
         }
 
         for (int slot : npcSlots) npc.inventory().setStackInSlot(slot, ItemStack.EMPTY);
         for (StorageSnapshot snapshot : snapshots) snapshot.container().setChanged();
         return StorageSortResult.SUCCEEDED;
-    }
-
-    private ItemStack insertIntoContainer(Container container, ItemStack source) {
-        ItemStack remainder = source.copy();
-        for (int slot = 0; slot < container.getContainerSize() && !remainder.isEmpty(); slot++) {
-            if (!container.canPlaceItem(slot, remainder)) continue;
-            ItemStack existing = container.getItem(slot);
-            if (existing.isEmpty()) continue;
-            if (!ItemStack.isSameItemSameTags(existing, remainder)) continue;
-            int limit = Math.min(container.getMaxStackSize(), existing.getMaxStackSize());
-            int moved = Math.min(remainder.getCount(), limit - existing.getCount());
-            if (moved <= 0) continue;
-            existing.grow(moved);
-            remainder.shrink(moved);
-        }
-        for (int slot = 0; slot < container.getContainerSize() && !remainder.isEmpty(); slot++) {
-            if (!container.canPlaceItem(slot, remainder) || !container.getItem(slot).isEmpty()) continue;
-            int moved = Math.min(remainder.getCount(), Math.min(container.getMaxStackSize(), remainder.getMaxStackSize()));
-            container.setItem(slot, remainder.copyWithCount(moved));
-            remainder.shrink(moved);
-        }
-        return remainder;
     }
 
     private void restoreStorageSnapshots(List<StorageSnapshot> snapshots) {
@@ -14476,6 +14519,17 @@ public final class NpcTaskEngine {
         if (owner == null || !(npc.level() instanceof ServerLevel level)) return null;
         NpcHomeStorage.Home home = NpcHomeStorage.resolve(owner);
         ensureHomeStorageChunks(level, home, radius);
+        home = NpcHomeStorage.refresh(owner);
+        if (!requireContents) {
+            // An explicit organize task also works when the NPC backpack is empty:
+            // perimeter chests are sources, while the planner still prioritizes indoor destinations.
+            boolean allowOutside = work.kind.equals("organize-storage") || mayUseOutdoorStorage(level, home, work);
+            for (NpcHomeStorage.StorageTarget target : NpcHomeStorage.storageTargets(level, home, allowOutside)) {
+                if (target.blocks().stream().anyMatch(work.skippedStorageTargets::contains)) continue;
+                if (work.kind.equals("organize-storage") || containerHasSpace(target.container())) return target.position();
+            }
+            return null;
+        }
         BlockPos nearest = null;
         double nearestDistance = Double.MAX_VALUE;
         for (BlockPos position : NpcHomeStorage.findContainers(level, home, radius)) {
@@ -14493,6 +14547,23 @@ public final class NpcTaskEngine {
         return nearest;
     }
 
+    private boolean mayMergeStorage(ActiveWork work, BlockPos position) {
+        return !work.kind.equals("organize-storage") || work.storageMergeTargets.contains(position);
+    }
+
+    private boolean mayUseOutdoorStorage(ServerLevel level, NpcHomeStorage.Home home, ActiveWork work) {
+        return NpcHomeStorage.findStoragePlacement(level, home, false, position -> mayMergeStorage(work, position),
+            position -> isStoragePlacementCellClear(level, position)) == null;
+    }
+
+    private Container validatedStorageDestination(ActiveWork work) {
+        if (npc.owner() == null || !(npc.level() instanceof ServerLevel level)) return null;
+        NpcHomeStorage.Home home = NpcHomeStorage.refresh(npc.owner());
+        NpcHomeStorage.StorageTarget target = NpcHomeStorage.storageTarget(level, home, work.workstation,
+            mayUseOutdoorStorage(level, home, work));
+        return target == null ? null : target.container();
+    }
+
     /**
      * Expands the owner's home storage without commands or direct setBlock
      * calls.  Vanilla item placement is performed by the interaction proxy,
@@ -14504,14 +14575,27 @@ public final class NpcTaskEngine {
             fail(work, "无法确认 NPC 主人或家园维度", "HOME_UNAVAILABLE");
             return null;
         }
-        NpcHomeStorage.Home home = NpcHomeStorage.resolve(owner);
+        NpcHomeStorage.Home home = NpcHomeStorage.refresh(owner);
         if (!home.dimension().equals(level.dimension())) {
             fail(work, "家园位于其他维度，当前不能安全扩建仓库", "HOME_DIMENSION_UNREACHABLE");
             return null;
         }
+        if (!NpcHomeStorage.hasStorageBoundary(home)) {
+            fail(work, "无法确认房屋边界，物品保留在背包中；请先在家中设置床和重生点", "HOME_BOUNDARY_UNVERIFIED");
+            return null;
+        }
+        if (work.ticks - work.lastActionTick < 8) return null;
+        NpcHomeStorage.StoragePlacement placement = NpcHomeStorage.findStoragePlacement(
+            level, home, true, position -> mayMergeStorage(work, position),
+            position -> isStoragePlacementCellClear(level, position));
+        if (placement == null) {
+            fail(work, "屋内及房屋外侧 10 格内没有安全空位，保留物品，不拆除围墙或其他方块", "HOME_PLACEMENT_BLOCKED");
+            return null;
+        }
+        BlockPos chestPosition = placement.position();
+        work.storageExpansionPending = true;
 
         int chestSlot = findUnreservedExpansionItemSlot(work, "minecraft:chest");
-        BlockPos table = NpcHomeStorage.findCraftingTable(level, home, radius);
         if (chestSlot < 0 && !npc.creativeResources()) {
             Recipe<?> chestRecipe = findCraftRecipe("minecraft:chest");
             if (chestRecipe == null) {
@@ -14525,28 +14609,12 @@ public final class NpcTaskEngine {
             return null;
         }
 
-        if (work.ticks - work.lastActionTick < 8) return null;
-        table = NpcHomeStorage.findCraftingTable(level, home, radius);
-
-        BlockPos placementAnchor = table == null ? home.position() : table;
-        BlockPos chestPosition = NpcHomeStorage.findSafePlacement(
-            level,
-            home,
-            placementAnchor,
-            table == null ? radius : 4,
-            position -> isStoragePlacementCellClear(level, position)
-        );
-        if (chestPosition == null) {
-            fail(work, "家附近没有可以安全放置新箱子的位置", "HOME_PLACEMENT_BLOCKED");
-            return null;
-        }
-        if (table != null && chestSlot < 0 && !approach(work, table, 3.2, 1.08)) return null;
         if (!approach(work, chestPosition, 3.2, 1.08)) return null;
 
         ItemStack chestStack = chestSlot >= 0
             ? npc.inventory().getStackInSlot(chestSlot)
             : new ItemStack(Items.CHEST);
-        InteractionResult result = proxy.useItemOn(chestPosition.below(), Direction.UP, chestStack, chestSlot);
+        InteractionResult result = proxy.useItemOn(chestPosition.below(), Direction.UP, chestStack, chestSlot, placement.facing());
         work.lastActionTick = work.ticks;
         BlockEntity placed = level.getBlockEntity(chestPosition);
         if (!result.consumesAction() || !(placed instanceof Container)) {
@@ -14555,10 +14623,16 @@ public final class NpcTaskEngine {
         }
         npc.swing(InteractionHand.MAIN_HAND);
         work.storageExpanded = true;
+        work.storageExpansionPending = false;
         if (work.kind.equals("organize-storage") || work.kind.equals("store") && explicitStoreSelector(work) == null) {
             work.requestedCount = work.completed + organizableInventoryCount();
         }
-        progress(work, activeProgress(work), "家中仓库已满，已制作并放置新箱子");
+        NpcHomeStorage.StorageTarget joined = NpcHomeStorage.storageTarget(level, NpcHomeStorage.refresh(owner), chestPosition, true);
+        boolean doubleChest = joined != null && joined.blocks().size() == 2;
+        progress(work, activeProgress(work), (NpcHomeStorage.isIndoorStorage(level, NpcHomeStorage.resolve(owner), chestPosition)
+            ? "已在屋内" : "屋内没有安全空位，已在房屋外侧 10 格内")
+            + (doubleChest ? "扩建为大箱子" : "放置新箱子")
+            + "（" + chestPosition.getX() + ", " + chestPosition.getY() + ", " + chestPosition.getZ() + "）");
         return chestPosition.immutable();
     }
 
@@ -15918,6 +15992,7 @@ public final class NpcTaskEngine {
         checkpoint.addProperty("initialized", work.initialized);
         checkpoint.addProperty("requiresTable", work.requiresTable);
         checkpoint.addProperty("storageExpanded", work.storageExpanded);
+        checkpoint.addProperty("storageExpansionPending", work.storageExpansionPending);
         checkpoint.addProperty("smeltingWorkstationClaimed", work.smeltingWorkstationClaimed);
         checkpoint.addProperty("craftDeliveryPending", work.craftDeliveryPending);
         checkpoint.addProperty("bedPlacementPending", work.bedPlacementPending);
@@ -16095,6 +16170,7 @@ public final class NpcTaskEngine {
         work.initialized = value.has("initialized") && value.get("initialized").getAsBoolean();
         work.requiresTable = value.has("requiresTable") && value.get("requiresTable").getAsBoolean();
         work.storageExpanded = value.has("storageExpanded") && value.get("storageExpanded").getAsBoolean();
+        work.storageExpansionPending = value.has("storageExpansionPending") && value.get("storageExpansionPending").getAsBoolean();
         work.smeltingWorkstationClaimed = value.has("smeltingWorkstationClaimed")
             && value.get("smeltingWorkstationClaimed").getAsBoolean();
         work.craftDeliveryPending = value.has("craftDeliveryPending") && value.get("craftDeliveryPending").getAsBoolean();
@@ -16660,6 +16736,7 @@ public final class NpcTaskEngine {
         private boolean fishingCast;
         private boolean requiresTable;
         private boolean storageExpanded;
+        private boolean storageExpansionPending;
         private boolean smeltingWorkstationClaimed;
         private boolean craftDeliveryPending;
         private boolean bedPlacementPending;
@@ -16718,6 +16795,7 @@ public final class NpcTaskEngine {
         private final Set<BlockPos> skippedGatherTargets = new HashSet<>();
         private final Set<BlockPos> skippedFarmTargets = new HashSet<>();
         private final Set<BlockPos> skippedStorageTargets = new HashSet<>();
+        private final Set<BlockPos> storageMergeTargets = new HashSet<>();
         private final Set<BlockPos> skippedWorkstationTargets = new HashSet<>();
         private final Deque<BlockPos> gatherTargets = new ArrayDeque<>();
         private final Set<BlockPos> gatherTreeTargets = new HashSet<>();

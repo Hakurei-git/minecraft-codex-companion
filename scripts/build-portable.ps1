@@ -306,7 +306,7 @@ if (-not $forgeBuildForced) {
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $PSScriptRoot "run-forge-tests-in-process.ps1"),
-        "-ExpectedTestCount", "476"
+        "-ExpectedTestCount", "507"
     ) $projectRoot
 }
 $baritoneJar = Get-SingleFile (Join-Path $projectRoot "vendor\baritone") "baritone-api-forge-1.20.1-*.jar" "Baritone JAR"
@@ -504,13 +504,18 @@ Remove-Item -LiteralPath $hmclLauncherSelfTest -Force
 $secretExe = Join-Path $stage "runtime\MinecraftCodexSecret.exe"
 Invoke-Checked $csc @(
     "/nologo", "/target:exe", "/optimize+",
-    "/reference:System.dll", "/reference:System.Security.dll", "/out:$secretExe",
+    "/reference:System.dll", "/reference:System.Security.dll", "/reference:System.Management.dll",
+    "/reference:System.Web.Extensions.dll", "/out:$secretExe",
     (Join-Path $projectRoot "apps\portable-launcher\native\SecretHelper.cs"),
     (Join-Path $projectRoot "apps\portable-launcher\native\AssemblyInfo.cs")
 ) $projectRoot
 $secretSelfTest = Start-Process -FilePath $secretExe -ArgumentList @("self-test") -Wait -PassThru -WindowStyle Hidden
 if ($secretSelfTest.ExitCode -ne 0) {
     throw "Native DPAPI helper self-test failed with code $($secretSelfTest.ExitCode)"
+}
+$discoverySelfTest = Start-Process -FilePath $secretExe -ArgumentList @("antigravity-self-test") -Wait -PassThru -WindowStyle Hidden
+if ($discoverySelfTest.ExitCode -ne 0) {
+    throw "Native Antigravity discovery self-test failed with code $($discoverySelfTest.ExitCode)"
 }
 
 $launcherExe = Join-Path $stage "MinecraftCodexCompanion.exe"
@@ -595,7 +600,7 @@ $manifest = [ordered]@{
         sha256 = $bridgeJarHash
         packagedSha256 = $packagedBridgeJarHash
         forcedRerun = $forgeBuildForced
-        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-476-tests' }
+        verificationMode = if ($forgeBuildForced) { 'fresh-gradle-clean-rerun' } else { 'pinned-sha256-and-507-tests' }
     }
     neoforgeArtifact = [ordered]@{
         path = "mods/neoforge-1.21.1/build/libs/$(Split-Path -Leaf $neoforgeBridgeJar)"

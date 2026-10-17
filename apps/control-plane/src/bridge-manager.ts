@@ -11,6 +11,7 @@ export interface BridgeManagerOptions {
   service: ControlService;
   token: string;
   onChat?(message: Extract<BridgeMessage, { type: "chat" }>): boolean | void | Promise<boolean | void>;
+  onGameEvent?(message: Extract<BridgeMessage, { type: "game-event" }>): void | Promise<void>;
   onDiagnostic?(message: string): void;
 }
 
@@ -103,6 +104,7 @@ export class BridgeManager {
   readonly #service: ControlService;
   readonly #token: string;
   readonly #onChat: BridgeManagerOptions["onChat"];
+  readonly #onGameEvent: BridgeManagerOptions["onGameEvent"];
   readonly #onDiagnostic: BridgeManagerOptions["onDiagnostic"];
   readonly #chatGuard = new ChatRelayGuard();
   readonly #chatIdGuard = new RecentChatIdGuard();
@@ -113,6 +115,7 @@ export class BridgeManager {
     this.#service = options.service;
     this.#token = options.token;
     this.#onChat = options.onChat;
+    this.#onGameEvent = options.onGameEvent;
     this.#onDiagnostic = options.onDiagnostic;
   }
 
@@ -170,6 +173,11 @@ export class BridgeManager {
           return;
         }
         backend.handle(message);
+        if (message.type === "game-event") {
+          void Promise.resolve().then(() => this.#onGameEvent?.(message)).catch((caught) => {
+            this.#onDiagnostic?.(`Game event routing failed: ${validationSummary(caught)}`);
+          });
+        }
         if (message.type === "chat") {
           const freshId = this.#chatIdGuard.shouldForward(message.companionId, message.messageId);
           const forwarded = freshId && this.#chatGuard.shouldForward(

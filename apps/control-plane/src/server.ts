@@ -31,6 +31,7 @@ import { BridgeManager } from "./bridge-manager.js";
 import { ControlService } from "./control-service.js";
 import { registerDashboardAssets } from "./dashboard-static.js";
 import { ControlError } from "./errors.js";
+import { GameEventReactor, respondToGameEvents } from "./game-event-reactor.js";
 import { asHttpClientError } from "./http-error.js";
 import { liveFixturesEnabled, registerLiveFixtureRoute } from "./live-fixture-route.js";
 import { createMinecraftMcpServer } from "./mcp-server.js";
@@ -110,9 +111,26 @@ const antigravityAgent = new AntigravityAgentBridge({
     : {}),
 });
 const ANTIGRAVITY_DIRECTED_MESSAGE = /^\s*@?(?:反重力|antigravity)(?:\s*[,，:：]\s*|\s+)(.+)$/iu;
+const gameEventReactor = new GameEventReactor({
+  settings: (id) => service.getChatSettings(id),
+  react: async (events, settings) => {
+    service.events.publish({
+      type: "system", companionId: events[0]!.companionId,
+      message: `收到 ${settings.playerName} 的游戏事件：${events.map((event) => event.message).join("；")}`,
+      data: { source: "game-event", kinds: events.map((event) => event.kind) },
+    });
+    await respondToGameEvents(events, settings, { control: service, antigravity: antigravityAgent, codex: providerClient });
+  },
+  onError: (companionId, error) => service.events.publish({
+    type: "warning", companionId,
+    message: `游戏事件回应失败：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`,
+  }),
+});
+app.addHook("onClose", async () => { gameEventReactor.close(); });
 const bridgeManager = new BridgeManager({
   service,
   token: bridgeToken,
+  onGameEvent: (event) => gameEventReactor.handle(event),
   onDiagnostic: (message) => app.log.warn({ component: "minecraft-bridge" }, redactSensitiveText(message)),
   onChat: async (message) => {
     const settings = await service.getChatSettings(message.companionId);

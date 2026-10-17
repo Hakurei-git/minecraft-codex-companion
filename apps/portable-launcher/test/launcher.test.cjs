@@ -904,6 +904,7 @@ test("portable runtime source has no PowerShell, command shell, or executable in
     fsp.readFile(path.join(root, "apps", "portable-launcher", "src", "launcher.cjs"), "utf8"),
     fsp.readFile(path.join(root, "apps", "portable-launcher", "src", "instance-manager.cjs"), "utf8"),
     fsp.readFile(path.join(root, "apps", "control-plane", "src", "secret-protector.ts"), "utf8"),
+    fsp.readFile(path.join(root, "apps", "control-plane", "src", "antigravity-endpoint.ts"), "utf8"),
   ]);
   const runtimeSource = sources.join("\n");
   assert.doesNotMatch(runtimeSource, /powershell\.exe|pwsh\.exe|cmd\.exe|rundll32\.exe|NODE_SEA_BLOB|postject|experimental-sea-config/iu);

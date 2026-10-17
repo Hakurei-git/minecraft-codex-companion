@@ -115,6 +115,26 @@ describe("BridgeManager", () => {
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
   });
 
+  it("routes authenticated game events separately from player T chat", async () => {
+    const service = new ControlService();
+    const onChat = vi.fn();
+    const onGameEvent = vi.fn();
+    const manager = new BridgeManager({ service, token: TOKEN, onChat, onGameEvent });
+    const socket = await connect(manager);
+    socket.send(JSON.stringify(hello()));
+    await waitFor(() => service.listCompanions().length === 1);
+    const event = { type: "game-event", companionId: "codex-forge", messageId: "10000000-0000-4000-8000-000000000001", kind: "death", playerName: "Crow", message: "Crow 摔死了", at: new Date().toISOString() };
+    socket.send(JSON.stringify(event));
+    await waitFor(() => onGameEvent.mock.calls.length === 1);
+    expect(onGameEvent).toHaveBeenCalledWith(event);
+    expect(onChat).not.toHaveBeenCalled();
+    expect(manager.readiness().connections[0]!.incomingChatCount).toBe(0);
+    const closed = once(socket, "close");
+    socket.send(JSON.stringify({ ...event, companionId: "someone-else" }));
+    expect((await closed)[0]).toBe(1008);
+    expect(onGameEvent).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a bridge using the wrong token", async () => {
     const service = new ControlService();
     const socket = await connect(new BridgeManager({ service, token: TOKEN }));

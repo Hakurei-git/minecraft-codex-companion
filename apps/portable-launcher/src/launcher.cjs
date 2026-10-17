@@ -22,6 +22,8 @@ const DEFAULT_PORT = 8765;
 const DEFAULT_COMPANION_NAME = "Codex";
 const SERVICE_PROTOCOL_VERSION = 2;
 const SERVICE_PORT_SEARCH_LIMIT = 32;
+// Process discovery and agentapi startup can exceed two seconds on Windows.
+const ANTIGRAVITY_STATUS_TIMEOUT_MS = 15_000;
 const REQUIRED_FORGE_BRIDGE_VERSION = "0.2.3";
 const REQUIRED_NEOFORGE_BRIDGE_VERSION = "0.1.0";
 const REQUIRED_BRIDGE_VERSIONS = Object.freeze({
@@ -1025,7 +1027,7 @@ function httpJson(url, options = {}) {
 
 async function probeService(port) {
   try {
-    const health = await httpJson(`http://127.0.0.1:${port}/api/health`);
+    const health = await httpJson(`http://127.0.0.1:${port}/api/health`, { timeout: 10_000 });
     if (health && health.ok && health.service === "minecraft-codex-companion") {
       return { occupied: true, health };
     }
@@ -1199,8 +1201,22 @@ async function startService(config, payloadRoot, stateDirectory) {
   let existing = await serviceStatus(config.port, identity);
   const recordedIsCurrent = existing.running && metadata?.port === config.port && metadata?.pid === existing.processId;
   if (metadata && !recordedIsCurrent) {
-    await stopService(stateDirectory, payloadRoot);
-    existing = await serviceStatus(config.port, identity);
+    // A transient failed probe must not terminate a healthy current service
+    // (and its in-flight game messages) or create a second service on a new port.
+    const recorded = await serviceStatus(metadata.port, identity);
+    if (recorded.running && recorded.processId === metadata.pid) {
+      if (config.port !== metadata.port) {
+        config.port = metadata.port;
+        await saveConfig(stateDirectory, config);
+      }
+      existing = recorded;
+    } else {
+      if (processExists(metadata.pid) && !recorded.serviceDetected) {
+        throw new Error("已记录的控制服务暂时无响应，保留当前进程并等待自动重试");
+      }
+      await stopService(stateDirectory, payloadRoot);
+      existing = await serviceStatus(config.port, identity);
+    }
   }
   if (existing.running) {
     await configureChat(config, stateDirectory, identity);
@@ -1578,7 +1594,7 @@ async function runtimeBridgeHealthy(config, payloadRoot, stateDirectory, request
   if (!await antigravityInstallationCurrent(config, payloadRoot)) return false;
   try {
     const antigravity = await requestJson(`http://127.0.0.1:${config.port}/api/antigravity/status`, {
-      timeout: 2_000,
+      timeout: ANTIGRAVITY_STATUS_TIMEOUT_MS,
     });
     return antigravity?.connected === true;
   } catch {
@@ -1778,7 +1794,9 @@ async function bootstrap(context) {
   let antigravity = { connected: false };
   if (service.running && config.chatTarget === "antigravity-mcp") {
     try {
-      antigravity = await httpJson(`http://127.0.0.1:${config.port}/api/antigravity/status`, { timeout: 1500 });
+      antigravity = await httpJson(`http://127.0.0.1:${config.port}/api/antigravity/status`, {
+        timeout: ANTIGRAVITY_STATUS_TIMEOUT_MS,
+      });
     } catch (error) {
       antigravity = { connected: false, message: error instanceof Error ? error.message : String(error) };
     }

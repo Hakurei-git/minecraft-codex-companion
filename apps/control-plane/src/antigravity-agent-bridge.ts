@@ -6,9 +6,16 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import type { ChatMessage, ChatSettings, WorldSnapshot } from "@mc/protocol";
+import type { ChatMessage, ChatSettings, GameEvent, WorldSnapshot } from "@mc/protocol";
+import { gameEventPrompt } from "./game-event-reactor.js";
 import { ControlError } from "./errors.js";
 import { redactSensitiveText } from "./skill-security.js";
+import {
+  antigravityConnectionError,
+  discoverRunningAntigravityEndpoint,
+  normalizeAntigravityConnectionError,
+  type AntigravityEndpoint,
+} from "./antigravity-endpoint.js";
 
 const execFile = promisify(execFileCallback);
 const SESSION_VERSION = 1;
@@ -71,13 +78,6 @@ export function normalizeAntigravityAutoTriggerFailure(caught: unknown): Antigra
     );
   }
   return new AntigravityAutoTriggerError(raw, "TRIGGER_FAILED", true);
-}
-
-interface AntigravityEndpoint {
-  webAddress: string;
-  grpcAddress: string;
-  csrfToken: string;
-  version: string;
 }
 
 interface StoredSession {
@@ -168,6 +168,7 @@ export interface AntigravityAgentBridgeOptions {
   environment?: NodeJS.ProcessEnv;
   runAgentApi?: AgentApiRunner;
   runConnectApi?: ConnectApiRunner;
+  discoverEndpoint?: () => Promise<AntigravityEndpoint | null>;
   waitForIdle?: () => Promise<void>;
   ensureMcpReady?: () => Promise<void>;
   ensureRuntimeProject?: () => Promise<string>;
@@ -214,6 +215,11 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function endpointIdentity(endpoint: AntigravityEndpoint): string {
+  return createHash("sha256")
+    .update(`${endpoint.webAddress}|${endpoint.grpcAddress}|${endpoint.csrfToken}`).digest("hex");
+}
+
 function rotatedConversationTitle(baseTitle: string, generation: number): string {
   const suffix = ` [MC-${generation}]`;
   return `${baseTitle.slice(0, Math.max(1, 240 - suffix.length))}${suffix}`;
@@ -241,6 +247,11 @@ function conversationIdFromResult(result: AgentApiResult): string | null {
 
 /** Parse only the current launch block so a stale token cannot be paired with a new port. */
 export function parseAntigravityEndpointLog(text: string): AntigravityEndpoint | null {
+  // Never use an older launch's token/port when the latest launch omits them
+  // (as in desktop 2.23.1) or has not finished starting yet.
+  const starts = [...text.matchAll(/Starting app \(v[^\r\n)]+\)|(?:^|\r?\n)[^\r\n]*\bArgs:\s+[^\r\n]*--csrf_token/giu)];
+  const latestStart = starts.at(-1)?.index;
+  if (latestStart !== undefined) text = text.slice(latestStart);
   const candidates: Array<{ index: number; endpoint: AntigravityEndpoint }> = [];
   const legacyBlocks = [...text.matchAll(
     /Starting app \(v([^\r\n)]+)\)[\s\S]*?--csrf_token\s+([0-9a-f-]{16,})[\s\S]*?Local:\s+https:\/\/127\.0\.0\.1:(\d+)\//giu,
@@ -279,13 +290,16 @@ export function parseAntigravityEndpointLog(text: string): AntigravityEndpoint |
     if (!grpcMatch) continue;
     const grpcPort = Number(grpcMatch[1]);
     if (!Number.isInteger(grpcPort) || grpcPort < 1 || grpcPort >= 65_535) continue;
+    const httpMatch = block.match(/Language server listening on random port at\s+(\d+)\s+for HTTP\b/iu);
+    const agentPort = httpMatch ? Number(httpMatch[1]) : grpcPort;
+    if (!Number.isInteger(agentPort) || agentPort < 1 || agentPort > 65_535) continue;
     candidates.push({
       index: start,
       endpoint: {
-        // Connect RPC and agentapi both use the TLS gRPC listener.  The
-        // separately logged HTTP port is an internal non-TLS listener.
+        // Connect uses TLS; agentapi uses the separately logged plaintext
+        // listener when present. Do not infer adjacency for dynamic ports.
         webAddress: `127.0.0.1:${grpcPort}`,
-        grpcAddress: `127.0.0.1:${grpcPort}`,
+        grpcAddress: `127.0.0.1:${agentPort}`,
         csrfToken: tokenMatch[1]!,
         version: "unknown",
       },
@@ -426,6 +440,7 @@ type AntigravityTurnSettings = Pick<ChatSettings, "persona" | "actionMode" | "to
 
 interface AntigravityTriggerContext {
   interactionId?: string;
+  gameEvents?: readonly GameEvent[];
   capabilityCatalog?: readonly string[];
   snapshot?: Pick<WorldSnapshot, "dimension" | "position" | "yaw">;
 }
@@ -443,6 +458,15 @@ function promptFor(
   context: AntigravityTriggerContext = {},
 ): string {
   const settings = normalizedTurnSettings(input);
+  if (context.gameEvents?.length) {
+    if (!context.interactionId) throw new Error("游戏事件通知缺少一次性 interactionId");
+    return [
+      gameEventPrompt(context.gameEvents, settings),
+      '必须且只能调用一次 mc_submit_ai_decision，decision 只能是 {"type":"chat","reply":"你的简短回应"}。',
+      "禁止调用其他工具，包括 mc_chat、观察、任务、控制、终端、文件或浏览器。不要在反重力窗口重复回复。",
+      `一次性 interactionId：${JSON.stringify(context.interactionId)}`,
+    ].join("\n");
+  }
   const { persona } = settings;
   const safe = (value: string): string => redactSensitiveText(value).slice(0, 2_000);
   const interactionId = `mc-chat-${message.sequence}`;
@@ -524,6 +548,7 @@ export class AntigravityAgentBridge {
   readonly #runtimeProjectStatePath: string;
   readonly #runtimeProjectDirectory: string;
   readonly #runner: AgentApiRunner;
+  readonly #discoverEndpoint: (() => Promise<AntigravityEndpoint | null>) | undefined;
   readonly #connectRunner: ConnectApiRunner | undefined;
   readonly #useUtf8ConnectMessages: boolean;
   readonly #waitForIdleOverride: (() => Promise<void>) | undefined;
@@ -540,9 +565,15 @@ export class AntigravityAgentBridge {
   #automaticRetryBlockedUntil = 0;
   #automaticRetryBlockCode: AntigravityAutoTriggerError["code"] | null = null;
   #readyMcpConfigFingerprint: string | null = null;
+  #readyMcpEndpointIdentity: string | null = null;
   #mcpReadyPromise: Promise<string | null> | null = null;
+  #mcpReadyEndpointIdentity: string | null = null;
   #mcpLoadingBlockedUntil = 0;
   #mcpLoadingBlockReason: string | null = null;
+  #endpointIdentity: string | null = null;
+  #discoveredEndpoint: AntigravityEndpoint | null = null;
+  #endpointCacheUntil = 0;
+  #endpointDiscoveryPromise: Promise<AntigravityEndpoint | null> | null = null;
 
   constructor(options: AntigravityAgentBridgeOptions) {
     this.#stateDirectory = path.resolve(options.stateDirectory);
@@ -570,6 +601,10 @@ export class AntigravityAgentBridge {
     this.#runtimeProjectStatePath = path.join(this.#stateDirectory, RUNTIME_PROJECT_STATE_FILE);
     this.#runtimeProjectDirectory = path.join(this.#stateDirectory, RUNTIME_PROJECT_DIRECTORY);
     this.#runner = options.runAgentApi ?? ((args, environment) => this.#runAgentApi(args, environment));
+    this.#discoverEndpoint = options.discoverEndpoint
+      ?? (!this.#logPathExplicit && !options.runAgentApi && !options.runConnectApi
+        ? async () => discoverRunningAntigravityEndpoint(this.#logRoot, await this.#agentApiExecutable())
+        : undefined);
     this.#connectRunner = options.runConnectApi;
     // Injected agentapi-only runners keep legacy unit fixtures deterministic.
     // Production and explicit Connect fixtures use JSON so Windows cannot rewrite Unicode arguments.
@@ -877,7 +912,8 @@ export class AntigravityAgentBridge {
           conversationTitle: session.conversationTitle ?? title,
           message: `已复用当前反重力会话“${session.conversationTitle ?? title}”`,
         };
-      } catch {
+      } catch (caught) {
+        if (caught instanceof ControlError && caught.statusCode >= 500) throw caught;
         // Fall back to the local title index when the stored conversation disappeared.
       }
     }
@@ -922,6 +958,7 @@ export class AntigravityAgentBridge {
     // A manual recovery is an explicit request to try again immediately; it
     // must not be held behind the automatic MCP-loading backoff.
     this.#clearMcpLoadingBackoff();
+    this.#endpointCacheUntil = 0;
     // Detach future T messages from the old promise chain immediately. Any
     // queued turns from the previous generation fail explicitly when they
     // eventually wake; the active turn is stopped through Antigravity below.
@@ -1037,9 +1074,17 @@ export class AntigravityAgentBridge {
     // can all arrive at the same time.  Antigravity rejects overlapping MCP
     // refreshes with "loading already in progress"; share one reconciliation
     // promise instead of starting competing Toggle/Refresh requests.
-    if (this.#mcpReadyPromise) return this.#mcpReadyPromise;
+    const identity = endpointIdentity(endpoint);
+    if (this.#mcpReadyPromise) {
+      if (this.#mcpReadyEndpointIdentity === identity) return this.#mcpReadyPromise;
+      // A previous process can finish its readiness request during a restart.
+      // Its result must never certify the newly discovered process.
+      await this.#mcpReadyPromise.catch(() => undefined);
+      return this.#ensureCurrentMcpReady(endpoint);
+    }
     const operation = this.#ensureCurrentMcpReadyUnlocked(endpoint);
     this.#mcpReadyPromise = operation;
+    this.#mcpReadyEndpointIdentity = identity;
     try {
       return await operation;
     } finally {
@@ -1075,10 +1120,12 @@ export class AntigravityAgentBridge {
     endpoint: AntigravityEndpoint,
     configFingerprint: string,
   ): Promise<void> {
-    if (this.#readyMcpConfigFingerprint === configFingerprint) return;
+    const identity = endpointIdentity(endpoint);
+    if (this.#readyMcpConfigFingerprint === configFingerprint && this.#readyMcpEndpointIdentity === identity) return;
     if (this.#ensureMcpReadyOverride) {
       await this.#ensureMcpReadyOverride();
       this.#readyMcpConfigFingerprint = configFingerprint;
+      this.#readyMcpEndpointIdentity = identity;
       return;
     }
 
@@ -1137,6 +1184,7 @@ export class AntigravityAgentBridge {
     }
     this.#clearMcpLoadingBackoff();
     this.#readyMcpConfigFingerprint = configFingerprint;
+    this.#readyMcpEndpointIdentity = identity;
   }
 
   async #ensureRuntimeProject(endpoint: AntigravityEndpoint): Promise<string> {
@@ -1263,6 +1311,19 @@ export class AntigravityAgentBridge {
   }
 
   async #endpoint(): Promise<AntigravityEndpoint> {
+    if (this.#discoverEndpoint) {
+      if (this.#now() >= this.#endpointCacheUntil) {
+        const pending = this.#endpointDiscoveryPromise ?? this.#discoverEndpoint();
+        this.#endpointDiscoveryPromise = pending;
+        try {
+          this.#discoveredEndpoint = await pending;
+          this.#endpointCacheUntil = this.#now() + 5_000;
+        } finally {
+          if (this.#endpointDiscoveryPromise === pending) this.#endpointDiscoveryPromise = null;
+        }
+      }
+      if (this.#discoveredEndpoint) return this.#trackEndpoint(this.#discoveredEndpoint);
+    }
     const candidates = this.#logPathExplicit
       ? [this.#logPath]
       : await antigravityLogCandidates(this.#logRoot, this.#logPath);
@@ -1272,10 +1333,28 @@ export class AntigravityAgentBridge {
       if (log === null) continue;
       foundLog = true;
       const endpoint = parseAntigravityEndpointLog(log);
-      if (endpoint) return endpoint;
+      if (endpoint) return this.#trackEndpoint(endpoint);
+      // A current desktop launch without credentials must not fall back to a
+      // timestamped IDE log from a previous installation or another session.
+      if (/Starting app \(v/iu.test(log)) throw antigravityConnectionError();
     }
-    if (!foundLog) throw new Error("未发现正在运行的反重力，请先启动反重力");
-    throw new Error("无法从反重力日志识别本地 Agent API 端口");
+    throw new ControlError({
+      code: "ANTIGRAVITY_ENDPOINT_NOT_FOUND",
+      statusCode: 503,
+      retryable: true,
+      message: foundLog ? "无法从反重力日志识别本地 Agent API 端口" : "未发现正在运行的反重力，请先启动反重力",
+      suggestedRecovery: "请打开反重力并等待启动完成，再点击连接。",
+    });
+  }
+
+  #trackEndpoint(endpoint: AntigravityEndpoint): AntigravityEndpoint {
+    const identity = endpointIdentity(endpoint);
+    if (identity !== this.#endpointIdentity) {
+      this.#endpointIdentity = identity;
+      this.#readyMcpConfigFingerprint = null;
+      this.#clearMcpLoadingBackoff();
+    }
+    return endpoint;
   }
 
   #agentEnvironment(endpoint: AntigravityEndpoint, projectId: string): NodeJS.ProcessEnv {
@@ -1353,7 +1432,14 @@ export class AntigravityAgentBridge {
     payload: object,
     timeoutSeconds: number,
   ): Promise<string> {
-    if (this.#connectRunner) return this.#connectRunner(endpoint, method, payload, timeoutSeconds);
+    if (this.#connectRunner) {
+      try {
+        return await this.#connectRunner(endpoint, method, payload, timeoutSeconds);
+      } catch (caught) {
+        this.#endpointCacheUntil = 0;
+        throw normalizeAntigravityConnectionError(caught);
+      }
+    }
     const body = JSON.stringify(payload);
     const response = await new Promise<string>((resolve, reject) => {
       let wallClockTimeout: NodeJS.Timeout | undefined;
@@ -1380,27 +1466,35 @@ export class AntigravityAgentBridge {
           clearWallClockTimeout();
           const text = Buffer.concat(chunks).toString("utf8");
           if ((incoming.statusCode ?? 500) >= 400) {
-            const detail = redactSensitiveText(text).replace(/\s+/gu, " ").trim().slice(0, 240);
-            reject(new Error(
-              `反重力本地接口调用失败（HTTP ${incoming.statusCode ?? 500}）${detail ? `：${detail}` : ""}`,
-            ));
+            const detail = redactSensitiveText(text.replaceAll(endpoint.csrfToken, "[REDACTED]"))
+              .replace(/\s+/gu, " ").trim().slice(0, 240);
+            this.#endpointCacheUntil = 0;
+            reject(new ControlError({
+              code: "ANTIGRAVITY_UPSTREAM_ERROR", statusCode: 502, retryable: true,
+              message: `反重力本地接口调用失败（HTTP ${incoming.statusCode ?? 500}）${detail ? `：${detail}` : ""}`,
+            }));
             return;
           }
           resolve(text);
         });
       });
       request.setTimeout(timeoutSeconds * 1_000, () => {
-        request.destroy(new Error("反重力本地接口调用超时"));
+        request.destroy(new ControlError({
+          code: "ANTIGRAVITY_TIMEOUT", statusCode: 504, retryable: true, message: "反重力本地接口调用超时",
+        }));
       });
       // request.setTimeout only measures socket inactivity. Antigravity may
       // emit heartbeats forever while a conversation remains falsely busy,
       // so enforce the same deadline as an absolute wall-clock timeout.
       wallClockTimeout = setTimeout(() => {
-        request.destroy(new Error("反重力本地接口调用超时"));
+        request.destroy(new ControlError({
+          code: "ANTIGRAVITY_TIMEOUT", statusCode: 504, retryable: true, message: "反重力本地接口调用超时",
+        }));
       }, timeoutSeconds * 1_000);
       request.on("error", (caught) => {
         clearWallClockTimeout();
-        reject(caught);
+        this.#endpointCacheUntil = 0;
+        reject(normalizeAntigravityConnectionError(caught));
       });
       request.end(body);
     });
@@ -1425,7 +1519,8 @@ export class AntigravityAgentBridge {
           });
         }
         return stored;
-      } catch {
+      } catch (caught) {
+        if (caught instanceof ControlError) throw caught;
         throw new Error(`已绑定的反重力会话不可用；请按完整标题“${this.#requiredConversationTitle}”重新绑定`);
       }
     }
@@ -1570,13 +1665,23 @@ export class AntigravityAgentBridge {
 
   async #runAgentApi(args: string[], environment: NodeJS.ProcessEnv): Promise<AgentApiResult> {
     const executable = await this.#agentApiExecutable();
-    const { stdout } = await execFile(executable, ["agentapi", ...args], {
-      env: environment,
-      encoding: "utf8",
-      timeout: AGENT_API_TIMEOUT_MS,
-      maxBuffer: 2 * 1024 * 1024,
-      windowsHide: true,
-    });
+    let stdout: string;
+    try {
+      ({ stdout } = await execFile(executable, ["agentapi", ...args], {
+        env: environment,
+        encoding: "utf8",
+        timeout: AGENT_API_TIMEOUT_MS,
+        maxBuffer: 2 * 1024 * 1024,
+        windowsHide: true,
+      }));
+    } catch {
+      this.#endpointCacheUntil = 0;
+      // Do not expose exec errors containing command arguments or upstream output.
+      throw new ControlError({
+        code: "ANTIGRAVITY_AGENT_API_FAILED", statusCode: 502, retryable: true,
+        message: "反重力本地 Agent API 调用失败或超时；请等待程序启动完成后重试",
+      });
+    }
     try {
       return JSON.parse(stdout) as AgentApiResult;
     } catch {

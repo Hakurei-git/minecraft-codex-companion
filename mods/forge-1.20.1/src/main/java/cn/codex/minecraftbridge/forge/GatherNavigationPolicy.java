@@ -18,6 +18,23 @@ final class GatherNavigationPolicy {
         return Math.max(1, (int) Math.ceil(effectiveReach));
     }
 
+    static int minimumStandOffset(double reach, double eyeHeight) {
+        if (!Double.isFinite(reach) || reach <= 0 || !Double.isFinite(eyeHeight) || eyeHeight < 0) {
+            return MIN_VERTICAL_OFFSET;
+        }
+        // Stand Y is measured at the feet; interaction reach starts at the
+        // eyes and ends at the block surface. A log six blocks above the feet
+        // is still reachable with 4.5-block reach and a 1.62-block eye height.
+        return (int) Math.ceil(-reach - eyeHeight);
+    }
+
+    static int maximumStandOffset(double reach, double eyeHeight) {
+        if (!Double.isFinite(reach) || reach <= 0 || !Double.isFinite(eyeHeight) || eyeHeight < 0) {
+            return MAX_VERTICAL_OFFSET;
+        }
+        return (int) Math.floor(1.0D + reach - eyeHeight);
+    }
+
     static boolean allowsStandOffset(int dx, int dy, int dz) {
         // A cleared trunk column is the only unobstructed way to reach upper
         // logs through a canopy. The caller still requires solid footing,

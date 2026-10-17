@@ -34,6 +34,7 @@ public final class BridgeClient {
     private final CompanionActor actor;
     private final BoundedMessageOutbox<JsonObject> terminalOutbox = new BoundedMessageOutbox<>(MAX_TERMINAL_OUTBOX);
     private final BoundedMessageOutbox<JsonObject> chatOutbox = new BoundedMessageOutbox<>(MAX_CHAT_OUTBOX);
+    private final BoundedMessageOutbox<JsonObject> gameEventOutbox = new BoundedMessageOutbox<>(32);
     private volatile BridgeChannel socket;
     private volatile BridgeChannel announcedSocket;
     private volatile long connectingGeneration = -1;
@@ -90,6 +91,7 @@ public final class BridgeClient {
 
     public void onLogout() {
         sessionActive = false;
+        gameEventOutbox.drain();
         configurationGeneration++;
         connectingGeneration = -1;
         reconnectAfterTick = ticks;
@@ -130,6 +132,35 @@ public final class BridgeClient {
         chat.addProperty("message", cleaned);
         chat.addProperty("at", Instant.now().toString());
         sendChat(chat);
+    }
+
+    public void onGameEvent(String kind, String player, String text, String translationKey) {
+        if (!sessionActive || player == null || player.isBlank() || text == null || text.isBlank()) return;
+        if (!List.of("death", "advancement", "respawn").contains(kind)) return;
+        JsonObject event = envelope("game-event");
+        event.addProperty("messageId", UUID.randomUUID().toString());
+        event.addProperty("kind", kind);
+        event.addProperty("playerName", player);
+        event.addProperty("message", text.substring(0, Math.min(512, text.length())));
+        if (translationKey != null) event.addProperty("translationKey", translationKey);
+        event.addProperty("at", Instant.now().toString());
+        sendGameEvent(event, configurationGeneration);
+    }
+
+    private void sendGameEvent(JsonObject event, long generation) {
+        if (!sessionActive || generation != configurationGeneration) return;
+        if (Duration.between(Instant.parse(event.get("at").getAsString()), Instant.now()).toSeconds() > 60) return;
+        String id = event.get("messageId").getAsString();
+        BridgeChannel current = socket;
+        if (current == null || announcedSocket != current || !current.isOpen()) {
+            gameEventOutbox.put(id, event.deepCopy());
+            return;
+        }
+        current.sendText(GSON.toJson(event)).whenComplete((ignored, error) -> {
+            if (error == null || !sessionActive || generation != configurationGeneration) return;
+            gameEventOutbox.put(id, event.deepCopy());
+            scheduleReconnect(current);
+        });
     }
 
     private void connect() {
@@ -339,6 +370,7 @@ public final class BridgeClient {
     private void flushChatOutbox(BridgeChannel connection) {
         if (socket != connection || announcedSocket != connection || !connection.isOpen()) return;
         for (JsonObject message : chatOutbox.drain()) sendChat(message);
+        for (JsonObject event : gameEventOutbox.drain()) sendGameEvent(event, configurationGeneration);
     }
 
     private void sendTerminal(JsonObject message, String taskId) {

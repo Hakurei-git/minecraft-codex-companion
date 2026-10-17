@@ -188,6 +188,7 @@ interface PendingAiDecision {
   owner: string;
   expiresAt: number;
   submitting: boolean;
+  replyOnly: boolean;
 }
 
 function normalizedPlayerName(value: string): string {
@@ -443,7 +444,7 @@ export class ControlService {
     return settings;
   }
 
-  beginAiDecision(message: ChatMessage, owner = "antigravity-autoplay"): string {
+  beginAiDecision(message: ChatMessage, owner = "antigravity-autoplay", options: { replyOnly?: boolean } = {}): string {
     this.#pruneAiDecisions();
     while (this.#pendingAiDecisions.size >= MAX_PENDING_AI_DECISIONS) {
       const oldest = this.#pendingAiDecisions.keys().next().value as string | undefined;
@@ -458,6 +459,7 @@ export class ControlService {
       owner,
       expiresAt: Date.now() + AI_DECISION_TTL_MS,
       submitting: false,
+      replyOnly: options.replyOnly === true,
     });
     return interactionId;
   }
@@ -489,6 +491,11 @@ export class ControlService {
         statusCode: 404,
         retryable: false,
         suggestedRecovery: "请在 Minecraft 的 T 聊天中重新发送原请求；如果刚恢复网络，可先输入“恢复反重力”立即重连",
+      });
+    }
+    if (pending.replyOnly && decision.type !== "chat") {
+      throw new ControlError({
+        code: "GAME_EVENT_REPLY_ONLY", message: "游戏广播通知只允许聊天回应，不能执行游戏动作", statusCode: 422,
       });
     }
     if (pending.submitting) {
