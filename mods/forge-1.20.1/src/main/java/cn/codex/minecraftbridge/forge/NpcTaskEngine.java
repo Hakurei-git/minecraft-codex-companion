@@ -5544,6 +5544,7 @@ public final class NpcTaskEngine {
         boolean survivalReserve = isSurvivalReserveProvision(work);
         if (survivalReserve && !bool(work.spec, "reserveTargetFrozen", false)) {
             int migratedTarget = NpcFoodReservePolicy.taskTarget(
+                work.id,
                 config.npcFoodReserveCount,
                 integer(work.spec, "count", FoodProvisionPolicy.DEFAULT_RESERVE_COUNT),
                 false
@@ -11499,6 +11500,7 @@ public final class NpcTaskEngine {
         spec.addProperty("destination", "backpack");
         spec.addProperty("count", foodReserveTarget());
         spec.addProperty("requestedBy", "deep-mining-survival");
+        spec.addProperty("reserveTargetFrozen", true);
         spec.addProperty("priority", Math.min(1000, miningWork.priority + 1));
         ActiveWork food = new ActiveWork(
             "local:deep-mining-food:" + miningWork.id,

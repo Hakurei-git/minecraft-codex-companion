@@ -16,12 +16,14 @@ final class NpcFoodReservePolicy {
     }
 
     /**
-     * New reserve tasks persist their configured target. Legacy tasks from the
-     * meal-buffer policy are migrated once instead of continuing to move their
-     * completion line as hunger falls.
+     * Only autonomous reserve tasks inherit the standing reserve setting.
+     * Explicit food orders and deep-mining prerequisites keep their own count,
+     * even when automatic reserves are disabled or configured below that count.
+     * Legacy autonomous meal-buffer targets are migrated once.
      */
-    static int taskTarget(int configuredTarget, int persistedTarget, boolean targetFrozen) {
-        return target(targetFrozen ? persistedTarget : configuredTarget);
+    static int taskTarget(String taskId, int configuredTarget, int persistedTarget, boolean targetFrozen) {
+        boolean migrateAutonomous = taskId != null && taskId.startsWith("local:auto-food:") && !targetFrozen;
+        return target(migrateAutonomous ? configuredTarget : persistedTarget);
     }
 
     static boolean shouldProvision(
