@@ -527,6 +527,24 @@ describe("CodexDriver", () => {
     expect(fake.started.prompts).toHaveLength(0);
   });
 
+  it.each(["antigravity-mcp", "active-provider"] as const)("routes a short storage request directly without building a room for %s", async (target) => {
+    const { service, fake, driver } = await createHarness("mc-codex-storage-contract-");
+    await configureChat(service, { target, actionMode: "smart" });
+
+    const routed = await driver.handleImmediateInGameChat({
+      companionId: "codex-sim",
+      sender: "PlayerOne",
+      message: "整理仓库",
+    });
+
+    expect(routed).toMatchObject({ handled: true, request: { status: "succeeded" } });
+    expect(service.listTasks()).toHaveLength(1);
+    expect(service.listTasks()[0]?.spec).toMatchObject({ kind: "organize-storage", requestedBy: "PlayerOne" });
+    expect(service.listGoals()).toHaveLength(0);
+    expect(fake.started.plannerPrompts).toHaveLength(0);
+    expect(fake.started.prompts).toHaveLength(0);
+  });
+
   it("records a player-built house locally even when Smart AI is enabled", async () => {
     const { service, fake, driver } = await createHarness("mc-codex-smart-home-memory-");
     await configureChat(service, { actionMode: "smart", target: "antigravity-mcp" });

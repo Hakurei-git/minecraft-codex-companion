@@ -253,6 +253,32 @@ describe("parseDeterministicChatAction", () => {
     });
   });
 
+  it.each([
+    "整理仓库",
+    "反重力 整理仓库",
+    "Codex，帮我整理一下家里的箱子",
+    "把仓库整理一下",
+    "请收拾家中储物间吧",
+    "反重力 让小雪整理家中仓库，按类别集中存放；缺箱子时制作，优先屋内，屋内没空位时在屋外十格内扩建，不拆墙",
+  ])("sorts existing storage for the explicit request %s", (message) => {
+    expect(parseDeterministicChatAction(message, "PlayerOne", "小雪")).toMatchObject({
+      operation: "task",
+      context: "explicit-storage",
+      spec: { kind: "organize-storage", radius: 24, requestedBy: "PlayerOne" },
+    });
+  });
+
+  it.each([
+    "不要整理仓库",
+    "你会整理仓库吗",
+    "如何整理仓库？",
+    "整理仓库，但不要制作箱子",
+    "整理仓库，拆掉围墙",
+    "整理仓库，去挖钻石",
+  ])("does not treat unsupported modifiers or questions as bounded sorting: %s", (message) => {
+    expect(parseDeterministicChatAction(message, "PlayerOne")).toBeNull();
+  });
+
   it("runs audited build templates without waiting for a model turn", () => {
     expect(parseDeterministicChatAction("帮我建个仓库", "PlayerOne")).toMatchObject({
       operation: "task",

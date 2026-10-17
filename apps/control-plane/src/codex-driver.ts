@@ -865,6 +865,7 @@ export class CodexDriver {
       "For ordinary gathering that must be handed over, prefer skill=life.gather-and-deliver. For explicit long-range collection, prefer life.expedition-and-deliver.",
       "For an exact relative walking request such as walking forward 5 blocks, use kind=move toward the absolute target derived from the supplied pose. Never broaden it into explore, and never teleport.",
       "For an unspecified building, return clarify with a concise choice request. For '继续建造' or equivalent, use type=retry-build so the existing checkpoint is resumed instead of starting over. Use only listed audited skills or confirmed build plans; never approve a new destructive build yourself.",
+      "To organize existing storage or chests, use type=task with spec.kind=organize-storage and radius=24. The executor handles sorting and missing chests. Use build.storage-room only when the player explicitly asks to construct a new storage building.",
       "Do not create or download skills, do not include URLs or local paths, and do not expose configuration, keys, logs, or hidden reasoning.",
       `Output budget: ${tokenBudget} tokens. Keep reply under 120 characters and summary under 160 characters, using the language of the player's current message.`,
       ...personaPrompt,
@@ -1258,6 +1259,9 @@ export class CodexDriver {
     action: Extract<DeterministicChatAction, { operation: "task" }>,
   ): boolean {
     if (action.context === "build-selection") return false;
+    // The storage executor owns chest expansion. A storage-room goal may build
+    // a whole new structure, which an explicit sorting request does not ask for.
+    if (action.spec.kind === "organize-storage") return false;
     if (action.spec.kind === "macro") {
       return action.spec.skillId.startsWith("build.")
         || action.spec.skillId.startsWith("craft.")
@@ -1269,7 +1273,7 @@ export class CodexDriver {
       return action.spec.itemId.startsWith("minecraft:")
         && !["minecraft:pickaxe", "minecraft:axe", "minecraft:shovel", "minecraft:hoe", "minecraft:melee_weapon"].includes(action.spec.itemId);
     }
-    if (action.spec.kind === "farm" || action.spec.kind === "ranch" || action.spec.kind === "organize-storage" || action.spec.kind === "dragon") return true;
+    if (action.spec.kind === "farm" || action.spec.kind === "ranch" || action.spec.kind === "dragon") return true;
     return /(?:钻石镐|diamond pickaxe|火把|torch|床|bed|农田|农场|田地|牧场|畜牧|围栏|仓库|储物|装备|护甲|防具|武器|铁剑|盾牌|剪刀|水桶|桶|工作台|熔炉|建造|房子|小屋|住宅|刷石机|刷怪|树场|瞭望塔|骑龙|龙|dragon)/iu
       .test(message);
   }
@@ -1324,6 +1328,9 @@ export class CodexDriver {
     // dismount half of "下来跟着我").
     if (action.operation !== "task") return null;
     if (action.context === "explicit-food") return action;
+    // Sorting existing storage also has a complete bounded contract, including
+    // safe chest expansion; do not let a model reinterpret it as building a room.
+    if (action.context === "explicit-storage") return action;
     if (action.spec.kind === "dragon") return action;
     return action.spec.kind === "macro" && action.spec.skillId.startsWith("dragon.")
       ? action

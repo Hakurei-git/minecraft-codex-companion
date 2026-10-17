@@ -16,7 +16,7 @@ export type DeterministicChatAction =
       operation: "task";
       spec: TaskSpec;
       reply: string;
-      context?: "build-selection" | "explicit-food";
+      context?: "build-selection" | "explicit-food" | "explicit-storage";
       replaceConflictingDelivery?: boolean;
     }
   | { operation: "resume-build"; reply: string }
@@ -49,6 +49,8 @@ const RECALL_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:快|现在)?\s*(?:召回|叫回
 const LAND_DRAGON_COMMAND = /^\s*(?:你\s*)?(?:让龙|骑龙)?\s*(?:降落|落地)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const DRAGON_ASSIST_COMMAND = /^\s*(?:你\s*)?(?:让龙|骑龙)?\s*(?:协战|帮我打|保护我|攻击目标)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const ORGANIZE_STORAGE_COMMAND = /^(?=.*(?:箱子|仓库))(?=.*(?:整理|分类|收拾|存放|放进|存进|放回|存回))(?=.*(?:背包|多余|东西|物品|材料|装备)).*$/u;
+const ORGANIZE_EXISTING_STORAGE_COMMAND = /^(?:(?:请|麻烦|你|帮我|先|现在|去)\s*)*(?:(?:整理|收拾|分类整理|归类)(?:一下)?\s*(?:(?:家里|家中|家|已有|现有|我的)(?:的)?)?(?:仓库|储物间|箱子)|(?:把|将)\s*(?:(?:家里|家中|家|已有|现有|我的)(?:的)?)?(?:仓库|储物间|箱子)\s*(?:整理|收拾|分类整理|归类)(?:一下)?)(?:吧|呀|啊|喵)?$/u;
+const DEFAULT_STORAGE_MODIFIER = /^(?:按(?:类别|种类)(?:集中)?(?:存放|整理|分类)|缺箱子时(?:制作|自己做)|优先屋内|屋内没(?:有)?空位时在屋外(?:十|10)格内扩建|不拆墙)$/u;
 const RETRIEVE_COMMAND = /^\s*(?:你\s*)?(?:去)?(?:从)?(?:家里|家附近)?(?:的)?(?:箱子|仓库)(?:里)?\s*(?:帮我)?(?:拿|取|找|带)(?<deliveryPrefix>出来|出|来|给我)?\s*(?:(?<count>\d{1,3}|[一二两三四五六七八九十百]+)\s*(?:个|块|根|片|份)?\s*)?(?<item>原木|木头|圆石|腐肉|西瓜片?|面包|苹果|小麦|火把)(?:\s*(?<deliverySuffix>给我|交给我|拿给我|送给我))?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const FISH_COMMAND = /^\s*(?:你\s*)?(?:去|帮我)?\s*(?:钓鱼|钓)(?:(?<count>\d{1,2}|[一二两三四五六七八九十]+)\s*(?:次|条|个)?)?\s*(?:鱼)?\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
 const SLEEP_COMMAND = /^\s*(?:你\s*)?(?:去|快|现在)?\s*(?:睡觉|睡一觉|上床睡觉|睡到天亮|休息一晚)\s*(?:吧|呀|啊|喵)?\s*[！!。.]?\s*$/u;
@@ -345,9 +347,17 @@ function normalizeAddressedMessage(message: string, companionName = ""): string 
   const address = names.join("|");
   return message
     .normalize("NFKC")
-    .replace(new RegExp(`^\\s*(?:${address})\\s*[,，:：]\\s*`, "iu"), "")
+    .replace(new RegExp(`^\\s*(?:${address})(?:\\s*[,，:：]\\s*|\\s+)`, "iu"), "")
     .replace(new RegExp(`\\s*(?:${address})\\s*$`, "iu"), "")
     .trim();
+}
+
+function organizesExistingStorage(message: string, companionName: string): boolean {
+  const subject = companionName.trim() ? `你|${escapeRegExp(companionName.trim())}` : "你";
+  const normalized = message.replace(new RegExp(`^(?:(?:请|麻烦)\\s*)?让\\s*(?:${subject})\\s*`, "u"), "");
+  const clauses = normalized.split(/[，,；;。.!！]/u).map((clause) => clause.trim()).filter(Boolean);
+  return clauses.length > 0 && ORGANIZE_EXISTING_STORAGE_COMMAND.test(clauses[0]!)
+    && clauses.slice(1).every((clause) => DEFAULT_STORAGE_MODIFIER.test(clause));
 }
 
 type BuildMacroSpec = Extract<TaskSpec, { kind: "macro" }>;
@@ -499,11 +509,13 @@ export function parseDeterministicChatAction(message: string, sender: string, co
   if (DRAGON_ASSIST_COMMAND.test(normalized)) {
     return { operation: "task", spec: { kind: "dragon", action: "assist-combat", requestedBy: sender.trim() || "player", note: message.slice(0, 500) }, reply: "好，我让龙协助战斗。" };
   }
-  if (ORGANIZE_STORAGE_COMMAND.test(normalized)) {
+  const explicitStorage = organizesExistingStorage(normalized, companionName);
+  if (explicitStorage || ORGANIZE_STORAGE_COMMAND.test(normalized)) {
     return {
       operation: "task",
       spec: { kind: "organize-storage", radius: 24, requestedBy: sender.trim() || "player", note: message.slice(0, 500) },
-      reply: "好，我回家把背包里多余的物品分类存进箱子。",
+      reply: "好，我回家整理现有箱子，并把背包里多余的物品分类存放。",
+      ...(explicitStorage ? { context: "explicit-storage" as const } : {}),
     };
   }
   if (RANCH_COMMAND.test(normalized)) {
