@@ -217,6 +217,25 @@ public final class CodexNetwork {
         CodexNpcEntity npc = NpcManager.find(player);
         switch (message.type) {
             case "ensure" -> NpcManager.ensure(player);
+            case "set-food-reserve" -> {
+                if (!payload.has("count") || !payload.get("count").isJsonPrimitive()
+                    || !payload.getAsJsonPrimitive("count").isNumber()) break;
+                double requested = payload.get("count").getAsDouble();
+                if (!Double.isFinite(requested) || requested < 0 || requested > 64 || requested != Math.rint(requested)) break;
+                int count = (int) requested;
+                if (!CONFIG.setFoodReserveCount(count)) {
+                    sendSpeech(player, "常备口粮设置保存失败，设置未更改，请检查配置文件是否可写");
+                    break;
+                }
+                if (npc == null) npc = NpcManager.ensure(player);
+                if (npc != null) {
+                    npc.tasks().setFoodReserveCount(count);
+                    sendSnapshot(player, npc);
+                }
+                sendSpeech(player, count == 0
+                    ? "已关闭常备安全口粮，不再自动外出补粮。明确找粮和下矿必需补给仍按任务要求执行。"
+                    : "已开启常备安全口粮，目标 " + count + " 份。");
+            }
             case "snapshot" -> {
                 if (npc == null) npc = NpcManager.ensure(player);
                 if (npc != null) sendSnapshot(player, npc);

@@ -77,6 +77,16 @@ public final class BridgeConfig {
         }
     }
 
+    public boolean setFoodReserveCount(int count) {
+        try {
+            FoodReserveConfigStore.update(path(), count);
+            npcFoodReserveCount = count;
+            return true;
+        } catch (IOException | RuntimeException ignored) {
+            return false;
+        }
+    }
+
     public boolean isReady() {
         return isLoopbackBridgeUrl(serverUrl) && token != null && token.length() >= 16;
     }

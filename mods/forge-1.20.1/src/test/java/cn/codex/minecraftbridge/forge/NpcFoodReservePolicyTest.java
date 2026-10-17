@@ -8,6 +8,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class NpcFoodReservePolicyTest {
     @Test
+    void disablingReservesCancelsEvenFrozenAutomaticWork() {
+        assertTrue(NpcFoodReservePolicy.shouldCancelAutonomousTask("local:auto-food:npc:123", 0));
+        assertFalse(NpcFoodReservePolicy.shouldCancelAutonomousTask("local:auto-food:npc:123", 8));
+    }
+
+    @Test
+    void disablingReservesPreservesExplicitAndMiningTasks() {
+        for (String id : new String[]{"player-food-order", "local:deep-mining-food:mine", "local:organize:1"}) {
+            assertFalse(NpcFoodReservePolicy.shouldCancelAutonomousTask(id, 0));
+        }
+        assertFalse(NpcFoodReservePolicy.shouldCancelAutonomousTask(null, 0));
+    }
+
+    @Test
     void replenishesOrdinaryWorkAndIdleBackpacksToTheConfiguredTarget() {
         assertTrue(NpcFoodReservePolicy.shouldProvision(false, 8, 7, "craft", false, false, false));
         assertTrue(NpcFoodReservePolicy.shouldProvision(false, 8, 0, "", false, false, false));

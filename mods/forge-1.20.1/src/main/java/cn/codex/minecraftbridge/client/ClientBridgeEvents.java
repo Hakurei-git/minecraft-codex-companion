@@ -2,6 +2,8 @@ package cn.codex.minecraftbridge.client;
 
 import cn.codex.minecraftbridge.MinecraftCodexBridge;
 import cn.codex.minecraftbridge.forge.client.ForgeNpcActor;
+import cn.codex.minecraftbridge.forge.CodexNetwork;
+import com.google.gson.JsonObject;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.PauseScreen;
 import net.minecraft.client.multiplayer.PlayerInfo;
@@ -62,6 +64,13 @@ public final class ClientBridgeEvents {
         if (minecraft.player == null) return;
         String sender = minecraft.player.getGameProfile().getName();
         String message = event.getMessage();
+        var foodReserve = FoodReserveChatPolicy.requestedCount(message, CLIENT.config().name);
+        if (foodReserve.isPresent()) {
+            JsonObject setting = new JsonObject();
+            setting.addProperty("count", foodReserve.getAsInt());
+            CodexNetwork.sendToServer("set-food-reserve", setting);
+            return;
+        }
         if (!ClientChatForwardingPolicy.shouldForwardLocal(message)) return;
         CLIENT.onIncomingChat(sender, message);
     }

@@ -654,6 +654,24 @@ public final class NpcTaskEngine {
         npc.setTarget(null);
     }
 
+    public void setFoodReserveCount(int count) {
+        config.npcFoodReserveCount = NpcFoodReservePolicy.target(count);
+        cancelDisabledAutonomousFoodReserve();
+    }
+
+    private void cancelDisabledAutonomousFoodReserve() {
+        if (config.npcFoodReserveCount > 0) return;
+        String reason = "常备安全口粮已关闭，停止自动补粮";
+        for (ActiveWork work : new ArrayList<>(pausedWorks)) {
+            if (NpcFoodReservePolicy.shouldCancelAutonomousTask(work.id, config.npcFoodReserveCount)) {
+                cancel(work.id, reason);
+            }
+        }
+        if (active != null && NpcFoodReservePolicy.shouldCancelAutonomousTask(active.id, config.npcFoodReserveCount)) {
+            cancel(active.id, reason);
+        }
+    }
+
     private boolean resumePausedWork() {
         ActiveWork resumed = TaskPriorityPolicy.highestPriorityFirst(pausedWorks, work -> work.priority);
         if (resumed == null) return false;
@@ -953,6 +971,7 @@ public final class NpcTaskEngine {
             }
             return;
         }
+        cancelDisabledAutonomousFoodReserve();
         maybeStartAutonomousFoodReserve();
         if (active == null && assistTarget == null && npc.stance() != Stance.STAY && npc.tickCount % 200 == 0) {
             maybeStartAutonomousStorage();

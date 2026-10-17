@@ -15,6 +15,10 @@ final class NpcFoodReservePolicy {
         return Math.max(0, Math.min(64, configured));
     }
 
+    static boolean shouldCancelAutonomousTask(String taskId, int configuredTarget) {
+        return target(configuredTarget) == 0 && taskId != null && taskId.startsWith("local:auto-food:");
+    }
+
     /**
      * Only autonomous reserve tasks inherit the standing reserve setting.
      * Explicit food orders and deep-mining prerequisites keep their own count,
